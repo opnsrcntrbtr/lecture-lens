@@ -312,7 +312,9 @@ struct AsyncSlide: View {
         }
         .task(id: url) {
             let u = url
-            image = await Task.detached { NSImage(contentsOf: u) }.value
+            // Read bytes off the main actor; NSImage is not Sendable, so build it here.
+            let data = await Task.detached { try? Data(contentsOf: u) }.value
+            image = data.flatMap { NSImage(data: $0) }
         }
     }
 }

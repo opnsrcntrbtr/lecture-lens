@@ -16,10 +16,10 @@ jobs:
     name: Content guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Whole tree
@@ -38,8 +38,8 @@ jobs:
     name: Python unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -51,7 +51,7 @@ jobs:
     name: Shell scripts parse
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       - run: |
           for f in lecture study sp-start sp-stop sp-mode sp-autoswitch sp-domains check.sh diag-drm tests/evals/run.sh tests/evals/run_judge_bench.sh; do
@@ -64,7 +64,7 @@ jobs:
     name: macOS app tests
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: swift --version
       - run: swift test
         working-directory: app/LectureLens
@@ -73,8 +73,8 @@ jobs:
     name: Docs build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm

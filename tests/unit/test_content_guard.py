@@ -60,6 +60,7 @@ def test_secrets_and_personal_data(tmp_path):
     assert kinds("see ~/project and /Users/you/project") == []
     assert kinds("mail jane@" + "corp.io") == ["personal data"]
     assert kinds("mail jane@example.com or 1+bot@users.noreply.github.com") == []
+    assert kinds("Signed-off-by: a-bot <support@" + "github.com>") == []
 
 
 def test_the_repository_itself_is_clean():

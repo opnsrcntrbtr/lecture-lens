@@ -75,7 +75,7 @@ SECRETS = [
 PERSONAL = [
     (r"/Users/(?!you/|example/|runner/|\$)[A-Za-z0-9._-]+/", "absolute home path"),
     (r"/home/(?!you/|example/|runner/|\$)[A-Za-z0-9._-]+/", "absolute home path"),
-    (r"\b[A-Za-z0-9._%+-]+@(?!example\.(com|org|edu)\b|users\.noreply\.github\.com\b|noreply\.|anthropic\.com\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "e-mail address"),
+    (r"\b[A-Za-z0-9._%+-]+@(?!example\.(com|org|edu)\b|users\.noreply\.github\.com\b|github\.com\b|noreply\.|anthropic\.com\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "e-mail address"),
 ]
 WORD = re.compile(r"[a-z0-9]+")
 
