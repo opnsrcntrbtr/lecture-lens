@@ -1,0 +1,45 @@
+#!/bin/zsh
+# Background watcher: live mode while a Zoom meeting is active, portal mode otherwise.
+# Signals: screenpipe's own meeting detector (/meetings/status, app ~ zoom) OR Zoom's in-meeting helper (CptHost).
+DIR="${0:A:h}"; S="$HOME/.screenpipe"
+set -a; source "$DIR/.env"; set +a
+cool=$(( ${SP_LIVE_COOLDOWN_SEC:-$(( ${SP_LIVE_COOLDOWN_MIN:-2} * 60 ))} )); idle=0; POLL=${SP_SWITCH_POLL_SEC:-15}
+log() { echo "$(date '+%F %T') $*"; }
+token() { "$SP_BIN" auth token 2>/dev/null | tail -1; }
+in_zoom_meeting() {
+  [[ -f "$S/simulate-zoom-meeting" ]] && return 0   # test hook: touch ~/.screenpipe/simulate-zoom-meeting
+  pgrep -x zoom.us >/dev/null || return 1          # no Zoom app → no Zoom meeting (guards against stale DB state)
+  pgrep -x CptHost >/dev/null && return 0
+  curl -s --noproxy '*' -m 5 -H "Authorization: Bearer $(token)" "${SCREENPIPE_URL:-http://localhost:3030}/meetings/status" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("active") and "zoom" in (d.get("meetingApp") or "").lower() else 1)' 2>/dev/null
+}
+# While a DRM video page is focused screenpipe records no frames (ADR-004), so
+# note the page's URL + title here; lecture_kit turns these into sessions/titles.
+mark_drm_page() {
+  [[ -n "${SP_DRM_URLS:-}" ]] || return 0
+  [[ "$(lsappinfo info -only name "$(lsappinfo front)" 2>/dev/null)" == *'"Google Chrome"'* ]] || return 0
+  local info url title pat
+  info=$(osascript -e 'tell application "Google Chrome" to if (count of windows) > 0 then return (URL of active tab of front window) & linefeed & (title of active tab of front window)' 2>/dev/null) || return 0
+  url=${info%%$'\n'*}; title=${info#*$'\n'}
+  for pat in ${(s:,:)SP_DRM_URLS}; do
+    pat=${pat//[[:space:]]/}
+    [[ -n $pat && $url == *$pat* ]] || continue
+    python3 -c 'import json,sys,datetime; print(json.dumps({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "url": sys.argv[1], "title": sys.argv[2]}))' "$url" "$title" >> "$S/study-markers.jsonl"
+    return 0
+  done
+}
+log "auto-switch started (cooldown ${cool}s)"
+while true; do
+  sleep $POLL
+  pgrep -f "^/[^ ]*/screenpipe record" >/dev/null || { log "screenpipe not running — exiting"; exit 0; }
+  mark_drm_page
+  [[ -f "$S/sp-mode.pin" ]] && continue
+  cur=$(cat "$S/sp-mode.current" 2>/dev/null)
+  if in_zoom_meeting; then
+    idle=0
+    if [[ "$cur" != live ]]; then log "Zoom meeting detected → live"; "$DIR/sp-stop" --screenpipe-only >/dev/null; "$DIR/sp-start" --mode live --no-watch; fi
+  elif [[ "$cur" == live ]]; then
+    idle=$(( idle + POLL ))
+    if (( idle >= cool )); then log "no Zoom meeting for ${cool}s → portal"; idle=0; "$DIR/sp-stop" --screenpipe-only >/dev/null; "$DIR/sp-start" --mode portal --no-watch; fi
+  fi
+done

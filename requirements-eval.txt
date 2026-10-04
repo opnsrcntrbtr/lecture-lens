@@ -1,0 +1,2 @@
+# Only for tests/evals (local judged evaluation). Not needed to capture or build lectures.
+deepeval>=4.2,<5

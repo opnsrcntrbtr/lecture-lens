@@ -1,0 +1,87 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  content-guard:
+    name: Content guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Whole tree
+        run: python tools/content_guard.py --all
+      - name: Every commit in this push or pull request
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            python tools/content_guard.py --range HEAD
+          else
+            python tools/content_guard.py --range "$BASE..HEAD"
+          fi
+
+  python:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest tests/unit -q
+
+  shell:
+    name: Shell scripts parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+      - run: |
+          for f in lecture study sp-start sp-stop sp-mode sp-autoswitch sp-domains check.sh diag-drm tests/evals/run.sh tests/evals/run_judge_bench.sh; do
+            zsh -n "$f"
+          done
+          sh -n tools/publish.sh tools/setup_hooks.sh .githooks/pre-push .githooks/pre-commit .githooks/commit-msg
+          bash -n app/build_app.sh
+
+  swift:
+    name: macOS app tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: swift test
+        working-directory: app/LectureLens
+
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+        working-directory: website
+      - run: npm run build
+        working-directory: website
+        env:
+          DOCS_BASE_URL: /${{ github.event.repository.name }}/

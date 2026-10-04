@@ -1,0 +1,5 @@
+# Copy to allowed-domains.txt (ignored by git). In portal mode only these sites are captured.
+# One per line: host, or host:subdomains to include every subdomain.
+learn.example.edu:subdomains
+meet.google.com
+zoom.us:subdomains

@@ -1,0 +1,28 @@
+#!/bin/zsh
+# Show or change the capture mode.
+#   sp-mode            show current mode
+#   sp-mode live       force live mode (Zoom app) and pin it — auto-switch pauses
+#   sp-mode portal     force portal mode (Chrome, allowed sites only) and pin it
+#   sp-mode auto       unpin; the auto-switcher follows Zoom meetings again
+DIR="${0:A:h}"; S="$HOME/.screenpipe"
+running() { pgrep -f "^/[^ ]*/screenpipe record" >/dev/null; }
+switch_to() {
+  if running && [[ "$(cat $S/sp-mode.current 2>/dev/null)" == "$1" ]]; then echo "already in $1 mode"; return; fi
+  if running; then "$DIR/sp-stop" --screenpipe-only >/dev/null; "$DIR/sp-start" --mode "$1" --no-watch
+  else echo "(screenpipe not running — sp-start will use $1)"; fi
+}
+case "$1" in
+  --json)
+       cur=$(cat $S/sp-mode.current 2>/dev/null); pin=$(cat $S/sp-mode.pin 2>/dev/null)
+       if running; then r=true; else r=false; cur=stopped; fi
+       pgrep -f "^/bin/zsh [^ ]*sp-autoswitch" >/dev/null && w=true || w=false
+       printf '{"running":%s,"mode":"%s","pinned":"%s","autoswitch":%s}\n' "$r" "${cur:-stopped}" "$pin" "$w" ;;
+  "")  cur=$(cat $S/sp-mode.current 2>/dev/null || echo "stopped")
+       pin=$(cat $S/sp-mode.pin 2>/dev/null)
+       echo "mode: $cur${pin:+ (pinned to $pin)}${pin:- (auto)}"
+       pgrep -f "^/bin/zsh [^ ]*sp-autoswitch" >/dev/null && echo "auto-switcher: running" || echo "auto-switcher: not running" ;;
+  live|portal) echo "$1" > $S/sp-mode.pin; switch_to "$1" ;;
+  auto) rm -f $S/sp-mode.pin; echo "auto mode: switcher will follow Zoom meetings"
+        running && ! pgrep -f "^/bin/zsh [^ ]*sp-autoswitch" >/dev/null && { nohup "$DIR/sp-autoswitch" >> "$S/sp-autoswitch.log" 2>&1 & } ;;
+  *) echo "usage: sp-mode [live|portal|auto]"; exit 1 ;;
+esac

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Runs before every `git push`. Scans the commits about to leave this machine
+# (messages, paths, added files) and the full tree, and stops the push on any finding.
+# Enable once per clone: tools/setup_hooks.sh
+root="$(git rev-parse --show-toplevel)"
+py="${GUARD_PYTHON:-python3}"
+"$py" "$root/tools/content_guard.py" --pre-push --remote "$1" || exit 1
+"$py" "$root/tools/content_guard.py" --all || exit 1

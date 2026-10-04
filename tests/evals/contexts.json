@@ -1,0 +1,50 @@
+[
+  [
+    "Transcript [00:02:10]: So what makes a product AI-native? It learns from every user interaction, and its output quality improves with data volume. The other two properties matter just as much: uncertainty is surfaced, not hidden, and humans stay in the loop for high-stakes calls.",
+    "Slide 'What Makes a Product AI-Native?': bullets — Learns from every user interaction; Output quality improves with data volume; Uncertainty is surfaced, not hidden; Humans stay in the loop for high-stakes calls."
+  ],
+  [
+    "Transcript [00:06:40]: We use three horizons to plan AI adoption. Horizon one, automate existing workflows, typically takes six to twelve months. Horizon two, augment decision making, twelve to twenty-four months. Horizon three, create new AI-first offerings, twenty-four to thirty-six months.",
+    "Slide 'Three Horizons of AI Adoption': H1 Automate existing workflows (6-12 months); H2 Augment decision making (12-24 months); H3 Create new AI-first offerings (24-36 months)."
+  ],
+  [
+    "Transcript [00:11:05]: On this model, precision is 0.82, recall is 0.64 and F1 is 0.72. Recall is the lowest, which matters for fraud detection because every missed fraud is expensive. For a spam filter you would care more about precision, because losing a real email frustrates users.",
+    "Slide 'Model Evaluation: Precision vs Recall': bar chart — Precision 0.82, Recall 0.64, F1 0.72."
+  ],
+  [
+    "Slide 'Cost per 1K Requests by Model Tier': table — Small: latency 120 ms, cost $0.04, accuracy 78%. Medium: latency 340 ms, cost $0.21, accuracy 86%. Large: latency 910 ms, cost $1.35, accuracy 92%.",
+    "Transcript [00:15:30]: Notice the trade-off. Going from Small to Large improves accuracy by fourteen points but costs more than thirty times as much per thousand requests and is over seven times slower. Most products should route easy requests to the small tier."
+  ],
+  [
+    "Slide 'North-Star Metric Dashboard': Weekly Active Users 48,250; Task Success Rate 91.4%; Cost per Task $0.037; CSAT 4.6 / 5.",
+    "Transcript [00:19:12]: A north-star metric should be tied to user value, not model accuracy. Task success rate is closer to the value users get than any offline metric."
+  ],
+  [
+    "Slide 'Offline vs Online Evaluation': Offline — held-out test set, F1, AUC-ROC, calibration error (ECE). Online — A/B test on conversion, guardrail metrics, p95 latency under 800 ms. Human review — 200 sampled outputs per week, rubric of 5 criteria. Drift monitoring — PSI above 0.2 on any top-10 feature triggers retraining. Shadow mode — new model runs for 14 days before any traffic shift. Rollback — automatic if error rate exceeds 1.5% for 10 minutes.",
+    "Transcript [00:23:45]: Offline metrics tell you whether the model is good; online metrics tell you whether the product is good. You need both, plus a rollback rule decided in advance."
+  ],
+  [
+    "Slide 'Expected Value of an AI Feature': EV = P(success) x Value - Cost. P(success) = 0.35; Value = $1.2M per year; Cost = $180K; EV = $240K.",
+    "Transcript [00:27:20]: Even with only a thirty-five percent chance of success, the feature is worth building because the expected value is positive: 0.35 times 1.2 million is 420 thousand, minus 180 thousand in cost, leaves 240 thousand."
+  ],
+  [
+    "Slide 'ML Product Lifecycle': flow — Problem framing, then Data collection, then Model training, then Evaluation, then Deployment.",
+    "Transcript [00:31:00]: Teams often skip problem framing and jump to data collection. That is the most expensive mistake in the lifecycle, because every later stage inherits the wrong objective."
+  ],
+  [
+    "Slide 'Prioritisation: Impact vs Effort': 2x2 matrix. Quick Wins (high impact, low effort): Smart autocomplete, FAQ chatbot. Big Bets (high impact, high effort): Personalised tutor, Voice assistant. Fill-ins (low impact, low effort): Tag suggestions. Money Pits (low impact, high effort): Custom foundation model.",
+    "Transcript [00:35:40]: Building your own foundation model is the classic money pit for most product teams: very high effort, and rarely more impact than fine-tuning an existing model."
+  ],
+  [
+    "Slide 'Onboarding Funnel': Visited 10,000; Signed up 2,400; Activated 1,150; Paid 310.",
+    "Transcript [00:39:15]: The biggest drop is from visit to sign-up, where we lose seventy-six percent. Activation to paid converts at about twenty-seven percent, so the first fix should be the top of the funnel."
+  ],
+  [
+    "Slide 'Responsible AI Review Cycle': a loop — Identify risks, then Measure harms, then Mitigate, then Monitor, which feeds back into Identify risks.",
+    "Transcript [00:43:05]: Responsible AI is not a one-time checklist. Monitoring feeds new risks back into the cycle."
+  ],
+  [
+    "Slide 'AI Product Team Structure': Head of AI leads Product Manager, ML Engineering and Data Science. ML Engineering contains MLOps and Inference. Data Science contains Experimentation.",
+    "Slide 'Roadmap 2027': Jan — Discovery; Apr — MVP launch; Jul — Beta; Oct — General availability."
+  ]
+]

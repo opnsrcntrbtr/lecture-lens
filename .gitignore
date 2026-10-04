@@ -1,0 +1,50 @@
+# --- never publish: captured or course material -----------------------------
+lectures/
+notes/
+feedback/
+private/
+private_tools/
+.guard/
+*.pptx
+*.ppt
+*.key
+*.pdf
+*.docx
+*.mp4
+*.mov
+*.m4a
+*.wav
+transcript*.md
+zoom_transcript*
+cards.tsv
+tests/evals/session_*
+allowed-domains.txt
+
+# --- local configuration and secrets -----------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- eval output (contains model output; keep local) -------------------------
+eval/results/
+eval/cases/
+eval/cases_stress*/
+eval/cases_prod/
+eval/debug/
+.deepeval/
+tests/evals/.deepeval/
+tests/evals/.outputs.json
+tests/evals/.bench/
+logs/
+
+# --- build output --------------------------------------------------------------
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv*/
+app/LectureLens/.build/
+*.app
+website/node_modules/
+website/build/
+website/.docusaurus/
+.DS_Store

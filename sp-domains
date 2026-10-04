@@ -1,0 +1,33 @@
+#!/bin/zsh
+# Manage the browser-site allowlist used by sp-start.
+#   sp-domains list
+#   sp-domains add <domain>[:subdomains]      e.g. sp-domains add coursera.org:subdomains
+#   sp-domains remove <domain>[:subdomains]
+DIR="${0:A:h}"; F="$DIR/allowed-domains.txt"; touch "$F"
+entries() { grep -vE '^\s*(#|$)' "$F" | sed 's/#.*//; s/[[:space:]]//g' | grep -v '^$'; }
+restart() {
+  if pgrep -f "^/[^ ]*/screenpipe record" >/dev/null; then
+    if [[ "$(cat $HOME/.screenpipe/sp-mode.current 2>/dev/null)" == live ]]; then echo "(live mode — allowlist applies when back in portal mode)"; return; fi
+    "$DIR/sp-stop" --screenpipe-only >/dev/null; "$DIR/sp-start" --mode portal --no-watch
+  else echo "(screenpipe not running — takes effect on next sp-start)"; fi
+}
+normalize() {  # strip scheme, path, leading www. and lowercase; keep optional :subdomains
+  local d="${1:l}" suf=""
+  [[ "$d" == *:subdomains ]] && { suf=":subdomains"; d="${d%:subdomains}"; }
+  d="${d#http://}"; d="${d#https://}"; d="${d%%/*}"; d="${d#www.}"
+  [[ "$d" =~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' ]] || { echo "invalid domain: $1" >&2; return 1; }
+  echo "$d$suf"
+}
+case "$1" in
+  list|"") if [[ -z "$(entries)" ]]; then echo "(empty — browser allowlist off)"; else entries; fi ;;
+  add)    [[ -n "$2" ]] || { echo "usage: sp-domains add <domain>[:subdomains]"; exit 1; }
+          d=$(normalize "$2") || exit 1
+          if entries | grep -qxF "$d"; then echo "already allowed: $d"; exit 0; fi
+          echo "$d" >> "$F"; echo "added: $d"; restart ;;
+  remove) [[ -n "$2" ]] || { echo "usage: sp-domains remove <domain>[:subdomains]"; exit 1; }
+          d=$(normalize "$2") || exit 1
+          entries | grep -qxF "$d" || { echo "not in list: $d"; exit 1; }
+          tmp=$(mktemp); awk -v d="$d" '{ l=$0; sub(/#.*/,"",l); gsub(/[[:space:]]/,"",l); if (l!=d) print $0 }' "$F" > "$tmp" && cat "$tmp" > "$F" && rm -f "$tmp"
+          echo "removed: $d"; restart ;;
+  *) echo "usage: sp-domains list | add <domain>[:subdomains] | remove <domain>[:subdomains]"; exit 1 ;;
+esac

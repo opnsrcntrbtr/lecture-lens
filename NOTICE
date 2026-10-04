@@ -1,0 +1,15 @@
+Lecture Lens
+Copyright 2026 opnsrcntrbtr and the Lecture Lens contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Lecture Lens is an independent project. It is not affiliated with, endorsed by,
+or sponsored by any university, course provider, learning platform, meeting
+software vendor, or by the makers of screenpipe.
+
+Lecture Lens does not include screenpipe. It runs alongside a copy of
+screenpipe that you obtain and license yourself. "screenpipe" is a name of its
+respective owner and is used here only to say what this software works with.
+
+This repository contains no course material. Do not add any: see
+CONTRIBUTING.md and the content guard in tools/content_guard.py.

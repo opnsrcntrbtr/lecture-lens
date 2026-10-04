@@ -1,0 +1,326 @@
+[
+  {
+    "input": "How do learning, data scaling, transparency, and human oversight define AI-native products?",
+    "expected_output": "AI-native products learn from every user interaction, with output quality improving as data volume increases. They also surface uncertainty rather than hiding it and keep humans in the loop for high-stakes decisions.",
+    "context": [
+      "Transcript [00:02:10]: So what makes a product AI-native? It learns from every user interaction, and its output quality improves with data volume. The other two properties matter just as much: uncertainty is surfaced, not hidden, and humans stay in the loop for high-stakes calls.",
+      "Slide 'What Makes a Product AI-Native?': bullets \u2014 Learns from every user interaction; Output quality improves with data volume; Uncertainty is surfaced, not hidden; Humans stay in the loop for high-stakes calls."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How do data volume, uncertainty surfacing, and human oversight define AI-native products?",
+    "expected_output": "AI-native products are defined by output quality that improves with data volume, the surfacing of uncertainty rather than hiding it, and the retention of humans in the loop for high-stakes calls.",
+    "context": [
+      "Transcript [00:02:10]: So what makes a product AI-native? It learns from every user interaction, and its output quality improves with data volume. The other two properties matter just as much: uncertainty is surfaced, not hidden, and humans stay in the loop for high-stakes calls.",
+      "Slide 'What Makes a Product AI-Native?': bullets \u2014 Learns from every user interaction; Output quality improves with data volume; Uncertainty is surfaced, not hidden; Humans stay in the loop for high-stakes calls."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How do AI-native systems surface uncertainty in high-stakes human-in-the-loop decisions?",
+    "expected_output": "AI-native systems surface uncertainty rather than hiding it, ensuring that humans remain in the loop for high-stakes calls.",
+    "context": [
+      "Transcript [00:02:10]: So what makes a product AI-native? It learns from every user interaction, and its output quality improves with data volume. The other two properties matter just as much: uncertainty is surfaced, not hidden, and humans stay in the loop for high-stakes calls.",
+      "Slide 'What Makes a Product AI-Native?': bullets \u2014 Learns from every user interaction; Output quality improves with data volume; Uncertainty is surfaced, not hidden; Humans stay in the loop for high-stakes calls."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "What is the estimated deployment duration for H2 AI decision augmentation?",
+    "expected_output": "The estimated deployment duration for H2 AI decision augmentation is twelve to twenty-four months.",
+    "context": [
+      "Transcript [00:06:40]: We use three horizons to plan AI adoption. Horizon one, automate existing workflows, typically takes six to twelve months. Horizon two, augment decision making, twelve to twenty-four months. Horizon three, create new AI-first offerings, twenty-four to thirty-six months.",
+      "Slide 'Three Horizons of AI Adoption': H1 Automate existing workflows (6-12 months); H2 Augment decision making (12-24 months); H3 Create new AI-first offerings (24-36 months)."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Is H3, creating new AI-first offerings (24-36 months), the final step after H1 and H2?",
+    "expected_output": "Yes, Horizon three is the final step in the three-horizon planning framework, focusing on creating new AI-first offerings over a period of twenty-four to thirty-six months.",
+    "context": [
+      "Transcript [00:06:40]: We use three horizons to plan AI adoption. Horizon one, automate existing workflows, typically takes six to twelve months. Horizon two, augment decision making, twelve to twenty-four months. Horizon three, create new AI-first offerings, twenty-four to thirty-six months.",
+      "Slide 'Three Horizons of AI Adoption': H1 Automate existing workflows (6-12 months); H2 Augment decision making (12-24 months); H3 Create new AI-first offerings (24-36 months)."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "What is the difference in timelines between H1 automation and H2 augmentation as shown in the AI adoption strategy slide?",
+    "expected_output": "Horizon 1 (automate existing workflows) takes six to twelve months, while Horizon 2 (augment decision making) takes twelve to twenty-four months.",
+    "context": [
+      "Transcript [00:06:40]: We use three horizons to plan AI adoption. Horizon one, automate existing workflows, typically takes six to twelve months. Horizon two, augment decision making, twelve to twenty-four months. Horizon three, create new AI-first offerings, twenty-four to thirty-six months.",
+      "Slide 'Three Horizons of AI Adoption': H1 Automate existing workflows (6-12 months); H2 Augment decision making (12-24 months); H3 Create new AI-first offerings (24-36 months)."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Why did the lecture emphasize recall over precision in the high-stakes fraud detection example?",
+    "expected_output": "The lecture emphasized recall because every missed fraud is expensive. In the provided model, recall was the lowest metric at 0.64, compared to a precision of 0.82.",
+    "context": [
+      "Transcript [00:11:05]: On this model, precision is 0.82, recall is 0.64 and F1 is 0.72. Recall is the lowest, which matters for fraud detection because every missed fraud is expensive. For a spam filter you would care more about precision, because losing a real email frustrates users.",
+      "Slide 'Model Evaluation: Precision vs Recall': bar chart \u2014 Precision 0.82, Recall 0.64, F1 0.72."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Given 0.82 precision, 0.64 recall, and 0.72 F1, why is low recall critical for fraud detection?",
+    "expected_output": "Low recall is critical for fraud detection because every missed fraud is expensive. In this model, recall is the lowest metric at 0.64, compared to a precision of 0.82 and an F1 score of 0.72.",
+    "context": [
+      "Transcript [00:11:05]: On this model, precision is 0.82, recall is 0.64 and F1 is 0.72. Recall is the lowest, which matters for fraud detection because every missed fraud is expensive. For a spam filter you would care more about precision, because losing a real email frustrates users.",
+      "Slide 'Model Evaluation: Precision vs Recall': bar chart \u2014 Precision 0.82, Recall 0.64, F1 0.72."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "If recall drops further in this fraud model, how does the F1 score change?",
+    "expected_output": "If recall drops further, the F1 score will decrease because F1 is the harmonic mean of precision and recall. In the current model, recall is the lowest metric at 0.64, which limits the F1 score to 0.72.",
+    "context": [
+      "Transcript [00:11:05]: On this model, precision is 0.82, recall is 0.64 and F1 is 0.72. Recall is the lowest, which matters for fraud detection because every missed fraud is expensive. For a spam filter you would care more about precision, because losing a real email frustrates users.",
+      "Slide 'Model Evaluation: Precision vs Recall': bar chart \u2014 Precision 0.82, Recall 0.64, F1 0.72."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "What is the cost per 1K requests for the Large model tier?",
+    "expected_output": "The cost per 1K requests for the Large model tier is $1.35.",
+    "context": [
+      "Slide 'Cost per 1K Requests by Model Tier': table \u2014 Small: latency 120 ms, cost $0.04, accuracy 78%. Medium: latency 340 ms, cost $0.21, accuracy 86%. Large: latency 910 ms, cost $1.35, accuracy 92%.",
+      "Transcript [00:15:30]: Notice the trade-off. Going from Small to Large improves accuracy by fourteen points but costs more than thirty times as much per thousand requests and is over seven times slower. Most products should route easy requests to the small tier."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How does scaling Small to Large trade 14% accuracy for 33x cost and 7.6x latency?",
+    "expected_output": "Scaling from Small to Large improves accuracy by 14 points (from 78% to 92%), increases cost by over 30 times (from $0.04 to $1.35), and increases latency by over 7 times (from 120 ms to 910 ms).",
+    "context": [
+      "Slide 'Cost per 1K Requests by Model Tier': table \u2014 Small: latency 120 ms, cost $0.04, accuracy 78%. Medium: latency 340 ms, cost $0.21, accuracy 86%. Large: latency 910 ms, cost $1.35, accuracy 92%.",
+      "Transcript [00:15:30]: Notice the trade-off. Going from Small to Large improves accuracy by fourteen points but costs more than thirty times as much per thousand requests and is over seven times slower. Most products should route easy requests to the small tier."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "What are the specific trade-offs between Small and Large model tiers regarding latency, cost, and accuracy?",
+    "expected_output": "Going from the Small to the Large tier improves accuracy by 14 points (from 78% to 92%), but costs more than 30 times as much per 1,000 requests ($0.04 to $1.35) and is over 7 times slower (120 ms to 910 ms).",
+    "context": [
+      "Slide 'Cost per 1K Requests by Model Tier': table \u2014 Small: latency 120 ms, cost $0.04, accuracy 78%. Medium: latency 340 ms, cost $0.21, accuracy 86%. Large: latency 910 ms, cost $1.35, accuracy 92%.",
+      "Transcript [00:15:30]: Notice the trade-off. Going from Small to Large improves accuracy by fourteen points but costs more than thirty times as much per thousand requests and is over seven times slower. Most products should route easy requests to the small tier."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "What was the cost per task on the dashboard where task success rate reflects user value?",
+    "expected_output": "The cost per task on the dashboard was $0.037.",
+    "context": [
+      "Slide 'North-Star Metric Dashboard': Weekly Active Users 48,250; Task Success Rate 91.4%; Cost per Task $0.037; CSAT 4.6 / 5.",
+      "Transcript [00:19:12]: A north-star metric should be tied to user value, not model accuracy. Task success rate is closer to the value users get than any offline metric."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Why is task success rate, not model accuracy, tied to user value per the dashboard?",
+    "expected_output": "Task success rate is tied to user value because it is closer to the value users get than any offline metric. The dashboard reports a Task Success Rate of 91.4%.",
+    "context": [
+      "Slide 'North-Star Metric Dashboard': Weekly Active Users 48,250; Task Success Rate 91.4%; Cost per Task $0.037; CSAT 4.6 / 5.",
+      "Transcript [00:19:12]: A north-star metric should be tied to user value, not model accuracy. Task success rate is closer to the value users get than any offline metric."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Why is task success rate, at 91.4%, tied to user value over model accuracy?",
+    "expected_output": "Task success rate is tied to user value because it is closer to the value users get than any offline metric. The current task success rate is 91.4%.",
+    "context": [
+      "Slide 'North-Star Metric Dashboard': Weekly Active Users 48,250; Task Success Rate 91.4%; Cost per Task $0.037; CSAT 4.6 / 5.",
+      "Transcript [00:19:12]: A north-star metric should be tied to user value, not model accuracy. Task success rate is closer to the value users get than any offline metric."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "What is the p95 latency threshold for online A/B testing in the 'Offline vs Online Evaluation' slide?",
+    "expected_output": "The p95 latency threshold for online A/B testing is under 800 ms.",
+    "context": [
+      "Slide 'Offline vs Online Evaluation': Offline \u2014 held-out test set, F1, AUC-ROC, calibration error (ECE). Online \u2014 A/B test on conversion, guardrail metrics, p95 latency under 800 ms. Human review \u2014 200 sampled outputs per week, rubric of 5 criteria. Drift monitoring \u2014 PSI above 0.2 on any top-10 feature triggers retraining. Shadow mode \u2014 new model runs for 14 days before any traffic shift. Rollback \u2014 automatic if error rate exceeds 1.5% for 10 minutes.",
+      "Transcript [00:23:45]: Offline metrics tell you whether the model is good; online metrics tell you whether the product is good. You need both, plus a rollback rule decided in advance."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "If offline F1 is high but online conversion drops, what does this reveal about model vs. product quality?",
+    "expected_output": "Offline metrics indicate model quality, while online metrics indicate product quality. A high offline F1 with a drop in online conversion reveals that the model is performing well technically, but the product is failing to meet user expectations.",
+    "context": [
+      "Slide 'Offline vs Online Evaluation': Offline \u2014 held-out test set, F1, AUC-ROC, calibration error (ECE). Online \u2014 A/B test on conversion, guardrail metrics, p95 latency under 800 ms. Human review \u2014 200 sampled outputs per week, rubric of 5 criteria. Drift monitoring \u2014 PSI above 0.2 on any top-10 feature triggers retraining. Shadow mode \u2014 new model runs for 14 days before any traffic shift. Rollback \u2014 automatic if error rate exceeds 1.5% for 10 minutes.",
+      "Transcript [00:23:45]: Offline metrics tell you whether the model is good; online metrics tell you whether the product is good. You need both, plus a rollback rule decided in advance."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How many days does the new model run in shadow mode before any traffic shift?",
+    "expected_output": "The new model runs in shadow mode for 14 days before any traffic shift.",
+    "context": [
+      "Slide 'Offline vs Online Evaluation': Offline \u2014 held-out test set, F1, AUC-ROC, calibration error (ECE). Online \u2014 A/B test on conversion, guardrail metrics, p95 latency under 800 ms. Human review \u2014 200 sampled outputs per week, rubric of 5 criteria. Drift monitoring \u2014 PSI above 0.2 on any top-10 feature triggers retraining. Shadow mode \u2014 new model runs for 14 days before any traffic shift. Rollback \u2014 automatic if error rate exceeds 1.5% for 10 minutes.",
+      "Transcript [00:23:45]: Offline metrics tell you whether the model is good; online metrics tell you whether the product is good. You need both, plus a rollback rule decided in advance."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How do I calculate the EV for an AI feature with a 35% success rate, $1.2M value, and $180K cost?",
+    "expected_output": "Calculate the EV by multiplying the 35% success rate by the $1.2M value to get $420K, then subtract the $180K cost to arrive at a final EV of $240K.",
+    "context": [
+      "Slide 'Expected Value of an AI Feature': EV = P(success) x Value - Cost. P(success) = 0.35; Value = $1.2M per year; Cost = $180K; EV = $240K.",
+      "Transcript [00:27:20]: Even with only a thirty-five percent chance of success, the feature is worth building because the expected value is positive: 0.35 times 1.2 million is 420 thousand, minus 180 thousand in cost, leaves 240 thousand."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How does the lecture apply EV logic to low-probability, high-reward AI deployments?",
+    "expected_output": "The lecture demonstrates that a feature with a 35% success probability is worth building because its expected value is positive. Specifically, 0.35 times $1.2M equals $420K, and subtracting the $180K cost results in a net EV of $240K.",
+    "context": [
+      "Slide 'Expected Value of an AI Feature': EV = P(success) x Value - Cost. P(success) = 0.35; Value = $1.2M per year; Cost = $180K; EV = $240K.",
+      "Transcript [00:27:20]: Even with only a thirty-five percent chance of success, the feature is worth building because the expected value is positive: 0.35 times 1.2 million is 420 thousand, minus 180 thousand in cost, leaves 240 thousand."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How is the $240K EV derived from 0.35 probability, $1.2M value, and $180K cost?",
+    "expected_output": "The $240K EV is derived by multiplying the 0.35 probability of success by the $1.2M value to get $420K, then subtracting the $180K cost.",
+    "context": [
+      "Slide 'Expected Value of an AI Feature': EV = P(success) x Value - Cost. P(success) = 0.35; Value = $1.2M per year; Cost = $180K; EV = $240K.",
+      "Transcript [00:27:20]: Even with only a thirty-five percent chance of success, the feature is worth building because the expected value is positive: 0.35 times 1.2 million is 420 thousand, minus 180 thousand in cost, leaves 240 thousand."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "If teams skip problem framing, how does that inherited error impact subsequent ML lifecycle stages?",
+    "expected_output": "Skipping problem framing is the most expensive mistake in the lifecycle because every later stage inherits the wrong objective.",
+    "context": [
+      "Slide 'ML Product Lifecycle': flow \u2014 Problem framing, then Data collection, then Model training, then Evaluation, then Deployment.",
+      "Transcript [00:31:00]: Teams often skip problem framing and jump to data collection. That is the most expensive mistake in the lifecycle, because every later stage inherits the wrong objective."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Why is skipping problem framing costly, given later stages inherit wrong objectives?",
+    "expected_output": "Skipping problem framing is the most expensive mistake in the ML product lifecycle because every later stage inherits the wrong objective.",
+    "context": [
+      "Slide 'ML Product Lifecycle': flow \u2014 Problem framing, then Data collection, then Model training, then Evaluation, then Deployment.",
+      "Transcript [00:31:00]: Teams often skip problem framing and jump to data collection. That is the most expensive mistake in the lifecycle, because every later stage inherits the wrong objective."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "What is the cost difference between skipping problem framing and following proper sequencing in the ML lifecycle?",
+    "expected_output": "The provided context does not specify a numerical cost difference. It states that skipping problem framing is the most expensive mistake in the lifecycle because every later stage inherits the wrong objective.",
+    "context": [
+      "Slide 'ML Product Lifecycle': flow \u2014 Problem framing, then Data collection, then Model training, then Evaluation, then Deployment.",
+      "Transcript [00:31:00]: Teams often skip problem framing and jump to data collection. That is the most expensive mistake in the lifecycle, because every later stage inherits the wrong objective."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Which AI features are Quick Wins on the Impact vs Effort slide?",
+    "expected_output": "The Quick Wins on the Impact vs Effort slide are Smart autocomplete and FAQ chatbot.",
+    "context": [
+      "Slide 'Prioritisation: Impact vs Effort': 2x2 matrix. Quick Wins (high impact, low effort): Smart autocomplete, FAQ chatbot. Big Bets (high impact, high effort): Personalised tutor, Voice assistant. Fill-ins (low impact, low effort): Tag suggestions. Money Pits (low impact, high effort): Custom foundation model.",
+      "Transcript [00:35:40]: Building your own foundation model is the classic money pit for most product teams: very high effort, and rarely more impact than fine-tuning an existing model."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Why is building a custom foundation model considered a money pit for product teams?",
+    "expected_output": "Building a custom foundation model is considered a money pit because it requires very high effort and rarely provides more impact than fine-tuning an existing model.",
+    "context": [
+      "Slide 'Prioritisation: Impact vs Effort': 2x2 matrix. Quick Wins (high impact, low effort): Smart autocomplete, FAQ chatbot. Big Bets (high impact, high effort): Personalised tutor, Voice assistant. Fill-ins (low impact, low effort): Tag suggestions. Money Pits (low impact, high effort): Custom foundation model.",
+      "Transcript [00:35:40]: Building your own foundation model is the classic money pit for most product teams: very high effort, and rarely more impact than fine-tuning an existing model."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "What is the trade-off between effort and impact when choosing a personalised tutor versus a custom foundation model?",
+    "expected_output": "A personalised tutor is a 'Big Bet' with high impact and high effort, whereas a custom foundation model is a 'Money Pit' with low impact and high effort.",
+    "context": [
+      "Slide 'Prioritisation: Impact vs Effort': 2x2 matrix. Quick Wins (high impact, low effort): Smart autocomplete, FAQ chatbot. Big Bets (high impact, high effort): Personalised tutor, Voice assistant. Fill-ins (low impact, low effort): Tag suggestions. Money Pits (low impact, high effort): Custom foundation model.",
+      "Transcript [00:35:40]: Building your own foundation model is the classic money pit for most product teams: very high effort, and rarely more impact than fine-tuning an existing model."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "What are the visit-to-sign-up and activation-to-paid conversion rates shown in the onboarding funnel slide?",
+    "expected_output": "The visit-to-sign-up conversion rate is 24% (losing 76%), and the activation-to-paid conversion rate is approximately 27%.",
+    "context": [
+      "Slide 'Onboarding Funnel': Visited 10,000; Signed up 2,400; Activated 1,150; Paid 310.",
+      "Transcript [00:39:15]: The biggest drop is from visit to sign-up, where we lose seventy-six percent. Activation to paid converts at about twenty-seven percent, so the first fix should be the top of the funnel."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Why fix the 76% visit-to-sign-up drop before the 27% activation-to-paid conversion?",
+    "expected_output": "The 76% drop from visit to sign-up is the biggest loss in the funnel, making it the priority for the first fix over the 27% activation-to-paid conversion.",
+    "context": [
+      "Slide 'Onboarding Funnel': Visited 10,000; Signed up 2,400; Activated 1,150; Paid 310.",
+      "Transcript [00:39:15]: The biggest drop is from visit to sign-up, where we lose seventy-six percent. Activation to paid converts at about twenty-seven percent, so the first fix should be the top of the funnel."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "If visit-to-sign-up loss halved, how many of 10,000 visitors would sign up?",
+    "expected_output": "If the 76% loss is halved to 38%, the sign-up rate becomes 62%. Therefore, 6,200 of the 10,000 visitors would sign up.",
+    "context": [
+      "Slide 'Onboarding Funnel': Visited 10,000; Signed up 2,400; Activated 1,150; Paid 310.",
+      "Transcript [00:39:15]: The biggest drop is from visit to sign-up, where we lose seventy-six percent. Activation to paid converts at about twenty-seven percent, so the first fix should be the top of the funnel."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How does the initial risk identification step differ from the final monitoring step in the Responsible AI Review Cycle?",
+    "expected_output": "The initial step involves identifying risks, while the final monitoring step feeds new risks back into the cycle to ensure it is not a one-time checklist.",
+    "context": [
+      "Slide 'Responsible AI Review Cycle': a loop \u2014 Identify risks, then Measure harms, then Mitigate, then Monitor, which feeds back into Identify risks.",
+      "Transcript [00:43:05]: Responsible AI is not a one-time checklist. Monitoring feeds new risks back into the cycle."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Why is continuous monitoring essential for iterative risk mitigation in Responsible AI frameworks?",
+    "expected_output": "Continuous monitoring is essential because Responsible AI is not a one-time checklist. Monitoring feeds new risks back into the cycle, ensuring the loop of identifying, measuring, mitigating, and monitoring remains iterative.",
+    "context": [
+      "Slide 'Responsible AI Review Cycle': a loop \u2014 Identify risks, then Measure harms, then Mitigate, then Monitor, which feeds back into Identify risks.",
+      "Transcript [00:43:05]: Responsible AI is not a one-time checklist. Monitoring feeds new risks back into the cycle."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How does monitoring feed new risks back into the Responsible AI Review Cycle's start?",
+    "expected_output": "Monitoring feeds new risks back into the cycle by returning to the 'Identify risks' step. This ensures the process is not a one-time checklist but a continuous loop.",
+    "context": [
+      "Slide 'Responsible AI Review Cycle': a loop \u2014 Identify risks, then Measure harms, then Mitigate, then Monitor, which feeds back into Identify risks.",
+      "Transcript [00:43:05]: Responsible AI is not a one-time checklist. Monitoring feeds new risks back into the cycle."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "Who are the direct reports of the Head of AI and what sub-teams do they lead?",
+    "expected_output": "The Head of AI directly leads the Product Manager, ML Engineering, and Data Science. ML Engineering contains MLOps and Inference, while Data Science contains Experimentation.",
+    "context": [
+      "Slide 'AI Product Team Structure': Head of AI leads Product Manager, ML Engineering and Data Science. ML Engineering contains MLOps and Inference. Data Science contains Experimentation.",
+      "Slide 'Roadmap 2027': Jan \u2014 Discovery; Apr \u2014 MVP launch; Jul \u2014 Beta; Oct \u2014 General availability."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "If the 2027 roadmap slips, how would delaying the April MVP launch affect the July Beta?",
+    "expected_output": "The provided context does not specify the dependencies or impact of delaying the April MVP launch on the July Beta.",
+    "context": [
+      "Slide 'AI Product Team Structure': Head of AI leads Product Manager, ML Engineering and Data Science. ML Engineering contains MLOps and Inference. Data Science contains Experimentation.",
+      "Slide 'Roadmap 2027': Jan \u2014 Discovery; Apr \u2014 MVP launch; Jul \u2014 Beta; Oct \u2014 General availability."
+    ],
+    "source_file": null
+  },
+  {
+    "input": "How does the lecture compare MLOps and Inference within ML Engineering against Experimentation in Data Science?",
+    "expected_output": "The lecture does not compare MLOps and Inference against Experimentation; it only states that MLOps and Inference are contained within ML Engineering, while Experimentation is contained within Data Science.",
+    "context": [
+      "Slide 'AI Product Team Structure': Head of AI leads Product Manager, ML Engineering and Data Science. ML Engineering contains MLOps and Inference. Data Science contains Experimentation.",
+      "Slide 'Roadmap 2027': Jan \u2014 Discovery; Apr \u2014 MVP launch; Jul \u2014 Beta; Oct \u2014 General availability."
+    ],
+    "source_file": null
+  }
+]

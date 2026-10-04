@@ -1,0 +1,37 @@
+#!/bin/zsh
+# Which kind of capture blanks DRM video? Runs screenpipe in short phases while
+# you watch a protected lecture video play in Chrome. A notification announces
+# each phase; note whether the picture is visible or black.
+#   PHASES=E diag-drm   run a subset (A-E)
+#
+# screenpipe persists CLI flags into ~/.screenpipe/store.bin and boolean flags
+# can't be switched back off from the CLI, so each phase writes its settings
+# into the store directly and the original store is restored on exit.
+#   diag-drm [seconds-per-phase]   (default 40)
+DIR="${0:A:h}"; set -a; source "$DIR/.env"; set +a
+SECS=${1:-40}; LOG=~/.screenpipe/diag-drm.log; : > $LOG
+STORE=~/.screenpipe/store.bin; cp -p $STORE $STORE.diag-backup
+restore() { "$DIR/sp-stop" >/dev/null 2>&1; cp -p $STORE.diag-backup $STORE; echo "store restored"; }
+trap restore EXIT
+notify() { osascript -e "display notification \"$2\" with title \"DRM test · $1\" sound name \"Glass\"" 2>/dev/null; echo "$(date +%T) $1 — $2"; }
+settings() {  # JSON object merged into store.settings
+  python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["settings"].update(json.loads(sys.argv[2])); json.dump(d,open(p,"w"),indent=2)' $STORE "$1"
+}
+phase() {  # name, description, settings-json
+  "$DIR/sp-stop" >/dev/null 2>&1; sleep 3
+  settings "$3"
+  notify "$1" "$2 — watch the video"
+  echo "=== $1" >> $LOG
+  "$SP_BIN" record --port 3030 --disable-telemetry --retention-days 0 >> $LOG 2>&1 &
+  local pid=$!; sleep $SECS
+  echo "  health: $(curl -s -m 5 --noproxy '*' 127.0.0.1:3030/health | python3 -c 'import json,sys; d=json.load(sys.stdin); print("frames="+str(d.get("frame_status")), "audio="+str(d.get("audio_status")))' 2>/dev/null)"
+  kill $pid 2>/dev/null; wait $pid 2>/dev/null
+}
+PHASES=${PHASES:-ABCD}
+AUDIO_ONLY='"disableVision": true, "disableAudio": false, "audioDevices": ["System Audio (output)"], "useSystemDefaultAudio": false'
+[[ $PHASES == *A* ]] && phase "A · screen capture only" "ScreenCaptureKit screen frames, no audio" '{"disableVision": false, "disableScreenshots": false, "disableAudio": true, "pauseOnDrmContent": false}'
+[[ $PHASES == *B* ]] && phase "B · audio via ScreenCaptureKit" "no screen frames; system audio through ScreenCaptureKit" "{$AUDIO_ONLY, \"experimentalCoreaudioSystemAudio\": false}"
+[[ $PHASES == *C* ]] && phase "C · audio via CoreAudio tap" "no screen frames, no ScreenCaptureKit at all" "{$AUDIO_ONLY, \"experimentalCoreaudioSystemAudio\": true}"
+[[ $PHASES == *D* ]] && phase "D · no screen, no audio" "screenpipe running with screen and audio both off (UI-event taps only)" '{"disableVision": true, "disableAudio": true}'
+[[ $PHASES == *E* ]] && phase "E · text-only screen + audio" "accessibility text, no screen pixels; normal audio" '{"disableVision": false, "disableScreenshots": true, "disableAudio": false, "audioDevices": [], "useSystemDefaultAudio": true, "experimentalCoreaudioSystemAudio": false}'
+notify "done" "screenpipe stopped — tell Claude which phases went black (A, B, C, D)"

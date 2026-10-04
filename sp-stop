@@ -1,0 +1,11 @@
+#!/bin/zsh
+# Stop screenpipe (and the auto-switcher). --screenpipe-only keeps the switcher alive (used when switching modes).
+S="$HOME/.screenpipe"
+if [[ "$1" != "--screenpipe-only" ]]; then pkill -f "^/bin/zsh [^ ]*sp-autoswitch" 2>/dev/null && echo "auto-switch stopped"; fi
+f="$S/sp.pid"; stopped=0
+if [[ -f $f ]] && kill "$(cat $f)" 2>/dev/null; then stopped=1; fi
+pkill -f "^/[^ ]*/screenpipe record" 2>/dev/null && stopped=1
+for i in {1..60}; do pgrep -f "^/[^ ]*/screenpipe record" >/dev/null || break; sleep 0.5; done
+pkill -9 -f "^/[^ ]*/screenpipe record" 2>/dev/null   # still alive after 30s: force
+rm -f "$f" "$S/sp-mode.current"
+(( stopped )) && echo "screenpipe stopped" || echo "screenpipe not running"

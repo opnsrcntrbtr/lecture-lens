@@ -1,0 +1,12 @@
+#!/bin/sh
+# Commit messages are public too. Reuse the guard's term and secret checks on the message file.
+root="$(git rev-parse --show-toplevel)"
+"${GUARD_PYTHON:-python3}" - "$1" "$root" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2] + "/tools")
+import content_guard as g
+findings = g.check_text(open(sys.argv[1]).read(), g.Terms(), "commit message")
+for where, line, msg in findings:
+    print(f"  {where}:{line}  {msg}", file=sys.stderr)
+sys.exit(1 if findings else 0)
+PY

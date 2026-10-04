@@ -1,0 +1,11 @@
+#!/bin/zsh
+# Run lecture_kit.py with a python3 that has the toolkit's deps (Pillow). Apps launched
+# from Finder get a minimal PATH whose first python3 may lack them, so probe the
+# candidates in order. STUDY_PYTHON overrides.
+py="${STUDY_PYTHON:-}"
+if [[ -z $py ]]; then
+  for c in $(whence -ap python3) "$HOME/miniforge3/bin/python3" /opt/homebrew/Caskroom/miniforge/base/bin/python3; do
+    [[ -x $c ]] && "$c" -c 'import PIL' 2>/dev/null && { py=$c; break; }
+  done
+fi
+exec "${py:-python3}" "${0:A:h}/lecture_kit.py" "$@"

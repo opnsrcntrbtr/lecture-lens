@@ -1,0 +1,4 @@
+#!/bin/sh
+# Catch problems before they enter history: scans what is staged.
+root="$(git rev-parse --show-toplevel)"
+exec "${GUARD_PYTHON:-python3}" "$root/tools/content_guard.py" --staged

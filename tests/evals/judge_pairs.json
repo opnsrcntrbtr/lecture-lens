@@ -1,0 +1,88 @@
+{
+  "about": "Hand-labelled claim/context pairs for the judge benchmark. ctx indexes contexts.json. label 1 = the context supports the claim, 0 = it does not. kind says how the claim was made: paraphrase/derived (supported); number, entity, negation, swap, unmentioned (not supported). Paraphrases avoid copying context wording so lexical overlap alone can't solve them.",
+  "pairs": [
+    {"ctx": 0, "label": 1, "kind": "paraphrase", "claim": "An AI-native product gets better as it gathers more data."},
+    {"ctx": 0, "label": 1, "kind": "paraphrase", "claim": "AI-native products keep a person involved when the stakes are high."},
+    {"ctx": 0, "label": 1, "kind": "derived", "claim": "The lecture lists four properties of an AI-native product."},
+    {"ctx": 0, "label": 0, "kind": "negation", "claim": "AI-native products hide their uncertainty from users to build trust."},
+    {"ctx": 0, "label": 0, "kind": "number", "claim": "The lecture lists five properties of an AI-native product."},
+    {"ctx": 0, "label": 0, "kind": "unmentioned", "claim": "AI-native products must be built on a proprietary foundation model."},
+
+    {"ctx": 1, "label": 1, "kind": "paraphrase", "claim": "Augmenting decision making is expected to take one to two years."},
+    {"ctx": 1, "label": 1, "kind": "paraphrase", "claim": "The final horizon is about launching new offerings built around AI."},
+    {"ctx": 1, "label": 1, "kind": "derived", "claim": "Automating existing workflows is the quickest of the three horizons."},
+    {"ctx": 1, "label": 0, "kind": "number", "claim": "Horizon one typically takes twelve to eighteen months."},
+    {"ctx": 1, "label": 0, "kind": "swap", "claim": "Horizon two is about creating new AI-first offerings."},
+    {"ctx": 1, "label": 0, "kind": "unmentioned", "claim": "Most companies never progress beyond horizon one."},
+
+    {"ctx": 2, "label": 1, "kind": "paraphrase", "claim": "Of the three metrics shown, recall has the smallest value."},
+    {"ctx": 2, "label": 1, "kind": "paraphrase", "claim": "A spam filter should favour precision because discarding a genuine email annoys users."},
+    {"ctx": 2, "label": 1, "kind": "derived", "claim": "Precision is 0.18 higher than recall on this model."},
+    {"ctx": 2, "label": 0, "kind": "number", "claim": "The model's recall is 0.82."},
+    {"ctx": 2, "label": 0, "kind": "swap", "claim": "For fraud detection, precision matters more than recall because missed fraud is cheap."},
+    {"ctx": 2, "label": 0, "kind": "unmentioned", "claim": "The model's AUC-ROC is 0.91."},
+
+    {"ctx": 3, "label": 1, "kind": "paraphrase", "claim": "The large tier is the most accurate, at 92 percent."},
+    {"ctx": 3, "label": 1, "kind": "paraphrase", "claim": "Simple requests should usually be sent to the small tier."},
+    {"ctx": 3, "label": 1, "kind": "derived", "claim": "The medium tier costs 21 cents per thousand requests."},
+    {"ctx": 3, "label": 0, "kind": "number", "claim": "The small tier responds in 340 ms."},
+    {"ctx": 3, "label": 0, "kind": "negation", "claim": "Moving from the small to the large tier makes requests faster."},
+    {"ctx": 3, "label": 0, "kind": "unmentioned", "claim": "The large tier runs on dedicated GPUs in a private cloud."},
+
+    {"ctx": 4, "label": 1, "kind": "paraphrase", "claim": "Customer satisfaction on the dashboard is 4.6 out of 5."},
+    {"ctx": 4, "label": 1, "kind": "paraphrase", "claim": "A north-star metric should reflect value to users rather than model accuracy."},
+    {"ctx": 4, "label": 1, "kind": "derived", "claim": "Each task costs a little under four cents."},
+    {"ctx": 4, "label": 0, "kind": "number", "claim": "Weekly active users are 84,250."},
+    {"ctx": 4, "label": 0, "kind": "swap", "claim": "The lecturer recommends model accuracy as the north-star metric."},
+    {"ctx": 4, "label": 0, "kind": "unmentioned", "claim": "Monthly active users grew 12 percent quarter on quarter."},
+
+    {"ctx": 5, "label": 1, "kind": "paraphrase", "claim": "A new model runs in shadow for two weeks before it gets any real traffic."},
+    {"ctx": 5, "label": 1, "kind": "paraphrase", "claim": "Retraining is triggered when PSI goes above 0.2 on one of the top ten features."},
+    {"ctx": 5, "label": 1, "kind": "paraphrase", "claim": "Online metrics show whether the product is good, offline ones whether the model is."},
+    {"ctx": 5, "label": 0, "kind": "number", "claim": "Human reviewers sample 500 outputs every week."},
+    {"ctx": 5, "label": 0, "kind": "number", "claim": "Rollback happens automatically if the error rate exceeds 1.5% for 30 minutes."},
+    {"ctx": 5, "label": 0, "kind": "negation", "claim": "Offline metrics alone are enough to decide whether to ship."},
+
+    {"ctx": 6, "label": 1, "kind": "paraphrase", "claim": "The feature has a 35 percent chance of succeeding."},
+    {"ctx": 6, "label": 1, "kind": "derived", "claim": "The expected value of the feature is $240K."},
+    {"ctx": 6, "label": 1, "kind": "paraphrase", "claim": "The feature is worth building despite a low probability of success, because its expected value is positive."},
+    {"ctx": 6, "label": 0, "kind": "number", "claim": "The feature costs $240K to build."},
+    {"ctx": 6, "label": 0, "kind": "negation", "claim": "The lecturer advises against building the feature because it will probably fail."},
+    {"ctx": 6, "label": 0, "kind": "unmentioned", "claim": "The feature is expected to pay back its cost within six months."},
+
+    {"ctx": 7, "label": 1, "kind": "paraphrase", "claim": "Evaluation comes right before deployment in the lifecycle."},
+    {"ctx": 7, "label": 1, "kind": "paraphrase", "claim": "Skipping problem framing is costly because every later step inherits the wrong goal."},
+    {"ctx": 7, "label": 1, "kind": "derived", "claim": "The lifecycle has five stages."},
+    {"ctx": 7, "label": 0, "kind": "swap", "claim": "Model training comes before data collection in the lifecycle."},
+    {"ctx": 7, "label": 0, "kind": "swap", "claim": "The most expensive mistake is skipping evaluation before deployment."},
+    {"ctx": 7, "label": 0, "kind": "unmentioned", "claim": "Monitoring is the sixth stage of the lifecycle."},
+
+    {"ctx": 8, "label": 1, "kind": "paraphrase", "claim": "An FAQ chatbot is a quick win: high impact for low effort."},
+    {"ctx": 8, "label": 1, "kind": "paraphrase", "claim": "A voice assistant is classed as a big bet."},
+    {"ctx": 8, "label": 1, "kind": "paraphrase", "claim": "Fine-tuning an existing model usually delivers as much impact as building a custom foundation model."},
+    {"ctx": 8, "label": 0, "kind": "swap", "claim": "Tag suggestions are a quick win."},
+    {"ctx": 8, "label": 0, "kind": "swap", "claim": "A personalised tutor is a fill-in: low impact, low effort."},
+    {"ctx": 8, "label": 0, "kind": "unmentioned", "claim": "Smart autocomplete should be shipped in the first quarter."},
+
+    {"ctx": 9, "label": 1, "kind": "paraphrase", "claim": "2,400 of the 10,000 visitors signed up."},
+    {"ctx": 9, "label": 1, "kind": "paraphrase", "claim": "The first fix should be at the top of the funnel."},
+    {"ctx": 9, "label": 1, "kind": "derived", "claim": "More than a thousand users activated."},
+    {"ctx": 9, "label": 0, "kind": "number", "claim": "310 users activated their accounts."},
+    {"ctx": 9, "label": 0, "kind": "swap", "claim": "The biggest drop in the funnel is from activation to paid."},
+    {"ctx": 9, "label": 0, "kind": "unmentioned", "claim": "Paid users churn at 5 percent a month."},
+
+    {"ctx": 10, "label": 1, "kind": "paraphrase", "claim": "Responsible AI review is a continuous loop rather than a one-off checklist."},
+    {"ctx": 10, "label": 1, "kind": "paraphrase", "claim": "Mitigation happens after harms have been measured."},
+    {"ctx": 10, "label": 1, "kind": "paraphrase", "claim": "Monitoring surfaces new risks that restart the cycle."},
+    {"ctx": 10, "label": 0, "kind": "negation", "claim": "Responsible AI review is completed once before launch."},
+    {"ctx": 10, "label": 0, "kind": "swap", "claim": "Mitigation happens before risks are identified."},
+    {"ctx": 10, "label": 0, "kind": "unmentioned", "claim": "An external auditor must approve each cycle."},
+
+    {"ctx": 11, "label": 1, "kind": "paraphrase", "claim": "MLOps sits within the ML Engineering team."},
+    {"ctx": 11, "label": 1, "kind": "paraphrase", "claim": "The MVP is scheduled to launch in April 2027."},
+    {"ctx": 11, "label": 1, "kind": "derived", "claim": "The Product Manager reports to the Head of AI."},
+    {"ctx": 11, "label": 0, "kind": "swap", "claim": "Experimentation is part of ML Engineering."},
+    {"ctx": 11, "label": 0, "kind": "number", "claim": "General availability is planned for July 2027."},
+    {"ctx": 11, "label": 0, "kind": "unmentioned", "claim": "The team plans to hire five more data scientists in 2027."}
+  ]
+}

@@ -1,0 +1,8 @@
+# Ordinary words that happen to contain a blocked word. One per line, lowercase.
+# The guard skips these when it looks for blocked words inside longer words.
+upgrade
+upgraded
+upgrades
+upgrading
+upgradable
+upgradeable

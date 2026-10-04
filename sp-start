@@ -1,0 +1,94 @@
+#!/bin/zsh
+# Start screenpipe with a privacy-first, learning-only capture profile.
+#   sp-start                 start in the pinned mode (sp-mode) or portal, plus the auto-switcher
+#   sp-start --mode live     start in a specific mode (portal | live)
+#   sp-start --fg            run in the foreground (first run / permission prompts)
+#   --no-watch               (internal) don't launch the auto-switcher
+set -e
+DIR="${0:A:h}"; STATE="$HOME/.screenpipe"; mkdir -p "$STATE"
+set -a; source "$DIR/.env"; set +a
+[[ -x "$SP_BIN" ]] || { echo "screenpipe binary not found at $SP_BIN (install screenpipe and set SP_BIN in .env)"; exit 1; }
+
+fg=0; watch=1; mode=""
+while (( $# )); do
+  case "$1" in
+    --fg) fg=1 ;; --no-watch) watch=0 ;;
+    --mode) mode="$2"; shift ;;
+    *) echo "unknown option: $1"; exit 1 ;;
+  esac; shift
+done
+[[ -z "$mode" && -f "$STATE/sp-mode.pin" ]] && mode="$(cat "$STATE/sp-mode.pin")"
+mode="${mode:-portal}"
+[[ "$mode" == (portal|live) ]] || { echo "mode must be portal or live"; exit 1; }
+
+if pgrep -f "^/[^ ]*/screenpipe record" >/dev/null; then
+  echo "screenpipe already running in $(cat "$STATE/sp-mode.current" 2>/dev/null || echo '?') mode (use sp-mode to switch)"; exit 0
+fi
+
+args=(record --port 3030 --disable-telemetry --language english
+      --audio-transcription-engine "${SP_AUDIO_ENGINE:-whisper-large-v3-turbo-quantized}"
+      --use-pii-removal true --ignore-incognito-windows true
+      --disable-keyboard-capture true --disable-clipboard-capture true
+      --retention-days 0
+      --visual-check-interval-ms "${SP_VISUAL_CHECK_MS:-2000}"
+      --visual-change-threshold "${SP_VISUAL_CHANGE_THRESHOLD:-0.12}"
+      --min-capture-interval-ms "${SP_MIN_CAPTURE_MS:-3000}"
+      --idle-capture-interval-ms "${SP_IDLE_CAPTURE_MS:-20000}")
+for a in ${(s:,:)SP_IGNORE}; do args+=(--ignored-windows "$a"); done
+
+if [[ "$mode" == portal ]]; then
+  for a in ${(s:,:)SP_PORTAL_APPS}; do args+=(--included-windows "$a"); done
+  domains=()
+  if [[ -f "$DIR/allowed-domains.txt" ]]; then
+    while IFS= read -r line; do
+      line="${line%%\#*}"; line="${line//[[:space:]]/}"
+      [[ -n "$line" ]] && domains+=("$line")
+    done < "$DIR/allowed-domains.txt"
+  fi
+  for d in ${(s:,:)SP_URL_ALLOW}; do d="${d//[[:space:]]/}"; [[ -n "$d" ]] && domains+=("$d"); done
+  domains=(${(u)domains})
+  for d in $domains; do args+=(--url-allow "$d"); done
+  echo "mode: portal · apps: $SP_PORTAL_APPS · sites: ${(j:, :)domains:-ALL (allowlist empty)}"
+else
+  for a in ${(s:,:)SP_LIVE_APPS} ${(s:,:)SP_LIVE_BROWSER_TITLES}; do args+=(--included-windows "$a"); done
+  echo "mode: live · apps: $SP_LIVE_APPS · browser windows titled: ${SP_LIVE_BROWSER_TITLES#*::}"
+  # screenpipe persists every CLI flag in store.bin. A URL allowlist left over
+  # from portal mode makes the engine skip every non-browser window (Zoom) as
+  # BlockedUrl, so live mode must clear it. Portal mode re-adds it via --url-allow.
+  /usr/bin/python3 - "$HOME/.screenpipe/store.bin" <<'PY' || echo "warn: could not clear persisted URL allowlist"
+import json, os, sys
+p = sys.argv[1]
+if os.path.exists(p):
+    d = json.load(open(p)); st = d.get("settings", d)
+    if st.get("includedUrls"):
+        st["includedUrls"] = []
+        tmp = p + ".tmp"; json.dump(d, open(tmp, "w")); os.replace(tmp, p)
+        print("cleared persisted URL allowlist for live mode")
+PY
+fi
+echo "$mode" > "$STATE/sp-mode.current"
+
+# DRM video pages (e.g. a course portal's protected player): macOS blanks protected video
+# while ScreenCaptureKit captures the screen. While such a page is focused the
+# patched engine releases screen capture entirely and keeps audio. See ADR-004.
+if [[ -n "${SP_DRM_URLS:-}" ]]; then
+  # System audio via a CoreAudio process tap, not ScreenCaptureKit: an SCK session
+  # of any kind (audio included) keeps protected video black during the pause.
+  args+=(--pause-on-drm-content --experimental-coreaudio-system-audio)
+  export SCREENPIPE_DRM_URLS="$SP_DRM_URLS" SCREENPIPE_DRM_KEEP_AUDIO=1
+  echo "DRM pages (screen paused, audio kept): $SP_DRM_URLS"
+fi
+
+# App audio tap (patched engine): capture the browser's own audio, not the mic.
+export SCREENPIPE_AUDIO_TAP_APPS="${SCREENPIPE_AUDIO_TAP_APPS:-}"
+[[ -n "$SCREENPIPE_AUDIO_TAP_APPS" ]] && echo "audio tap: $SCREENPIPE_AUDIO_TAP_APPS (app audio, no microphone)"
+
+if (( fg )); then exec "$SP_BIN" "${args[@]}"; fi
+nohup "$SP_BIN" "${args[@]}" >> "$STATE/sp-start.log" 2>&1 &
+echo $! > "$STATE/sp.pid"
+echo "screenpipe started (pid $(cat $STATE/sp.pid)); logs: ~/.screenpipe/sp-start.log"
+
+if (( watch )) && [[ "${SP_AUTO_SWITCH:-true}" == true ]] && ! pgrep -f "^/bin/zsh [^ ]*sp-autoswitch" >/dev/null; then
+  nohup "$DIR/sp-autoswitch" >> "$STATE/sp-autoswitch.log" 2>&1 &
+  echo "auto-switch on: live mode during Zoom meetings, portal otherwise"
+fi
