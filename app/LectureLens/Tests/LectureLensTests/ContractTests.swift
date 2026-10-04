@@ -63,7 +63,7 @@ import Testing
     #expect(EnvFile(url: url).value("SP_URL_ALLOW") == "a.com, b.com")
 }
 
-@Test func slidesMarkdownParses() throws {
+@MainActor @Test func slidesMarkdownParses() throws {   // SlidesPane is a view: main-actor isolated
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lec-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     try """
