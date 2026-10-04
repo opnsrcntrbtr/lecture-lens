@@ -1,2 +1,2 @@
 pillow>=10
-pytest>=8
+pytest>=9.1.1
