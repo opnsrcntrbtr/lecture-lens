@@ -84,4 +84,4 @@ jobs:
       - run: npm run build
         working-directory: website
         env:
-          DOCS_BASE_URL: /${{ github.event.repository.name }}/
+          DOCS_BASE_URL: /lecture-lens/

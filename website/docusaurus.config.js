@@ -11,7 +11,7 @@ const config = {
   tagline: 'Your lectures, turned into study material on your own Mac',
   favicon: 'img/logo.svg',
   url: process.env.DOCS_URL || `https://${owner}.github.io`,
-  baseUrl: process.env.DOCS_BASE_URL || `/${repo}/`,
+  baseUrl: process.env.DOCS_BASE_URL || '/lecture-lens/',
   organizationName: owner,
   projectName: repo,
   trailingSlash: false,
