@@ -2,10 +2,10 @@
 
 Turn the lectures you attend online into transcripts, slide-linked notes and flashcards, on your own Mac, with local models. Nothing is uploaded.
 
-[![CI](https://github.com/opnsrcntrbtr/screenpipe/actions/workflows/ci.yml/badge.svg)](https://github.com/opnsrcntrbtr/screenpipe/actions/workflows/ci.yml)
+[![CI](https://github.com/opnsrcntrbtr/lecture-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/opnsrcntrbtr/lecture-lens/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Lecture Lens is a study toolkit and a small native macOS app. It reads what [screenpipe](https://github.com/screenpipe/screenpipe) captures while you watch a recorded lecture or sit in a live class, and builds study material from it with a model running on your machine.
+Lecture Lens is a study toolkit and a small native macOS app. It reads what [lecture-lens](https://github.com/lecture-lens/lecture-lens) captures while you watch a recorded lecture or sit in a live class, and builds study material from it with a model running on your machine.
 
 > **Status:** early, single-maintainer, macOS on Apple silicon only. It works for the author's weekly classes; expect rough edges.
 
@@ -23,7 +23,7 @@ Lecture Lens is a study toolkit and a small native macOS app. It reads what [scr
 
 - It does not record copy-protected video. On those pages it keeps audio only.
 - It does not send anything to a cloud service. Evaluation runs with a local judge model.
-- It does not include screenpipe or any course material. You bring both.
+- It does not include lecture-lens or any course material. You bring both.
 
 ## How it fits together
 
@@ -32,20 +32,20 @@ Lecture Lens is a study toolkit and a small native macOS app. It reads what [scr
         │  argv in, JSON out
  toolkit (zsh + Python)            sp-start · sp-mode · lecture · study · tests/evals
         │  HTTP on 127.0.0.1, local files
- screenpipe (you install)  ·  local model server (you install)  ·  your files
+ lecture-lens (you install)  ·  local model server (you install)  ·  your files
 ```
 
 ## Requirements
 
 - macOS 15 or later on Apple silicon; 32 GB of memory or more is realistic for the models.
-- [screenpipe](https://github.com/screenpipe/screenpipe), installed and licensed by you. Read its licence: it is not open source, and Lecture Lens does not change that.
+- [lecture-lens](https://github.com/lecture-lens/lecture-lens), installed and licensed by you. Read its licence: it is not open source, and Lecture Lens does not change that.
 - A local OpenAI-compatible model server with a text model, a vision-capable model and, for evaluation, a second model as judge.
 - Python 3.11+ with Pillow, `ffmpeg`, and Xcode command line tools for the app.
 
 ## Quick start
 
 ```sh
-git clone https://github.com/opnsrcntrbtr/screenpipe.git ~/lecture-lens
+git clone https://github.com/opnsrcntrbtr/lecture-lens.git ~/lecture-lens
 cd ~/lecture-lens
 tools/setup_hooks.sh                 # content guard hooks (required before you commit)
 cp .env.example .env                 # set your model ids and your course portal's host
@@ -96,4 +96,4 @@ cd website && npm ci && npm start
 
 ## Licence and names
 
-Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Lecture Lens is independent and unaffiliated with any university, course provider, platform or the makers of screenpipe. This README is not legal advice.
+Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Lecture Lens is independent and unaffiliated with any university, course provider, platform or the makers of lecture-lens. This README is not legal advice.
