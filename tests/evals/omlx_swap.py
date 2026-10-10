@@ -3,6 +3,7 @@
     python omlx_swap.py judge      # unload generator, load judge
     python omlx_swap.py generator  # unload judge, load generator (restores daily setup)
     python omlx_swap.py status
+    python omlx_swap.py idle [seconds]   # exit 3 if another client is using oMLX
 
 Uses oMLX's local admin API (127.0.0.1 only). Idempotent: loading an already
 loaded model is a no-op.
@@ -65,11 +66,29 @@ def swap(to_load, to_unload, attempts=3):
     print(json.dumps({"loaded": now, "seconds": round(time.time() - t0, 1)}))
 
 
+def idle(seconds=60):
+    """True when no other client is using oMLX: no active or waiting requests and no new
+    completions over `seconds`. An eval swaps models for an hour or more; once, a
+    swap during someone else's work failed their requests (HTTP 507) and errored half of
+    the eval's own metrics (409/507), so it is checked first."""
+    a = _call("GET", "/api/status")
+    time.sleep(seconds)
+    b = _call("GET", "/api/status")
+    busy = b.get("active_requests", 0) or b.get("waiting_requests", 0) or b.get("total_requests", 0) > a.get("total_requests", 0)
+    if busy:
+        print(f"oMLX is in use by another client ({b.get('total_requests', 0) - a.get('total_requests', 0)} requests in {seconds}s, "
+              f"{b.get('active_requests', 0)} active, loaded {b.get('loaded_models')}); not swapping. "
+              "Run again when it is idle, or set EVAL_FORCE=1.", file=sys.stderr)
+    return not busy
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd == "judge":
         swap(JUDGE, GEN)
     elif cmd == "generator":
         swap(GEN, JUDGE)
+    elif cmd == "idle":
+        sys.exit(0 if idle(int(sys.argv[2]) if len(sys.argv) > 2 else 60) else 3)
     else:
         print(json.dumps({"loaded": loaded(), "generator": GEN, "judge": JUDGE}))

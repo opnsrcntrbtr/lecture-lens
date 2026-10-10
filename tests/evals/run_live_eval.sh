@@ -10,6 +10,7 @@ export USE_TF=0 DEEPEVAL_TELEMETRY_OPT_OUT=1 DEEPEVAL_LOCAL_STORE=json PYTHONPAT
 export DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE=${DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE:-1200}
 if [[ "$(cat "$HOME/.screenpipe/sp-mode.current" 2>/dev/null)" == live ]] && pgrep -f "screenpipe record" >/dev/null; then
   echo "capture is running in live mode; not starting an eval"; exit 3; fi
+[[ -n "$EVAL_FORCE" ]] || python omlx_swap.py idle 60 || exit 3   # someone else is using the model server
 TS=$(date +%Y%m%d-%H%M%S); RES="$STUDY/eval/results/$TS-livequestions"; mkdir -p "$RES"
 export DEEPEVAL_RESULTS_FOLDER="$RES"
 python live_questions_dataset.py "$LIVE" --n "${2:-24}" | tee "$RES/dataset.json"

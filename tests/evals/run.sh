@@ -23,6 +23,7 @@ fi
 if [[ "$(cat "$HOME/.screenpipe/sp-mode.current" 2>/dev/null)" == live ]] && pgrep -f "screenpipe record" >/dev/null && [[ -z "$EVAL_FORCE" ]]; then
   echo "capture is running in live mode; not starting an eval (set EVAL_FORCE=1 to override)"; exit 3
 fi
+[[ -n "$EVAL_FORCE" ]] || python omlx_swap.py idle 60 || exit 3   # someone else is using the model server
 TS=$(date +%Y%m%d-%H%M%S); RES="$STUDY/eval/results/$TS-$SUITE"; mkdir -p "$RES"
 export DEEPEVAL_RESULTS_FOLDER="$RES"   # DeepEval writes test_run_<ts>.json here (local only)
 
