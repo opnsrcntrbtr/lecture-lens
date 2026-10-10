@@ -454,24 +454,10 @@ def make_cards(title, source, n=20, say=lambda *a: None):
         "or 'Compare the'; do not mention 'the lecture' in the question.\n"
         'Return ONLY a JSON array: [{"q":"...","a":"...","at":"00:10:00","kind":"why"}].',
         max_tokens=400 + 220 * n, temperature=0.2)
-    cards = dedupe_cards([c for c in _salvage_json_objects(raw) if c.get("q") and c.get("a")])
+    cards = [c for c in _salvage_json_objects(raw) if c.get("q") and c.get("a")]
     if not cards:
         say("  cards: model returned no usable JSON, skipped")
     return cards[:n]
-
-
-def dedupe_cards(cards, threshold=0.6):
-    """Drop a card that asks for what an earlier card already asks for: same question
-    words, or the same answer under a different question (the eval's most common card fault)."""
-    tok = lambda t: set(re.findall(r"[a-z0-9]{3,}", str(t).lower()))
-    sim = lambda a, b: len(a & b) / len(a | b) if a | b else 1.0
-    kept, seen = [], []
-    for c in cards:
-        q, a = tok(c["q"]), tok(c["a"])
-        if any(sim(q, q2) >= threshold or sim(a, a2) >= threshold for q2, a2 in seen):
-            continue
-        kept.append(c); seen.append((q, a))
-    return kept
 
 
 def _split_lines(lines, budget):
