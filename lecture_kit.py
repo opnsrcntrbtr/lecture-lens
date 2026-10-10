@@ -249,7 +249,7 @@ def dhash(path, size=8):
         img = Image.open(path).convert("L").resize((size + 1, size))
     except Exception:
         return None
-    px = list(img.getdata())
+    px = list(img.tobytes())  # mode L: one byte per pixel (getdata is deprecated in Pillow 12)
     bits = 0
     for row in range(size):
         for col in range(size):
@@ -454,10 +454,24 @@ def make_cards(title, source, n=20, say=lambda *a: None):
         "or 'Compare the'; do not mention 'the lecture' in the question.\n"
         'Return ONLY a JSON array: [{"q":"...","a":"...","at":"00:10:00","kind":"why"}].',
         max_tokens=400 + 220 * n, temperature=0.2)
-    cards = [c for c in _salvage_json_objects(raw) if c.get("q") and c.get("a")]
+    cards = dedupe_cards([c for c in _salvage_json_objects(raw) if c.get("q") and c.get("a")])
     if not cards:
         say("  cards: model returned no usable JSON, skipped")
     return cards[:n]
+
+
+def dedupe_cards(cards, threshold=0.6):
+    """Drop a card that asks for what an earlier card already asks for: same question
+    words, or the same answer under a different question (the eval's most common card fault)."""
+    tok = lambda t: set(re.findall(r"[a-z0-9]{3,}", str(t).lower()))
+    sim = lambda a, b: len(a & b) / len(a | b) if a | b else 1.0
+    kept, seen = [], []
+    for c in cards:
+        q, a = tok(c["q"]), tok(c["a"])
+        if any(sim(q, q2) >= threshold or sim(a, a2) >= threshold for q2, a2 in seen):
+            continue
+        kept.append(c); seen.append((q, a))
+    return kept
 
 
 def _split_lines(lines, budget):
@@ -506,6 +520,67 @@ def lecture_title(session, transcript):
     except Exception:
         return t
 
+def _live_dir(session):
+    return LECTURES / "live" / session["start"].astimezone().strftime("%Y%m%d")
+
+
+def live_transcript(session, bucket_s=30, min_coverage=0.6):
+    """The whisper re-transcription live_class.py wrote during the class, grouped into
+    30 s parts shaped like audio_between's rows. None when absent, disabled
+    (STUDY_TRANSCRIPT_SOURCE=screenpipe) or covering less than 60% of the session."""
+    if os.environ.get("STUDY_TRANSCRIPT_SOURCE", "auto") == "screenpipe":
+        return None
+    f = _live_dir(session) / "whisper_segments.jsonl"
+    if not f.exists():
+        return None
+    lo, hi = session["start"] - dt.timedelta(seconds=45), session["end"] + dt.timedelta(minutes=2)
+    out = []
+    for line in f.read_text().splitlines():
+        if not line.strip():
+            continue
+        s = json.loads(line)
+        t = dt.datetime.fromisoformat(s["t"])
+        if not (lo <= t <= hi) or not s["text"].strip():
+            continue
+        if out and (t - out[-1]["ts"]).total_seconds() < bucket_s:
+            out[-1]["text"] += " " + s["text"].strip()
+        else:
+            out.append({"ts": t, "text": s["text"].strip(), "device": "whisper_live"})
+    minutes = max(1, session.get("minutes") or int((session["end"] - session["start"]).total_seconds() // 60))
+    covered = len({o["ts"].replace(second=0, microsecond=0) for o in out})
+    return out if covered >= min_coverage * minutes else None
+
+
+def live_qa_source(session, folder, budget=9000):
+    """Write qa.md from live_class's Q&A threads and follow-ups; return a compact source block."""
+    d = _live_dir(session)
+    if not (d / "qa_threads.json").exists():
+        return ""
+    try:
+        import live_qa
+    except Exception:
+        return ""
+    threads = [t for t in json.loads((d / "qa_threads.json").read_text()) if live_qa.thread_kind(t) != "trivial"]
+    fus = {}
+    if (d / "qa_followups.jsonl").exists():
+        for l in (d / "qa_followups.jsonl").read_text().splitlines():
+            if l.strip():
+                x = json.loads(l); fus.setdefault(x["thread"], []).append(x)
+    fus = live_qa.curate_followups(threads, fus) if hasattr(live_qa, "curate_followups") else fus
+    md = [f"# Class Q&A — {session['title']}", "",
+          "_Attendees are unnamed; staff replies as posted. Follow-ups are local-model drafts, not answers from the class._", ""]
+    for t in threads:
+        md += [f"## {t['time']} · {t['by']} · {live_qa.thread_kind(t)}", "", t["q"], ""]
+        md += [f"> **{a['by']}** ({a['time']}): {a['text']}".replace("\n", "\n> ") for a in t["answers"]] + [""]
+        for f in fus.get(t["id"], []):
+            md += [f"- Follow-up ({f['type']}): {f['q']}", f"  - Draft: {f['answer']}"]
+        md += [""]
+    (folder / "qa.md").write_text("\n".join(md) + "\n")
+    lines = [f"Q ({t['time']}): {t['q'][:300]} | A: " + " / ".join(a["text"][:500] for a in t["answers"])
+             for t in threads if live_qa.thread_kind(t) == "content" and t["answers"]]
+    return ("CLASS Q&A (quoted; attendee questions with staff replies, not the lecturer's words):\n" + "\n".join(lines))[:budget]
+
+
 def build(session, con, describe=True, cards=20, quiet=False):
     def say(*a):
         if not quiet: print(*a, file=sys.stderr)
@@ -516,6 +591,11 @@ def build(session, con, describe=True, cards=20, quiet=False):
     # audio chunks are stamped at their start, up to ~30 s before the first frame/marker
     audio = audio_between(con, session["start"] - dt.timedelta(seconds=45), session["end"] + dt.timedelta(minutes=2),
                           os.environ.get("STUDY_AUDIO_DEVICE") or None)
+    transcript_source = "capture"
+    live = live_transcript(session)
+    if live:
+        say(f"  using the live whisper re-transcription ({len(live)} parts) instead of screenpipe's ({len(audio)})")
+        audio, transcript_source = live, "whisper_live"
     t0 = session["start"]
     transcript_lines = [f"[{hhmmss((a['ts']-t0).total_seconds())}] {a['text']}" for a in audio]
     transcript = "\n".join(transcript_lines)
@@ -575,6 +655,10 @@ def build(session, con, describe=True, cards=20, quiet=False):
     # 3. notes + cards (model, grounded in the two files above)
     slide_src = "SLIDES:\n" + "\n".join(f"[slide {s['n']} @ {s['at']}] {s['description'] or s['screen_text']}"
                                          for s in slides)
+    qa_src = live_qa_source(session, folder)
+    if qa_src:   # class Q&A: attendee questions and staff replies, names already removed
+        slide_src = slide_src + "\n\n" + qa_src
+        say(f"  class Q&A added to the notes source ({qa_src.count(chr(10)) + 1} lines)")
     # A reference transcript merged in by transcript_ref.py (e.g. Zoom's own export) is more
     # complete than ours; notes and cards use it when present. transcript.md stays our own.
     src_lines, merged = transcript_lines, folder / "transcript_merged.md"
@@ -625,13 +709,15 @@ def build(session, con, describe=True, cards=20, quiet=False):
         f"# {session['title']}\n\n{notes}\n\n"
         f"## Concepts\n{links or '_none extracted_'}\n\n"
         f"## Artefacts\n- Transcript: `{folder/'transcript.md'}`\n- Slides: `{folder/'slides.md'}`"
-        f"\n- Flashcards: `{folder/'cards.tsv'}` ({len(card_rows)} cards)\n")
+        f"\n- Flashcards: `{folder/'cards.tsv'}` ({len(card_rows)} cards)"
+        + (f"\n- Class Q&A: `{folder/'qa.md'}`" if (folder / "qa.md").exists() else "") + "\n")
 
     manifest = {"id": session["id"], "title": session["title"],
                 "start": session["start"].isoformat(), "end": session["end"].isoformat(),
                 "minutes": session["minutes"], "frames": len(session["frames"]),
                 "frames_with_image": sum(1 for f in session["frames"] if f.get("snapshot_path") or f.get("video_chunk_id")),
-                "transcript_source": "merged" if merged.exists() else "capture",
+                "transcript_source": "merged" if merged.exists() else transcript_source,
+                "qa_threads": (folder / "qa.md").exists(),
                 "transcript_segments": len(audio), "transcript_parts": len(parts) or 1, "slides": len(slides),
                 "slides_described": sum(1 for s in slides if s["description"]),
                 "cards": len(card_rows), "vl_model": VL_MODEL or None, "llm": study.MODEL,

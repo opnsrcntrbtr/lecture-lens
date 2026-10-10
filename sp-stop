@@ -8,4 +8,7 @@ pkill -f "^/[^ ]*/screenpipe record" 2>/dev/null && stopped=1
 for i in {1..60}; do pgrep -f "^/[^ ]*/screenpipe record" >/dev/null || break; sleep 0.5; done
 pkill -9 -f "^/[^ ]*/screenpipe record" 2>/dev/null   # still alive after 30s: force
 rm -f "$f" "$S/sp-mode.current"
+# the live follower only makes sense while live capture runs
+if pkill -f "/live_class.py run" 2>/dev/null; then echo "live follower stopped"; fi
+rm -f "$S/live_class.pid"
 (( stopped )) && echo "screenpipe stopped" || echo "screenpipe not running"

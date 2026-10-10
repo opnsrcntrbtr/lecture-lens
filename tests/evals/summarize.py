@@ -39,7 +39,9 @@ def main(res_dir):
             score = g(m, "score")
             success = bool(g(m, "success", default=False))
             ok_all &= success
-            b = per_metric.setdefault(key, {"scores": [], "pass": 0, "n": 0, "threshold": g(m, "threshold")})
+            b = per_metric.setdefault(key, {"scores": [], "pass": 0, "n": 0, "errored": 0, "threshold": g(m, "threshold")})
+            if score is None or g(m, "error"):
+                b["errored"] += 1   # no score: a judge call failed, not a failed case
             b["n"] += 1
             b["pass"] += success
             if score is not None:
@@ -51,7 +53,7 @@ def main(res_dir):
         s["n"] += 1
         s["pass"] += ok_all
     metrics = {k: {"mean": round(statistics.mean(v["scores"]), 3) if v["scores"] else None,
-                   "pass": v["pass"], "n": v["n"], "threshold": v["threshold"]} for k, v in sorted(per_metric.items())}
+                   "pass": v["pass"], "n": v["n"], "errored": v["errored"], "threshold": v["threshold"]} for k, v in sorted(per_metric.items())}
     outputs = json.loads((HERE / ".outputs.json").read_text()) if (HERE / ".outputs.json").exists() else {}
     lat = [r.get("latency_s") for r in outputs.get("ask", []) if r.get("latency_s")]
     try:

@@ -48,3 +48,4 @@ website/node_modules/
 website/build/
 website/.docusaurus/
 .DS_Store
+tests/evals/.live_questions.json
