@@ -24,7 +24,7 @@ struct LiveView: View {
         .navigationTitle("Live class")
         .task {
             while !Task.isCancelled {
-                live = LiveData.load()
+                live = await LiveData.load()
                 try? await Task.sleep(for: .seconds(5))
             }
         }
@@ -212,7 +212,7 @@ struct LiveData {
         return f.string(from: d)
     }
 
-    static func load(day: Date = Date()) -> LiveData {
+    static func load(day: Date = Date()) async -> LiveData {
         let f = DateFormatter(); f.dateFormat = "yyyyMMdd"
         var d = LiveData()
         d.folder = Paths.lectures.appendingPathComponent("live/\(f.string(from: day))")

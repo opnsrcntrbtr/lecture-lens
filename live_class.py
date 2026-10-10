@@ -278,8 +278,12 @@ def transcribe(batch: list[tuple[dt.datetime, str]], keep_from: dt.datetime, pro
                         "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)], check=True, timeout=120)
         durs = [duration(DATA / n) for _, n in batch]
         base = Path(td) / "out"
-        cmd = ["taskpolicy", "-b", "nice", "-n", "19", "whisper-cli", "-m", model, "-f", str(wav), "-l", "en",
-               "-t", str(threads), "-oj", "-of", str(base), "-np"]
+        if shutil.which("taskpolicy"):
+            cmd = ["taskpolicy", "-b", "nice", "-n", "19", "whisper-cli", "-m", model, "-f", str(wav), "-l", "en",
+                   "-t", str(threads), "-oj", "-of", str(base), "-np"]
+        else:
+            cmd = ["whisper-cli", "-m", model, "-f", str(wav), "-l", "en",
+                   "-t", str(threads), "-oj", "-of", str(base), "-np"]
         if prompt:
             cmd += ["--prompt", prompt]
         subprocess.run(cmd, check=True, timeout=900, capture_output=True)
@@ -295,7 +299,7 @@ def screen_rows(since: dt.datetime) -> list[dict]:
         b = study.search(start=since, content_type="ocr", limit=100, offset=off)
         rows += b
         off += 100
-        if len(b) < 100 or off > 2000:
+        if len(b) < 100:
             break
     out = []
     for x in rows:
@@ -309,7 +313,13 @@ def screen_rows(since: dt.datetime) -> list[dict]:
 
 def api_transcript(since: dt.datetime, until: dt.datetime) -> str:
     import study
-    rows = study.search(start=since, end=until, content_type="audio", limit=100)
+    rows, off = [], 0
+    while True:
+        b = study.search(start=since, end=until, content_type="audio", limit=100, offset=off)
+        rows += b
+        off += 100
+        if len(b) < 100:
+            break
     rows = [r["content"] for r in rows if "microphone" not in (r["content"].get("device_name") or "").lower()]
     return " ".join((r.get("transcription") or "").strip() for r in sorted(rows, key=lambda r: r["timestamp"]))
 

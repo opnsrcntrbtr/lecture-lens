@@ -91,7 +91,7 @@ echo "screenpipe started (pid $(cat $STATE/sp.pid)); logs: ~/.screenpipe/sp-star
 # Live classes: follow along (re-transcribe, slides, Q&A threads, questions to ask). It only
 # reads what screenpipe saved; it never starts or stops capture. Off with STUDY_LIVE_FOLLOWER=false.
 if [[ "$mode" == live && "${STUDY_LIVE_FOLLOWER:-true}" == true ]] && ! pgrep -f "$DIR/live_class.py run" >/dev/null; then
-  py="$DIR/.venv-eval/bin/python"; [[ -x "$py" ]] || py=python3
+  py="$DIR/.venv/bin/python"; [[ -x "$py" ]] || py=python3
   mkdir -p "$DIR/logs"
   nohup "$py" "$DIR/live_class.py" run --start "$(date +%H:%M)" --until "$(date -v+${STUDY_LIVE_HOURS:-4}H +%H:%M)" \
     --title "${STUDY_LIVE_TITLE:-Live class}" --prompt "${STUDY_LIVE_PROMPT:-}" \

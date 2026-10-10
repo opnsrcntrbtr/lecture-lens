@@ -1,13 +1,18 @@
+import pytest
 import datetime as dt
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-import os
-os.environ["LIVE_SLIDE_MARKER"] = r"UNIT\s*\d+\s*/\s*LESSON\s*\d+"  # this deck's marker (invented)
 import live_class as lc
 
 UTC = dt.timezone.utc
+import re
+
+
+@pytest.fixture(autouse=True)
+def _marker(monkeypatch):
+    monkeypatch.setattr(lc, "SLIDE_MARKER", re.compile(r"UNIT\s*\d+\s*/\s*LESSON\s*\d+", re.I))
 
 
 def T(h, m, s=0):

@@ -21,6 +21,7 @@ PANEL_CHROME = {"switch", "open", "answered", "dismissed", "q&a", "type your que
 YOU = re.compile(r"\s*\(you\)\s*$", re.I)
 # the panel's own controls, read after the last message
 FOOTER = re.compile(r"^(type your question here|who can see your questions|send anonymously|only (the )?hosts? and panelists)", re.I)
+_staff_warned = False
 
 
 def _norm(s: str) -> str:
@@ -117,7 +118,16 @@ def build_threads(snapshots: list[str], known_staff: set[str] | None = None) -> 
     all_entries = [parse_panel(s) for s in snapshots]
     # a configured staff list wins: inference can mistake an attendee's comment for a reply,
     # which would put that attendee's name in the notes
+    global _staff_warned
     staff = set(known_staff) if known_staff else infer_staff([e for es in all_entries for e in es], set())
+    if not known_staff and not _staff_warned:
+        import warnings
+        warnings.warn(
+            "LIVE_QA_STAFF is not set — staff names inferred heuristically and may be wrong. "
+            "Set LIVE_QA_STAFF to a comma-separated list of staff names.",
+            stacklevel=2,
+        )
+        _staff_warned = True
     threads: dict[str, dict] = {}
     order: list[str] = []
     for entries in all_entries:
