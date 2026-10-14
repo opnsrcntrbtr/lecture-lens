@@ -183,7 +183,8 @@ def followup_prompt(title: str, thread: dict, transcript: str, titles: list[str]
            "Write 2 follow-up questions the learner could post under this thread to deepen it: one that pins down the "
            "reply (a criterion, an example, an edge case), one that links it to what the professor taught. Both must be about "
            "this thread's topic. ")
-        + "Each question under 35 words. Each draft answer under 70 words: "
+        + "Ask ONE thing per question (one question mark); use only terms that appear in the quoted thread or transcript, and never "
+          "write 'you mentioned X' unless X is there. Each question under 35 words. Each draft answer under 70 words: "
         "first what the reply or lecture says, then evidence as (S#) only if it truly applies; say 'not covered yet' when unsure.\n"
         'Return ONLY a JSON array: [{"type": "clarify", "q": "...", "answer": "..."}]')
 
@@ -293,3 +294,22 @@ def curate_followups(threads: list[dict], followups: dict[str, list[dict]], per_
         if out:
             kept[t["id"]] = list(reversed(out))
     return kept
+
+
+# ---------------------------------------------------------------- question quality gates
+# From the 14 Oct judge run on 24 live questions: most answerability failures were
+# compound questions ("X and also Y?") and questions that pinned a claim on the lecture
+# that the quoted context does not hold ("you mentioned …").
+ATTRIBUTION = re.compile(r"\b(you (mentioned|said|noted|showed)|the (lecture|professor|slide) (said|mentioned|showed)|as (discussed|mentioned))\b", re.I)
+
+
+def answerable(q: str, max_words: int = 32) -> bool:
+    """One question, short enough to answer in a minute or two."""
+    return q.count("?") <= 1 and len(q.split()) <= max_words and not re.search(r"\?\s*\S.*\b(and|also)\b.*\?", q)
+
+
+def grounded(q: str, context: str, min_shared: int = 2) -> bool:
+    """The question's content words must appear in the quoted context; one that attributes
+    a claim to the lecture needs more overlap."""
+    need = min_shared + (1 if ATTRIBUTION.search(q) else 0)
+    return len(content_words(q) & content_words(context)) >= need

@@ -551,6 +551,28 @@ def live_transcript(session, bucket_s=30, min_coverage=0.6):
     return out if covered >= min_coverage * minutes else None
 
 
+def deck_source(folder, budget=36000, notes_chars=260):
+    """The class's own deck, when one was put in the lecture folder (deck.json from
+    tools/deck_text.py, or a .pptx that is converted here). Slide text is exact, unlike
+    keyframe descriptions; speaker notes are the instructor's, trimmed per slide."""
+    dj = folder / "deck.json"
+    if not dj.exists():
+        decks = sorted(folder.glob("*.pptx"))
+        if not decks:
+            return "", []
+        sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+        import deck_text
+        dj.write_text(json.dumps(deck_text.read_deck(str(decks[0])), ensure_ascii=False, indent=1))
+    deck = json.loads(dj.read_text())
+    lines = []
+    for s in deck:
+        body = re.sub(r"\s+", " ", s["text"]).strip()
+        note = re.sub(r"\s+", " ", s.get("notes", "")).strip()[:notes_chars]
+        lines.append(f"[deck {s['n']}] {s['title']} :: {body}" + (f" || speaker notes: {note}" if note else ""))
+    text = "CLASS DECK (the instructor's own slides, exact text; cite as [deck N]):\n" + "\n".join(lines)
+    return text[:budget], deck
+
+
 def live_qa_source(session, folder, budget=9000):
     """Write qa.md from live_class's Q&A threads and follow-ups; return a compact source block."""
     d = _live_dir(session)
@@ -560,15 +582,31 @@ def live_qa_source(session, folder, budget=9000):
         import live_qa
     except Exception:
         return ""
-    threads = [t for t in json.loads((d / "qa_threads.json").read_text()) if live_qa.thread_kind(t) != "trivial"]
+    live = json.loads((d / "qa_threads.json").read_text())
+    threads = [t for t in live if live_qa.thread_kind(t) != "trivial"]
     fus = {}
     if (d / "qa_followups.jsonl").exists():
         for l in (d / "qa_followups.jsonl").read_text().splitlines():
             if l.strip():
                 x = json.loads(l); fus.setdefault(x["thread"], []).append(x)
     fus = live_qa.curate_followups(threads, fus) if hasattr(live_qa, "curate_followups") else fus
+    # The meeting app's own Q&A export, anonymised by qa_export.py, is complete where the
+    # live capture may have missed a thread: use its threads, keep the live follow-ups.
+    ref = folder / "qa_threads_export.json"
+    if ref.exists():
+        import qa_export
+        by_norm = {qa_export.norm(t["q"]): t["id"] for t in live}
+        exp = []
+        for t in json.loads(ref.read_text()):
+            k = qa_export.norm(t["q"])
+            tid = by_norm.get(k) or next((v for c, v in by_norm.items() if min(len(c), len(k)) >= 12 and (c.startswith(k) or k.startswith(c))), None)
+            exp.append(dict(t, id=tid or live_qa.thread_id({"time": t["time"], "text": t["q"]})))
+        threads = [t for t in exp if live_qa.thread_kind(t) != "trivial"]
+        say_src = "the meeting app's Q&A export"
+    else:
+        say_src = "the live capture"
     md = [f"# Class Q&A — {session['title']}", "",
-          "_Attendees are unnamed; staff replies as posted. Follow-ups are local-model drafts, not answers from the class._", ""]
+          f"_From {say_src}. Attendees are unnamed; staff replies as posted. Follow-ups are local-model drafts, not answers from the class._", ""]
     for t in threads:
         md += [f"## {t['time']} · {t['by']} · {live_qa.thread_kind(t)}", "", t["q"], ""]
         md += [f"> **{a['by']}** ({a['time']}): {a['text']}".replace("\n", "\n> ") for a in t["answers"]] + [""]
@@ -655,6 +693,11 @@ def build(session, con, describe=True, cards=20, quiet=False):
     # 3. notes + cards (model, grounded in the two files above)
     slide_src = "SLIDES:\n" + "\n".join(f"[slide {s['n']} @ {s['at']}] {s['description'] or s['screen_text']}"
                                          for s in slides)
+    deck_src, deck = deck_source(folder)
+    if deck_src:   # the deck replaces keyframe descriptions as the slide source (slides.md stays)
+        slide_src = deck_src + "\n\nKEYFRAME TIMES (when each captured slide was on screen):\n" + "\n".join(
+            f"[slide {s['n']} @ {s['at']}] {(s['description'] or s['screen_text'])[:90]}" for s in slides)
+        say(f"  class deck used as the slide source ({len(deck)} slides)")
     qa_src = live_qa_source(session, folder)
     if qa_src:   # class Q&A: attendee questions and staff replies, names already removed
         slide_src = slide_src + "\n\n" + qa_src
@@ -718,11 +761,19 @@ def build(session, con, describe=True, cards=20, quiet=False):
                 "frames_with_image": sum(1 for f in session["frames"] if f.get("snapshot_path") or f.get("video_chunk_id")),
                 "transcript_source": "merged" if merged.exists() else transcript_source,
                 "qa_threads": (folder / "qa.md").exists(),
+                "deck_slides": len(deck),
                 "transcript_segments": len(audio), "transcript_parts": len(parts) or 1, "slides": len(slides),
                 "slides_described": sum(1 for s in slides if s["description"]),
                 "cards": len(card_rows), "vl_model": VL_MODEL or None, "llm": study.MODEL,
                 "player_box": list(box) if box else None,
                 "built_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    try:   # a module set by hand (or by an earlier build) survives a rebuild
+        old = json.loads((folder / "manifest.json").read_text())
+        for k in ("module", "module_source"):
+            if old.get(k) and not manifest.get(k):
+                manifest[k] = old[k]
+    except Exception:
+        pass
     (folder / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return folder, manifest
 
@@ -780,6 +831,10 @@ def cmd_build(a):
         start = _local_time(a.start)
         end = _local_time(a.end) if a.end else dt.datetime.now(dt.timezone.utc)
         ss = [window_session(con, start, end, a.title)]; a.id = "last"
+        if not ss[0]["frames"] and not audio_between(con, start, end):
+            # "--from 10:04" means today; a past class needs the date (2026-10-10T10:04)
+            sys.exit(f"nothing was captured between {start.astimezone():%d %b %H:%M} and {end.astimezone():%H:%M}; "
+                     "for another day pass ISO times, e.g. --from 2026-01-12T10:00 --to 2026-01-12T11:30")
     else:
         ss = sessions(frames_since(con, parse_since(a.since)))
         if a.title: ss = [{**s, "title": a.title} for s in ss]

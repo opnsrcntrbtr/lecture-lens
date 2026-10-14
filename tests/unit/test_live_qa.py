@@ -112,3 +112,11 @@ def test_undouble_handles_cut_off_copy_and_leaked_next_entry():
     assert q._undouble(x + "\n" + x[:20]) == x
     assert q._undouble(x + "\n" + x + "\nNext question text that leaked") == x
     assert q._undouble("Short reply") == "Short reply"
+
+
+def test_grounded_needs_shared_words_and_more_for_attribution():
+    ctx = "Clay soils drain slowly, so roots of cacti rot when watering is frequent."
+    assert q.grounded("How often should cacti in clay soils be watered?", ctx)
+    assert not q.grounded("What is the best fertiliser brand for orchids?", ctx)
+    assert not q.grounded("You mentioned cacti; what about orchids in sand?", ctx)
+    assert q.answerable("Which soil drains fastest?") and not q.answerable("Which soil? And which pot?")
