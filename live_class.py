@@ -347,12 +347,16 @@ def make_questions(a, frm, to, text, titles, outline, prior, side_text, ev_f, q_
         + "Write 3 questions the learner could type into the Zoom Q&A right now, about what was just taught. Mix types: "
         "clarify (how a framework works, its criteria or cut-offs), challenge (contrast the lecture with an evidence-bank fact), "
         "practical (tools, costs, build-buy-prompt, evals)" + (", capstone (apply the framework to the learner's idea)" if idea else "") + ".\n"
-        "Rules: each question under 40 words and specific to this lecture. Each draft answer under 80 words: first what the lecture said, "
+"Ask ONE thing per question (one question mark). Use only terms that appear in the quoted text above; "
+        "never write 'you mentioned X' unless X is in it. A good question names a criterion, threshold, example or trade-off the lecturer can answer in two minutes.\n"
+                "Rules: each question under 40 words and specific to this lecture. Each draft answer under 80 words: first what the lecture said, "
         "then outside evidence written as (S#) if one truly applies; never use bracketed numbers like [3]. Use only numbers that appear in the transcript or the evidence bank. If unsure, say so.\n"
         'Return ONLY a JSON array: [{"type": "clarify", "q": "...", "answer": "...", "sources": ["S3"]}]',
         max_tokens=900, temperature=0.3)
     prior_q = [q["q"] for q in prior] + [l for l in side_text.split(" / ") if "?" in l]
     qs = parse_questions(raw, {e["id"] for e in bank}, prior_q)
+    ground = " ".join([text, str(titles), earlier])
+    qs = [q for q in qs if live_qa.grounded(q["q"], ground)]   # ungrounded questions failed relevance 3/3 on 14 Oct
     with q_f.open("a") as f:
         f.writelines(json.dumps({"t": to.isoformat(), **q}) + "\n" for q in qs)
     return qs
@@ -407,7 +411,9 @@ def qa_round(a, side_f, seg_f, slide_f, ev_f, qa_f, fu_f, qa_done, ok, now, log)
         hide = live_qa.redactor(snaps, staff or {a["by"] for th in threads for a in th["answers"]})
         keep = 1 if live_qa.thread_kind(t) == "admin" else 2
         fus = []
-        for x in parse_questions(raw, {e["id"] for e in bank}, prior + [t["q"]])[:keep]:
+        ground = " ".join([ctx, t["q"], " ".join(a["text"] for a in t["answers"]), str(titles)])
+        cand = [x for x in parse_questions(raw, {e["id"] for e in bank}, prior + [t["q"]]) if live_qa.grounded(x["q"], ground)]
+        for x in cand[:keep]:
             ans = live_qa.clean_answer(x["answer"])
             fus.append(dict(x, q=hide(x["q"]), answer=hide(ans),
                             sources=live_qa.relevant_sources(x["sources"], x["q"] + " " + ans, bank_by_id)))

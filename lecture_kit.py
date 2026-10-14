@@ -831,6 +831,10 @@ def cmd_build(a):
         start = _local_time(a.start)
         end = _local_time(a.end) if a.end else dt.datetime.now(dt.timezone.utc)
         ss = [window_session(con, start, end, a.title)]; a.id = "last"
+        if not ss[0]["frames"] and not audio_between(con, start, end):
+            # "--from 10:04" means today; a past class needs the date (2026-10-10T10:04)
+            sys.exit(f"nothing was captured between {start.astimezone():%d %b %H:%M} and {end.astimezone():%H:%M}; "
+                     "for another day pass ISO times, e.g. --from 2026-01-12T10:00 --to 2026-01-12T11:30")
     else:
         ss = sessions(frames_since(con, parse_since(a.since)))
         if a.title: ss = [{**s, "title": a.title} for s in ss]
