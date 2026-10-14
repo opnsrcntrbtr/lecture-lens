@@ -78,6 +78,19 @@ This also writes `transcript_eval.json` with the word error rate of the local tr
 
 When the live follower ran, the build uses its whisper transcript instead of the recorder's own speech-to-text (if it covers at least 60% of the class; `STUDY_TRANSCRIPT_SOURCE=screenpipe` turns this off), adds `qa.md` with the curated Q&A, and gives the notes the Q&A as an extra source.
 
+## Add the deck and the Q&A export
+
+Two files from the class make the build better than anything captured on screen:
+
+- **The deck.** Put the `.pptx` in the lecture folder and rebuild. `tools/deck_text.py` reads each slide's text and speaker notes with the standard library only, and writes `deck.json`. The notes and cards then use the deck as their slide source, cited as `[deck N]`, in place of keyframe descriptions; `slides.md` keeps the keyframes. Lines repeated on a quarter or more of the slides (navigation, footers) are dropped.
+- **The Q&A export.** If the meeting app lets you save its Q&A, run:
+
+  ```sh
+  ./lecture qa-import <session> path/to/qa_export.txt
+  ```
+
+  It merges the export's doubled threads and keeps staff (`LIVE_QA_STAFF`) named. Everyone else becomes "Attendee" (or "You"), and their names are removed from message text. It writes `qa_threads_export.json`, which the next build uses for `qa.md`; the live follow-ups stay attached. If the live follower ran, it also writes `qa_capture_eval.json`: how many of the export's questions and staff replies the live capture saw. Keep the raw export out of git, because it names attendees.
+
 ## Check before you trust the notes
 
 - `manifest.json`: is `slides` plausible for the length of the class? A handful of slides for a long class means frame extraction failed; the build log says why.

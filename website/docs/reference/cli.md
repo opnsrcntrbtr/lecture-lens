@@ -25,6 +25,7 @@ All commands live in the repository root and read `.env`.
 | `./lecture build --from HH:MM [--to HH:MM] [--title T]` | Build one session for a time window |
 | `… --no-vision` | Skip slide descriptions |
 | `… --cards N` | Upper bound on cards (default 20) |
+| `./lecture qa-import <id> <export.txt>` | Use a meeting app's Q&A export: anonymise it for the build and score the live capture against it |
 | `./lecture watch [--idle 5]` | Build each session a few minutes after it ends |
 | `./lecture doctor [--quick] [--json]` | Health checks |
 | `./transcript_ref.py <folder> <reference.txt>` | Merge a reference transcript and measure word error rate |
