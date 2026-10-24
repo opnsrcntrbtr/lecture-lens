@@ -434,7 +434,7 @@ def qa_round(a, side_f, seg_f, slide_f, ev_f, qa_f, fu_f, qa_done, ok, now, log)
     for t in pro_todo[-1:]:          # the learner's newest unanswered question first, one per round
         at = qa_time(t["time"], now)
         ctx = " ".join(s["text"] for s in segs if (at - dt.timedelta(minutes=10)).isoformat() <= s["t"] <= at.isoformat()) or transcript
-        raw = study.llm(study.SYS_TUTOR, live_qa.prospective_prompt(a.title, t, ctx, titles, bank_txt), max_tokens=500, temperature=0.2)
+        raw = study.llm(live_qa.SYS_TA, live_qa.prospective_prompt(a.title, t, ctx, titles, bank_txt), max_tokens=600, temperature=0.2)
         d = live_qa.parse_prospective(raw, set(bank_by_id))
         if d:
             with pro_f.open("a") as f:
@@ -654,7 +654,7 @@ def replay(a):
         ctx = " ".join(s["text"] for s in segs if (at - dt.timedelta(minutes=10)).isoformat() <= s["t"] <= at.isoformat())
         titles = [r["title"] for r in rows if r["t"] <= at.isoformat()][-4:]
         q = dict(t, answers=[])
-        raw = study.llm(study.SYS_TUTOR, live_qa.prospective_prompt(a.title, q, ctx, titles, bank_txt), max_tokens=500, temperature=0.2)
+        raw = study.llm(live_qa.SYS_TA, live_qa.prospective_prompt(a.title, q, ctx, titles, bank_txt), max_tokens=600, temperature=0.2)
         p = live_qa.parse_prospective(raw, {e["id"] for e in bank})
         if p:
             with out.open("a") as f:
