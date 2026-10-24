@@ -19,6 +19,7 @@ Design notes
   * Every artefact records where it came from, so a claim in notes.md can be
     traced to a timestamp in the transcript or a keyframe image.
 """
+from __future__ import annotations
 import argparse, datetime as dt, json, os, re, shutil, sqlite3, subprocess, sys, urllib.error, urllib.request, urllib.parse
 from pathlib import Path
 
