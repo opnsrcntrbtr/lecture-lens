@@ -112,3 +112,14 @@ def test_judge_scores_the_answer_not_its_source_list():
     ans = "H2 takes 12-24 months [2].\n\n**Sources used:**\n- [2] Tue 29 Sep 15:31 · audio · learn.example.edu"
     assert go.answer_body(ans) == "H2 takes 12-24 months [2]."
     assert go.answer_body("No list here.") == "No list here."
+
+
+def test_classify_drop_by_content(tmp_path):
+    (tmp_path / "a.md").write_text("# Botany\n## Transcript\n[00:00] Speaker 1: Hello.\n[01:05] Speaker 2: Hi.\n")
+    (tmp_path / "b.txt").write_text("00:00:01.000 --> 00:00:04.000\nSpeaker 1: Hello\n")
+    (tmp_path / "c.txt").write_text("Q&A\n\nAsha (You)      10:20 AM\nWhy?\n\nTA Tom      10:22 AM\nBecause.\n")
+    (tmp_path / "d.pptx").write_bytes(b"PK")
+    (tmp_path / "e.txt").write_text("plain notes, nothing to import")
+    kinds = {f.name: k.classify_drop(f) for f in sorted(tmp_path.iterdir())}
+    assert kinds == {"a.md": "zoom_transcript", "b.txt": "zoom_transcript", "c.txt": "qa_export",
+                     "d.pptx": "deck", "e.txt": None}

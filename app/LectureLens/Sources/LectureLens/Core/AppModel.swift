@@ -246,6 +246,13 @@ final class AppModel {
         }
     }
 
+    /// After class: transcript merge + WER, Q&A import (anonymised), prospective-answer scores.
+    func ingest(_ folderName: String) {
+        jobs.enqueue("Import Zoom files", Paths.tool("lecture"), ["ingest", folderName]) { [weak self] _ in
+            Task { await self?.loadSessions() }
+        }
+    }
+
     // MARK: evals
     struct EvalRun: Identifiable, Sendable {
         let id: String       // folder name

@@ -134,6 +134,9 @@ struct LectureDetail: View {
             if building { ProgressView().controlSize(.small) }
             if session.built {
                 Button("Rebuild", systemImage: "arrow.triangle.2.circlepath") { model.build(session) }.disabled(building)
+                Button("Import Zoom files", systemImage: "tray.and.arrow.down") { model.ingest(folder.lastPathComponent) }
+                    .disabled(building)
+                    .help("Use Zoom's transcript, Q&A export or the deck saved in this class's folder or today's live folder")
                 Button("Show in Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
             }
         }

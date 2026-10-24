@@ -47,3 +47,17 @@ def test_dedupe_cards_drops_same_answer_under_a_new_question():
              {"q": "What is the main reason cacti keep water inside?", "a": "Rain is rare in deserts, so stored water carries them through the dry months."},
              {"q": "How do ferns cope with shade?", "a": "Broad thin fronds catch scattered light."}]
     assert [c["q"][:3] for c in lk.dedupe_cards(cards)] == ["Why", "How"]
+
+
+def test_partial_export_keeps_live_threads_it_lacks(tmp_path, monkeypatch):
+    monkeypatch.setattr(lk, "LECTURES", tmp_path)
+    s = _session(); d = lk._live_dir(s); d.mkdir(parents=True)
+    live = [{"id": "a", "by": "You", "time": "10:01 AM", "q": "Why do cacti store water in their stems", "answers": []},
+            {"id": "b", "by": "Attendee", "time": "10:05 AM", "q": "Do succulents need full sun all day?", "answers": []}]
+    (d / "qa_threads.json").write_text(json.dumps(live))
+    folder = tmp_path / "lec"; folder.mkdir()
+    (folder / "qa_threads_export.json").write_text(json.dumps([{"by": "You", "time": "10:01 AM",
+        "q": "Why do cacti store water in their stems?", "answers": [{"by": "Tutor Tom", "time": "10:02 AM", "text": "Rain is rare."}]}]))
+    lk.live_qa_source(s, folder)
+    md = (folder / "qa.md").read_text()
+    assert "Rain is rare" in md and "full sun" in md and "export and the live capture" in md

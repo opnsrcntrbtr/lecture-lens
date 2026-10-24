@@ -87,6 +87,7 @@ struct LiveView: View {
                             Text("↳ \(a.by): \(a.text)").font(.callout).foregroundStyle(.secondary)
                                 .textSelection(.enabled).padding(.leading, 12)
                         }
+                        if let p = live.prospective[t.id] { prospectiveRow(p, answered: !t.answers.isEmpty) }
                         ForEach(live.followups[t.id] ?? []) { f in followupRow(f) }
                     }
                     Divider()
@@ -94,6 +95,27 @@ struct LiveView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// The answer drafted when the learner posted the question, before staff replied; once
+    /// they reply, how much of the reply the draft anticipated (content-word recall).
+    private func prospectiveRow(_ p: Prospective, answered: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .top) {
+                Text("Prospective answer (\(p.confidence)): ").font(.callout.weight(.semibold))
+                    + Text(p.answer).font(.callout)
+                Spacer()
+                copyButton(p.answer)
+            }
+            if let lf = p.listen_for, !lf.isEmpty, !answered {
+                Text("Listen for: \(lf)").font(.caption).foregroundStyle(.secondary)
+            }
+            if let a = p.agreement {
+                Text("Anticipated \(Int((a * 100).rounded()))% of the reply's key words")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.leading, 12)
     }
 
     private func followupRow(_ f: Drafted) -> some View {
@@ -172,17 +194,21 @@ struct Drafted: Decodable, Identifiable {
     var id: String { t + q }
 }
 struct OutlinePart: Decodable, Identifiable { var from: String; var to: String; var bullets: String; var id: String { from } }
-struct SlideEntry: Decodable { var t: String; var title: String }
+struct SlideEntry: Decodable { var t: String; var title: String; var kind: String? }
+struct Prospective: Decodable {
+    var thread: String; var answer: String; var confidence: String; var listen_for: String?; var agreement: Double?
+}
 struct Evidence: Decodable { var id: String; var title: String }
 struct AskNowFile: Decodable { var top: [Drafted] }
 /// Written by live_class.py: non-trivial thread ids and the curated follow-ups (on-topic, no repeats).
-struct QAViewFile: Decodable { var threads: [String]; var followups: [String: [Drafted]] }
+struct QAViewFile: Decodable { var threads: [String]; var followups: [String: [Drafted]]; var prospective: [String: Prospective]? }
 
 struct LiveData {
     var folder = URL(fileURLWithPath: "/")
     var state: LiveState?
     var threads: [QAThread] = []
     var followups: [String: [Drafted]] = [:]
+    var prospective: [String: Prospective] = [:]
     var questions: [Drafted] = []
     var outline: [OutlinePart] = []
     var slides: [SlideEntry] = []
@@ -197,7 +223,7 @@ struct LiveData {
     /// Slide titles in order, a title repeated back to back shown once.
     var slideTitles: [String] {
         var out: [String] = []
-        for s in slides where out.last?.hasSuffix(s.title) != true { out.append("\(LiveData.clock(s.t))  \(s.title)") }
+        for s in slides where (s.kind ?? "slide") == "slide" && out.last?.hasSuffix(s.title) != true { out.append("\(LiveData.clock(s.t))  \(s.title)") }
         return out
     }
 
@@ -231,6 +257,7 @@ struct LiveData {
             let keep = Set(v.threads)
             d.threads = d.threads.filter { keep.contains($0.id) }
             d.followups = v.followups
+            d.prospective = v.prospective ?? [:]
         } else {
             for f in lines("qa_followups.jsonl", Drafted.self) { d.followups[f.thread ?? "", default: []].append(f) }
         }

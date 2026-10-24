@@ -120,3 +120,27 @@ def test_grounded_needs_shared_words_and_more_for_attribution():
     assert not q.grounded("What is the best fertiliser brand for orchids?", ctx)
     assert not q.grounded("You mentioned cacti; what about orchids in sand?", ctx)
     assert q.answerable("Which soil drains fastest?") and not q.answerable("Which soil? And which pot?")
+
+
+def test_prospective_only_for_learners_unanswered_content_questions():
+    mine = {"id": "a", "by": "You", "time": "10:20 AM", "q": "Should a cactus nursery water seedlings daily in summer?", "answers": []}
+    other = dict(mine, id="b", by="Attendee")
+    thanks = dict(mine, id="c", q="Thanks!")
+    answered = dict(mine, id="d", answers=[{"by": "TA", "time": "10:22 AM", "text": "No."}])
+    assert q.needs_prospective(mine, {})
+    assert not q.needs_prospective(mine, {"a": {}})
+    assert not any(q.needs_prospective(t, {}) for t in (other, thanks, answered))
+
+
+def test_parse_prospective_keeps_known_sources_and_defaults_confidence():
+    raw = 'Sure: {"answer": "Water weekly; daily watering rots roots (S2, S9).", "confidence": "very", "listen_for": "soil type"}'
+    d = q.parse_prospective(raw, {"S1", "S2"})
+    assert d["sources"] == ["S2"] and d["confidence"] == "low" and d["listen_for"] == "soil type"
+    assert q.parse_prospective("no json here", set()) is None
+
+
+def test_agreement_scores_overlap_with_the_reply():
+    a = q.agreement("Water weekly because daily watering rots seedling roots.",
+                          "Weekly watering; daily watering rots the roots of seedlings.")
+    assert a["recall"] > 0.5 and "watering" in a["shared"]
+    assert q.agreement("Completely different", "Seedlings need sun")["recall"] == 0.0
