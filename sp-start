@@ -36,6 +36,19 @@ args=(record --port 3030 --disable-telemetry --language english
       --idle-capture-interval-ms "${SP_IDLE_CAPTURE_MS:-20000}")
 for a in ${(s:,:)SP_IGNORE}; do args+=(--ignored-windows "$a"); done
 
+# Audio sources. Lecture audio comes from System Audio (and the meeting-app tap below).
+# SP_RECORD_MIC=0 records no microphone: System Audio only, no default-device following,
+# and no meeting piggyback (which switches to the meeting app's microphone).
+truthy() { [[ "${1:l}" == (1|true|on|yes) ]] }
+if truthy "${SP_RECORD_MIC:-1}"; then
+  truthy "${SP_MEETING_PIGGYBACK:-1}" || args+=(--experimental-meeting-piggyback false)
+  echo "audio: system audio + default microphone$(truthy "${SP_MEETING_PIGGYBACK:-1}" && echo ' · meeting piggyback on')"
+else
+  args+=(--audio-device "${SP_SYSTEM_AUDIO_DEVICE:-System Audio (output)}" --use-system-default-audio false
+         --experimental-meeting-piggyback false)
+  echo "audio: system audio only (microphone off)"
+fi
+
 if [[ "$mode" == portal ]]; then
   for a in ${(s:,:)SP_PORTAL_APPS}; do args+=(--included-windows "$a"); done
   domains=()

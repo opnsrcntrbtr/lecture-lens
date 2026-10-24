@@ -8,10 +8,13 @@ struct EvalsView: View {
     @State private var selectedRun: String? = nil
     @State private var selectedJob: UUID? = nil
     @State private var feedback: [FeedbackRecord] = []
+    @State private var calibrating = false
+    @State private var calibration = CalibrationSheet()
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                calibrationBox
                 suites
                 if !model.jobs.jobs.isEmpty { jobs }
                 runs
@@ -23,7 +26,32 @@ struct EvalsView: View {
         .toolbar {
             Button("Refresh", systemImage: "arrow.clockwise") { model.loadEvalRuns(); feedback = FeedbackStore.load() }
         }
-        .task { model.loadEvalRuns(); feedback = FeedbackStore.load() }
+        .task { model.loadEvalRuns(); feedback = FeedbackStore.load(); calibration = (try? CalibrationSheet.load()) ?? CalibrationSheet() }
+        .sheet(isPresented: $calibrating, onDismiss: { calibration = (try? CalibrationSheet.load()) ?? CalibrationSheet() }) {
+            CalibrationView()
+        }
+    }
+
+    // MARK: calibration
+    private var calibrationBox: some View {
+        GroupBox("Calibrate the judge") {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "person.fill.checkmark").font(.scaled(.title2)).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(calibration.rows.isEmpty ? "No label sheet yet."
+                         : "\(calibration.labelled) of \(calibration.rows.count) rows labelled")
+                        .font(.scaled(.callout, weight: .semibold))
+                    Text("Judge scores count once you have checked the judge against your own Pass/Fail. About 20 minutes for 50 rows; you can stop any time.")
+                        .font(.scaled(.caption)).foregroundStyle(.secondary)
+                    if !calibration.rows.isEmpty {
+                        ProgressView(value: Double(calibration.labelled), total: Double(calibration.rows.count)).frame(maxWidth: 320)
+                    }
+                }
+                Spacer()
+                Button(calibration.labelled == 0 ? "Start labelling" : "Continue labelling") { calibrating = true }
+                    .buttonStyle(.borderedProminent).disabled(calibration.rows.isEmpty)
+            }.padding(6)
+        }
     }
 
     // MARK: suites
@@ -40,7 +68,7 @@ struct EvalsView: View {
                          detail: "Labelled claim–context pairs scored by the 27B judge and by Laya (System-1). Accuracy, F1, calibration, latency.",
                          symbol: "scalemass", busy: model.jobs.busy) { model.runJudgeBenchmark() }
                 Text("One job runs at a time — they share the GPU and the oMLX model slot. Capture keeps running.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.scaled(.caption)).foregroundStyle(.secondary)
             }.padding(6)
         }
     }
@@ -95,12 +123,12 @@ struct EvalsView: View {
                     Stat(value: "\(corrected.count)", label: "with corrections")
                 }
                 Text("Every 👎 with a correction becomes a golden in the next DeepEval round (feedback/feedback.jsonl), so the suite grows from real mistakes rather than synthetic ones.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.scaled(.caption)).foregroundStyle(.secondary)
                 if !neg.isEmpty {
                     ForEach(neg.suffix(5).reversed(), id: \.id) { r in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(r.target) · \(r.input)").font(.callout.weight(.medium)).lineLimit(1)
-                            if let c = r.correction { Text("→ \(c)").font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                            Text("\(r.target) · \(r.input)").font(.scaled(.callout, weight: .medium)).lineLimit(1)
+                            if let c = r.correction { Text("→ \(c)").font(.scaled(.caption)).foregroundStyle(.secondary).lineLimit(2) }
                         }
                     }
                 }
@@ -117,10 +145,10 @@ private struct SuiteRow: View {
     let action: () -> Void
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol).font(.title2).frame(width: 30).foregroundStyle(.tint)
+            Image(systemName: symbol).font(.scaled(.title2)).frame(width: 30).foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).fontWeight(.medium)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+                Text(detail).font(.scaled(.caption)).foregroundStyle(.secondary)
             }
             Spacer()
             Button(busy ? "Queue" : "Run", action: action)
@@ -132,8 +160,8 @@ private struct Stat: View {
     let value: String, label: String
     var body: some View {
         VStack(alignment: .leading) {
-            Text(value).font(.title2.bold().monospacedDigit())
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.scaled(.title2, weight: .bold).monospacedDigit())
+            Text(label).font(.scaled(.caption)).foregroundStyle(.secondary)
         }
     }
 }
@@ -145,7 +173,7 @@ struct JobLog: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     ForEach(Array(job.log.enumerated()), id: \.offset) { i, l in
-                        Text(l).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading).id(i)
+                        Text(l).font(.scaled(.caption, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading).id(i)
                     }
                 }
                 .textSelection(.enabled).padding(8)
@@ -169,10 +197,10 @@ private struct RunCard: View {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right").frame(width: 12)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title).fontWeight(.medium)
-                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                        Text(subtitle).font(.scaled(.caption)).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if let h = headline { Text(h).font(.callout.monospacedDigit()).foregroundStyle(.secondary) }
+                    if let h = headline { Text(h).font(.scaled(.callout).monospacedDigit()).foregroundStyle(.secondary) }
                 }.contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -217,7 +245,7 @@ private struct RunCard: View {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
                 GridRow {
                     Text("Metric").bold(); Text("Mean").bold(); Text("Pass").bold(); Text("Threshold").bold()
-                }.font(.caption)
+                }.font(.scaled(.caption))
                 ForEach(m.keys.sorted(), id: \.self) { k in
                     let v = m[k]!
                     GridRow {
@@ -226,7 +254,7 @@ private struct RunCard: View {
                         Text(v.n.map { "\(v.pass ?? 0)/\($0)" } ?? "–").monospacedDigit()
                             .foregroundStyle(passColor(v))
                         Text(v.threshold.map { String(format: "%.2f", $0) } ?? "–").monospacedDigit()
-                    }.font(.callout)
+                    }.font(.scaled(.callout))
                 }
             }
         } else if let byc = run.summary?.by_config {
@@ -237,7 +265,7 @@ private struct RunCard: View {
                         GridRow {
                             Text(k).foregroundStyle(.secondary)
                             Text(Self.render(byc[cfg]![k]!)).monospacedDigit()
-                        }.font(.callout)
+                        }.font(.scaled(.callout))
                     }
                 }
             }

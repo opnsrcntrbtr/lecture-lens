@@ -25,7 +25,7 @@ struct LecturesView: View {
                     }
                     Text([Self.day(s.start), s.minutes.map { "\(Int($0)) min" }, s.frames.map { "\($0) frames" }]
                         .compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.scaled(.caption)).foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 3)
                 .tag(s.key)
@@ -71,7 +71,7 @@ func parseISO(_ s: String) -> Date? {
 }
 
 private enum LectureTab: String, CaseIterable, Identifiable {
-    case notes = "Notes", slides = "Slides", transcript = "Transcript", cards = "Cards"
+    case notes = "Notes", slides = "Slides", transcript = "Transcript", qa = "Q&A", cards = "Cards"
     var id: String { rawValue }
 }
 
@@ -80,6 +80,7 @@ struct LectureDetail: View {
     let session: Session
     @State private var tab: LectureTab = .notes
     @State private var rawManifest: [String: Any] = [:]
+    @State private var dropTargeted = false
 
     private var folder: URL {
         session.folder.hasPrefix("/") ? URL(fileURLWithPath: session.folder)
@@ -103,8 +104,14 @@ struct LectureDetail: View {
                                           feedback: ("note", ["lecture": session.key]), model: manifestString("llm"),
                                           promptVersion: "notes-v1")
                 case .slides: SlidesPane(folder: folder, lecture: session.key, model: manifestString("vl_model"))
-                case .transcript: MarkdownFile(url: folder.appendingPathComponent("transcript.md"), feedback: nil,
-                                               model: nil, promptVersion: nil)
+                case .transcript:
+                    // Zoom's own transcript merged in, once imported; else this Mac's capture.
+                    let merged = folder.appendingPathComponent("transcript_merged.md")
+                    MarkdownFile(url: FileManager.default.fileExists(atPath: merged.path) ? merged
+                                      : folder.appendingPathComponent("transcript.md"),
+                                 feedback: nil, model: nil, promptVersion: nil)
+                case .qa: MarkdownFile(url: folder.appendingPathComponent("qa.md"), feedback: nil,
+                                       model: nil, promptVersion: nil)
                 case .cards: CardsPane(url: folder.appendingPathComponent("cards.tsv"), lecture: session.key,
                                        model: manifestString("llm"))
                 }
@@ -118,13 +125,33 @@ struct LectureDetail: View {
                 }
             }
         }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6]))
+                    .background(Color.accentColor.opacity(0.06))
+                    .overlay(Label("Drop Zoom's transcript, Q&A export or the deck", systemImage: "tray.and.arrow.down")
+                        .font(.scaled(.title3, weight: .semibold)))
+                    .padding(8).allowsHitTesting(false)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard session.built else { return false }
+            let fm = FileManager.default
+            var copied = 0
+            for u in urls where ["md", "txt", "vtt", "pptx"].contains(u.pathExtension.lowercased()) {
+                let dest = folder.appendingPathComponent(u.lastPathComponent)
+                if !fm.fileExists(atPath: dest.path), (try? fm.copyItem(at: u, to: dest)) != nil { copied += 1 }
+            }
+            if copied > 0 { model.ingest(folder.lastPathComponent) }
+            return copied > 0
+        } isTargeted: { dropTargeted = $0 }
         .task { loadManifest() }
     }
 
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.displayTitle).font(.title2.bold()).textSelection(.enabled)
+                Text(session.displayTitle).font(.scaled(.title2, weight: .bold)).textSelection(.enabled)
                 Text([LecturesView.day(session.start), session.minutes.map { "\(Int($0)) min" },
                       manifestInt("slides").map { "\($0) slides" }, manifestInt("transcript_segments").map { "\($0) transcript segments" },
                       manifestInt("cards").map { "\($0) cards" }].compactMap { $0 }.joined(separator: " · "))
@@ -132,6 +159,11 @@ struct LectureDetail: View {
             }
             Spacer()
             if building { ProgressView().controlSize(.small) }
+            if model.jobs.jobs.contains(where: { $0.running && $0.title == "Import Zoom files" }) {
+                Label("Importing Zoom files…", systemImage: "tray.and.arrow.down")
+                    .font(.scaled(.callout)).foregroundStyle(.secondary)
+                    .help(model.autoImportNote ?? "Transcript merge and word error rate, Q&A import, answer scores")
+            }
             if session.built {
                 Button("Rebuild", systemImage: "arrow.triangle.2.circlepath") { model.build(session) }.disabled(building)
                 Button("Import Zoom files", systemImage: "tray.and.arrow.down") { model.ingest(folder.lastPathComponent) }
@@ -201,11 +233,11 @@ struct MarkdownText: View {
         if t.isEmpty {
             Spacer().frame(height: 2)
         } else if t.hasPrefix("### ") {
-            Text(inline(String(t.dropFirst(4)))).font(.headline).padding(.top, 4)
+            Text(inline(String(t.dropFirst(4)))).font(.scaled(.headline)).padding(.top, 4)
         } else if t.hasPrefix("## ") {
-            Text(inline(String(t.dropFirst(3)))).font(.title3.bold()).padding(.top, 8)
+            Text(inline(String(t.dropFirst(3)))).font(.scaled(.title3, weight: .bold)).padding(.top, 8)
         } else if t.hasPrefix("# ") {
-            Text(inline(String(t.dropFirst(2)))).font(.title2.bold())
+            Text(inline(String(t.dropFirst(2)))).font(.scaled(.title2, weight: .bold))
         } else if t.hasPrefix("- ") || t.hasPrefix("* ") {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("•").foregroundStyle(.secondary)
@@ -255,7 +287,7 @@ struct SlidesPane: View {
                         HStack(alignment: .top, spacing: 14) {
                             AsyncSlide(url: s.image).frame(width: 320)
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Slide \(s.id) · \(s.at)").font(.headline)
+                                Text("Slide \(s.id) · \(s.at)").font(.scaled(.headline))
                                 MarkdownText(s.text.isEmpty ? "_not described_" : s.text)
                                 Spacer(minLength: 0)
                                 FeedbackBar(target: "slide", ref: ["lecture": lecture, "slide": String(s.id)],

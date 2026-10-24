@@ -48,7 +48,7 @@ struct AskView: View {
             Divider()
             if model.judgeLoaded {
                 Label("An eval has the judge model loaded — asking now would force a model swap. Ask waits until it finishes.",
-                      systemImage: "hourglass").font(.caption).foregroundStyle(.orange).padding(.top, 8)
+                      systemImage: "hourglass").font(.scaled(.caption)).foregroundStyle(.orange).padding(.top, 8)
             }
             HStack(alignment: .bottom, spacing: 10) {
                 TextField("Ask a question about your lectures…", text: $question, axis: .vertical)
@@ -63,7 +63,7 @@ struct AskView: View {
                 Toggle("Think", isOn: $think).toggleStyle(.checkbox)
                     .help("Let the model reason first — slower, sometimes better on multi-part questions")
                 Button(action: ask) {
-                    if busy { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    if busy { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up.circle.fill").font(.scaled(.title2)) }
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.return, modifiers: [.command])
@@ -110,7 +110,7 @@ private struct TurnView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 Image(systemName: "person.crop.circle").foregroundStyle(.secondary)
-                Text(turn.question).font(.headline).textSelection(.enabled)
+                Text(turn.question).font(.scaled(.headline)).textSelection(.enabled)
             }
             if let err = turn.error {
                 Label(err, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
@@ -119,9 +119,9 @@ private struct TurnView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         MarkdownText(answer)
                         HStack(spacing: 10) {
-                            if let m = r.model { Text(m).font(.caption2.monospaced()) }
-                            if let l = r.latency_s { Text(String(format: "%.1fs", l)).font(.caption2) }
-                            Text("last \(turn.window)").font(.caption2)
+                            if let m = r.model { Text(m).font(.scaled(.caption2, design: .monospaced)) }
+                            if let l = r.latency_s { Text(String(format: "%.1fs", l)).font(.scaled(.caption2)) }
+                            Text("last \(turn.window)").font(.scaled(.caption2))
                         }.foregroundStyle(.tertiary)
                         FeedbackBar(target: "answer", ref: ["question": turn.question, "window": turn.window],
                                     input: turn.question, output: answer,
@@ -135,17 +135,17 @@ private struct TurnView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(sources) { s in
                                 HStack(alignment: .top, spacing: 8) {
-                                    Text("[\(s.n)]").font(.caption.monospaced()).foregroundStyle(.secondary)
+                                    Text("[\(s.n)]").font(.scaled(.caption, design: .monospaced)).foregroundStyle(.secondary)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("\(s.src) · \(s.where) · \(Self.time(s.ts))")
-                                            .font(.caption).foregroundStyle(.secondary)
-                                        Text(s.text).font(.callout).lineLimit(4).textSelection(.enabled)
+                                            .font(.scaled(.caption)).foregroundStyle(.secondary)
+                                        Text(s.text).font(.scaled(.callout)).lineLimit(4).textSelection(.enabled)
                                     }
                                 }
                             }
                         }.padding(.top, 6)
                     }
-                    .font(.callout)
+                    .font(.scaled(.callout))
                 }
             } else {
                 HStack { ProgressView().controlSize(.small); Text("Searching captures and answering…").foregroundStyle(.secondary) }
