@@ -23,3 +23,12 @@ def test_balanced_sample_covers_metrics_and_verdicts():
 def test_report_ignores_unlabelled():
     rows = [{"metric": "m", "judge_pass": "1", "human_pass": "1"}, {"metric": "m", "judge_pass": "1", "human_pass": ""}]
     assert cal.report(rows)["labelled"] == 1
+
+
+def test_report_splits_human_and_panel_labels():
+    rows = [{"metric": "m", "judge_pass": "1", "human_pass": "1", "label_source": "human"},
+            {"metric": "m", "judge_pass": "1", "human_pass": "0", "label_source": "panel"},
+            {"metric": "m", "judge_pass": "0", "human_pass": "0", "label_source": "panel-split"}]
+    r = cal.report(rows)
+    assert r["by_source"]["human"]["n"] == 1 and r["by_source"]["panel"]["n"] == 2
+    assert r["by_source"]["panel"]["false_pass_rate"] == 1.0

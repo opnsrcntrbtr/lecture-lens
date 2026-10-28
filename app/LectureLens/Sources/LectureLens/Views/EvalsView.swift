@@ -39,16 +39,16 @@ struct EvalsView: View {
                 Image(systemName: "person.fill.checkmark").font(.scaled(.title2)).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(calibration.rows.isEmpty ? "No label sheet yet."
-                         : "\(calibration.labelled) of \(calibration.rows.count) rows labelled")
+                         : "\(calibration.yours) labelled by you · \(calibration.panel) by the panel · \(calibration.rows.count - calibration.labelled) open")
                         .font(.scaled(.callout, weight: .semibold))
                     Text("Judge scores count once you have checked the judge against your own Pass/Fail. About 20 minutes for 50 rows; you can stop any time.")
                         .font(.scaled(.caption)).foregroundStyle(.secondary)
                     if !calibration.rows.isEmpty {
-                        ProgressView(value: Double(calibration.labelled), total: Double(calibration.rows.count)).frame(maxWidth: 320)
+                        ProgressView(value: Double(calibration.yours), total: Double(calibration.rows.count)).frame(maxWidth: 320)
                     }
                 }
                 Spacer()
-                Button(calibration.labelled == 0 ? "Start labelling" : "Continue labelling") { calibrating = true }
+                Button(calibration.labelled == 0 ? "Start labelling" : calibration.panel > 0 ? "Review panel labels" : "Continue labelling") { calibrating = true }
                     .buttonStyle(.borderedProminent).disabled(calibration.rows.isEmpty)
             }.padding(6)
         }

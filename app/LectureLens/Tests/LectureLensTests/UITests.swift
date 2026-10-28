@@ -20,3 +20,13 @@ import Testing
     #expect(TextScale.next(2.0) == 2.0)
     #expect(TextScale.base(.body) == 13)
 }
+
+@Test func panelLabelsAreNotYours() {
+    var mine = CalibrationRow(cells: ["human_pass": "1"])                       // older sheets have no label_source
+    let panel = CalibrationRow(cells: ["human_pass": "0", "label_source": "panel"])
+    #expect(mine.yours && !panel.yours)
+    mine.source = "panel-split"
+    #expect(!mine.yours)
+    let sheet = CalibrationSheet(header: [], rows: [mine, panel, CalibrationRow(cells: [:])])
+    #expect(sheet.yours == 0 && sheet.panel == 2 && sheet.labelled == 2)
+}

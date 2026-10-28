@@ -41,8 +41,8 @@ struct CalibrationView: View {
             Spacer()
             if !sheet.rows.isEmpty {
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text("\(sheet.labelled) of \(sheet.rows.count) labelled").monospacedDigit()
-                    ProgressView(value: Double(sheet.labelled), total: Double(sheet.rows.count)).frame(width: 180)
+                    Text("\(sheet.yours) yours · \(sheet.panel) panel · \(sheet.rows.count - sheet.labelled) open").monospacedDigit()
+                    ProgressView(value: Double(sheet.yours), total: Double(sheet.rows.count)).frame(width: 180)
                 }
             }
             Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -50,7 +50,7 @@ struct CalibrationView: View {
     }
 
     private func card(_ r: CalibrationRow) -> some View {
-        let labelled = r.human == "0" || r.human == "1"
+        let labelled = r.yours
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(r.metric).font(.scaled(.headline))
@@ -75,6 +75,21 @@ struct CalibrationView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 340)
+            if !r.yours && ["0", "1"].contains(r.human) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: r.source == "panel" ? "person.2" : "person.2.slash").foregroundStyle(.purple)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Panel label: \(r.human == "1" ? "pass" : "fail")"
+                             + (r.source == "panel" ? " · both jurors agreed" : " · jurors split, Claude decided")
+                             + " (Claude \(r.panelClaude == "1" ? "pass" : "fail"), local \(r.panelLocal == "1" ? "pass" : r.panelLocal == "0" ? "fail" : "–"))")
+                            .font(.scaled(.callout, weight: .semibold))
+                        if !r.note.isEmpty { Text(r.note).foregroundStyle(.secondary).textSelection(.enabled) }
+                        Text("Click Pass or Fail to make it your own label; the judge's verdict then appears.")
+                            .font(.scaled(.caption)).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(10).background(Color.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            }
             HStack(spacing: 10) {
                 Button { label("1") } label: { Label("Pass", systemImage: "checkmark.circle") }
                     .keyboardShortcut(.upArrow, modifiers: .command).help("Pass (⌘↑)")
@@ -91,7 +106,7 @@ struct CalibrationView: View {
                     .keyboardShortcut(.leftArrow, modifiers: .command).disabled(i == 0).help("Previous (⌘←)")
                 Button { go(1) } label: { Image(systemName: "chevron.right") }
                     .keyboardShortcut(.rightArrow, modifiers: .command).disabled(i >= sheet.rows.count - 1).help("Next (⌘→)")
-                Button("Next unlabelled") { nextUnlabelled() }.disabled(sheet.labelled == sheet.rows.count)
+                Button("Next not yours") { nextUnlabelled() }.disabled(sheet.yours == sheet.rows.count)
             }
             if labelled {
                 let agree = r.human == r.judgePass
@@ -126,6 +141,8 @@ struct CalibrationView: View {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
                 GridRow { Text("Metric").bold(); Text("n").bold(); Text("Agreement").bold(); Text("Kappa").bold(); Text("False pass").bold() }
                 row("Overall", r.overall)
+                if let h = r.by_source?["human"], h.n > 0 { row("Your labels", h) }
+                if let p = r.by_source?["panel"], p.n > 0 { row("Panel labels", p) }
                 ForEach(r.by_metric.keys.sorted(), id: \.self) { k in row(k, r.by_metric[k]!) }
             }
             .monospacedDigit().padding(6)
@@ -151,6 +168,7 @@ struct CalibrationView: View {
 
     private func label(_ v: String) {
         sheet.rows[i].human = v
+        sheet.rows[i].source = "human"
         save()
     }
 
@@ -163,7 +181,10 @@ struct CalibrationView: View {
     private func nextUnlabelled() {
         guard !sheet.rows.isEmpty else { return }
         let order = Array(i..<sheet.rows.count) + Array(0..<i)
-        if let j = order.first(where: { !["0", "1"].contains(sheet.rows[$0].human) }) { i = j; showContext = false }
+        // open rows first, then panel rows to review
+        if let j = order.first(where: { !["0", "1"].contains(sheet.rows[$0].human) }) ?? order.first(where: { !sheet.rows[$0].yours }) {
+            i = j; showContext = false
+        }
     }
 
     private func runReport() async {
@@ -179,6 +200,7 @@ struct CalibrationReport: Decodable {
     var labelled: Int
     var overall: Stats
     var by_metric: [String: Stats]
+    var by_source: [String: Stats]?
 }
 
 struct CalibrationRow {
@@ -193,6 +215,12 @@ struct CalibrationRow {
     var judgePass: String { cells["judge_pass"] ?? "" }
     var judgeReason: String { cells["judge_reason"] ?? "" }
     var human: String { get { cells["human_pass"] ?? "" } set { cells["human_pass"] = newValue } }
+    /// human = your own label; panel / panel-split = the adversarial panel's (tests/evals/panel_label.py).
+    var source: String { get { (cells["label_source"] ?? "").isEmpty ? "human" : cells["label_source"]! }
+                         set { cells["label_source"] = newValue } }
+    var yours: Bool { (human == "0" || human == "1") && source == "human" }
+    var panelClaude: String { cells["panel_claude"] ?? "" }
+    var panelLocal: String { cells["panel_local"] ?? "" }
     var note: String { get { cells["note"] ?? "" } set { cells["note"] = newValue } }
 }
 
@@ -202,6 +230,8 @@ struct CalibrationSheet {
     var header: [String] = []
     var rows: [CalibrationRow] = []
     var labelled: Int { rows.filter { ["0", "1"].contains($0.human) }.count }
+    var yours: Int { rows.filter(\.yours).count }
+    var panel: Int { rows.filter { ["0", "1"].contains($0.human) && $0.source != "human" }.count }
 
     static func load() throws -> CalibrationSheet {
         guard FileManager.default.fileExists(atPath: url.path) else { return CalibrationSheet() }

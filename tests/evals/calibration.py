@@ -26,7 +26,7 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 FIELDS = ["id", "run", "metric", "input", "output", "expected", "context", "judge_score", "judge_pass", "judge_reason",
-          "human_pass", "note"]
+          "human_pass", "note", "label_source", "panel_claude", "panel_local"]
 
 
 def g(d, *keys, default=None):
@@ -87,12 +87,19 @@ def summary(pairs: list[tuple[int, int]]) -> dict:
 
 
 def report(rows: list[dict]) -> dict:
+    """Judge vs reference labels. A reference label is the learner's own (label_source human or empty)
+    or an adversarial panel's (panel, panel-split); the split keeps the two apart, because only the
+    learner's labels calibrate the judge against a person."""
     lab = [r for r in rows if str(r.get("human_pass", "")).strip() in ("0", "1")]
+    src = lambda r: "human" if (r.get("label_source") or "human") == "human" else "panel"
     by = defaultdict(list)
     for r in lab:
         by[r["metric"]].append((int(r["judge_pass"]), int(r["human_pass"])))
+    pairs = lambda f: [(int(r["judge_pass"]), int(r["human_pass"])) for r in lab if f(r)]
     return {"labelled": len(lab), "of": len(rows), "overall": summary([p for v in by.values() for p in v]),
-            "by_metric": {m: summary(v) for m, v in sorted(by.items())}}
+            "by_metric": {m: summary(v) for m, v in sorted(by.items())},
+            "by_source": {"human": summary(pairs(lambda r: src(r) == "human")),
+                          "panel": summary(pairs(lambda r: src(r) == "panel"))}}
 
 
 def main():
@@ -111,7 +118,8 @@ def main():
         pick = balanced(rows, a.n)
         for x in pick:
             if x["id"] in old:
-                x["human_pass"], x["note"] = old[x["id"]]["human_pass"], old[x["id"]]["note"]
+                for k in ("human_pass", "note", "label_source", "panel_claude", "panel_local"):
+                    x[k] = old[x["id"]].get(k, "")
         with out.open("w", newline="") as f:
             w = csv.DictWriter(f, FIELDS); w.writeheader(); w.writerows(pick)
         print(json.dumps({"rows": len(pick), "from": len(rows), "file": str(out)}))
