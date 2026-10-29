@@ -262,10 +262,19 @@ final class AppModel {
         ingest(p.lecture.lastPathComponent)
     }
 
+    /// After class: judge the drafted questions and follow-ups (prunes the Live tab and qa.md).
+    /// Skipped while capture runs; the script also waits for oMLX to be idle and resumes if stopped.
+    func scoreLiveIfNeeded(_ folderName: String) {
+        let day = String(folderName.prefix(8))
+        let live = Paths.lectures.appendingPathComponent("live/\(day)")
+        guard !mode.running, FileManager.default.fileExists(atPath: live.appendingPathComponent("questions.jsonl").path) else { return }
+        jobs.enqueue("Judge live drafts (~1–2 h)", Paths.study.appendingPathComponent("tests/evals/run_live_scores.sh"), [live.path]) { _ in }
+    }
+
     /// New holdout rows (added by ingest) are judged with the old and candidate rules, majority of 3,
     /// about an hour on the judge model. Skipped while capture runs; the script also waits for oMLX to be idle.
     func scoreHoldoutIfNeeded() {
-        guard !mode.running, !jobs.busy,
+        guard !mode.running,
               let sheet = try? CalibrationSheet.load("holdout.csv"),
               sheet.rows.contains(where: { ($0.cells["judge_v1x3_pass"] ?? "").isEmpty }) else { return }
         jobs.enqueue("Holdout scoring (judge, ~1 h)", Paths.study.appendingPathComponent("tests/evals/run_holdout_check.sh"), []) { _ in }
@@ -275,6 +284,7 @@ final class AppModel {
     func ingest(_ folderName: String) {
         jobs.enqueue("Import Zoom files", Paths.tool("lecture"), ["ingest", folderName]) { [weak self] _ in
             Task { await self?.loadSessions() }
+            self?.scoreLiveIfNeeded(folderName)
             self?.scoreHoldoutIfNeeded()
         }
     }

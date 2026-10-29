@@ -41,6 +41,9 @@ DATA = Path(os.path.expanduser(os.environ.get("SCREENPIPE_DATA", "~/.screenpipe/
 LECTURES = Path(os.path.expanduser(os.environ.get("STUDY_LECTURE_DIR", str(HERE / "lectures"))))
 VAULT = Path(os.path.expanduser(os.environ.get("STUDY_VAULT", "~/vaults/ai-product-course")))
 AUDIO_DEVICE = os.environ.get("LIVE_AUDIO_DEVICE", "System Audio (output)")
+# Backup: the microphone fills stretches of 60 s or more with no system audio, marked "(mic)".
+# "" = the first input device found; "off" = never.
+MIC_DEVICE = os.environ.get("LIVE_MIC_DEVICE", "")
 LIVE_APP = os.environ.get("LIVE_APP", "zoom").lower()
 CLASS_WINDOWS = {"zoom webinar", "zoom meeting", "zoom", ""}
 SIDE_WINDOWS = {"q&a", "webinar chat", "meeting chat", "chat"}
@@ -79,6 +82,25 @@ def finished_files(names: list[str], device: str, start: dt.datetime, now: dt.da
         if t and t >= start - dt.timedelta(seconds=CHUNK_S) and t + dt.timedelta(seconds=CHUNK_S + grace_s) <= now:
             out.append((t, n))
     return sorted(out)
+
+
+def mic_device(names: list[str]) -> str | None:
+    if MIC_DEVICE.lower() == "off":
+        return None
+    if MIC_DEVICE:
+        return MIC_DEVICE
+    found = sorted({n.rsplit("_", 2)[0] for n in names if "(input)_" in n})
+    return found[0] if found else None
+
+
+def backup_files(names: list[str], start: dt.datetime, now: dt.datetime, done: set) -> list[tuple[dt.datetime, str]]:
+    """Microphone chunks where System Audio recorded nothing for 60 s or more (see transcript_clean.gap_fill)."""
+    mic = mic_device(names)
+    if not mic:
+        return []
+    primary = [t for t, _ in finished_files(names, AUDIO_DEVICE, start, now)]
+    cand = [(t, n) for t, n in finished_files(names, mic, start, now) if n not in done]
+    return [(t, n) for t, n in transcript_clean.gap_fill(primary, cand)]
 
 
 def batches(files: list[tuple[dt.datetime, str]], size: int = 10, gap_s: float = 45.0) -> list[list[tuple[dt.datetime, str]]]:
@@ -542,6 +564,17 @@ def run(a):
                         if not audio_ok(health()):
                             log("audio health dipped; pausing whisper this round")
                             break
+                    # microphone backup for stretches with no system audio
+                    mics = backup_files(os.listdir(DATA), start, now, done)
+                    for b in batches(mics):
+                        segs = [dict(s, text="(mic) " + s["text"]) for s in transcribe(b, b[0][0], prompt, a.threads)]
+                        kept, _ = transcript_clean.clean_segments(load(seg_f)[-40:] + segs, prompt)
+                        new_keys = {(s["t"], s["text"]) for s in segs}
+                        segs = [s for s in kept if (s["t"], s["text"]) in new_keys]
+                        with seg_f.open("a") as f:
+                            f.writelines(json.dumps(s) + "\n" for s in segs)
+                        done.update(n for _, n in b)
+                        log(f"mic backup {len(b)} files -> {len(segs)} segments (no system audio there)")
                 except Exception as e:
                     log("whisper error", e)
             else:

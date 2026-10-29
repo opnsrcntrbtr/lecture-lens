@@ -96,7 +96,7 @@ struct CaptureView: View {
                 Text("macOS grants recording to the app that launches screenpipe. Start capture from **this app**, then allow **Lecture Lens** under:")
                     .font(.scaled(.callout))
                 Label("Screen & System Audio Recording", systemImage: "rectangle.dashed.badge.record")
-                Label("Microphone (used only when Settings > Record my microphone is on)", systemImage: "mic")
+                Label("Microphone (backup: fills stretches where System Audio recorded nothing)", systemImage: "mic")
                 Label("Accessibility (on-screen text)", systemImage: "accessibility")
                 HStack {
                     Button("Open Privacy & Security", systemImage: "lock.shield") { model.openPrivacySettings() }

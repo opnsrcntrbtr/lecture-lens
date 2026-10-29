@@ -9,6 +9,8 @@ struct LiveView: View {
     @State private var live = LiveData()
     @State private var copied: String?
     @State private var qaFilter: QAFilter = .all
+    @State private var showPruned = false
+    private func visible(_ q: String) -> Bool { showPruned || !live.pruned.contains(q) }
     @State private var qaSearch = ""
 
     enum QAFilter: String, CaseIterable, Identifiable {
@@ -68,6 +70,10 @@ struct LiveView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                if !live.pruned.isEmpty {
+                    Toggle("Show \(live.pruned.count) pruned", isOn: $showPruned).toggleStyle(.checkbox)
+                        .help("Drafts the post-class judge failed on relevance or answerability")
+                }
                 Button("Open folder") { NSWorkspace.shared.open(live.folder) }.disabled(live.state == nil)
             }
             .font(.scaled(.callout))
@@ -79,7 +85,7 @@ struct LiveView: View {
         GroupBox("Ask now: top 3 for what is being taught") {
             VStack(alignment: .leading, spacing: 10) {
                 if live.askNow.isEmpty { Text("Ranked every 5 minutes once questions exist.").foregroundStyle(.secondary) }
-                ForEach(Array(live.askNow.enumerated()), id: \.offset) { i, c in
+                ForEach(Array(live.askNow.filter { visible($0.q) }.enumerated()), id: \.offset) { i, c in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(alignment: .top) {
                             Text("\(i + 1). ").font(.scaled(.callout, weight: .bold)) + Text(c.q).font(.scaled(.callout, weight: .semibold))
@@ -124,7 +130,7 @@ struct LiveView: View {
                                 .textSelection(.enabled).padding(.leading, 12)
                         }
                         if let p = live.prospective[t.id] { prospectiveRow(p, answered: !t.answers.isEmpty) }
-                        ForEach(live.followups[t.id] ?? []) { f in followupRow(f) }
+                        ForEach((live.followups[t.id] ?? []).filter { visible($0.q) }) { f in followupRow(f) }
                     }
                     .padding(t.by == "You" ? 10 : 0)
                     .background(t.by == "You" ? Color.accentColor.opacity(0.08) : .clear,
@@ -168,8 +174,10 @@ struct LiveView: View {
             }
             Text("Draft: \(f.answer)\(live.sourceTitles(f.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
                 .textSelection(.enabled)
+            judged(f.q)
         }
         .padding(.leading, 12)
+        .opacity(live.pruned.contains(f.q) ? 0.5 : 1)
     }
 
     // MARK: questions to ask
@@ -177,7 +185,7 @@ struct LiveView: View {
         GroupBox("Questions to ask (every 10 minutes)") {
             VStack(alignment: .leading, spacing: 10) {
                 if live.questions.isEmpty { Text("First questions after 10 minutes of class.").foregroundStyle(.secondary) }
-                ForEach(live.questions.reversed().prefix(9)) { q in
+                ForEach(live.questions.reversed().filter { visible($0.q) }.prefix(9)) { q in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(alignment: .top) {
                             Text("\(q.type): ").font(.scaled(.callout, weight: .semibold)) + Text(q.q).font(.scaled(.callout))
@@ -215,6 +223,17 @@ struct LiveView: View {
         }
     }
 
+    /// Post-class judge marks: pruned (shown only with the toggle) and unsupported drafts.
+    @ViewBuilder private func judged(_ q: String) -> some View {
+        if live.pruned.contains(q) {
+            Label("Pruned: failed relevance or answerability after class", systemImage: "scissors")
+                .font(.scaled(.caption)).foregroundStyle(.secondary)
+        } else if live.unsupported.contains(q) {
+            Label("Draft not supported by the class context", systemImage: "exclamationmark.triangle")
+                .font(.scaled(.caption)).foregroundStyle(.orange)
+        }
+    }
+
     private func copyButton(_ text: String) -> some View {
         Button(copied == text ? "Copied" : "Copy") {
             NSPasteboard.general.clearContents()
@@ -242,7 +261,10 @@ struct Prospective: Decodable {
 struct Evidence: Decodable { var id: String; var title: String }
 struct AskNowFile: Decodable { var top: [Drafted] }
 /// Written by live_class.py: non-trivial thread ids and the curated follow-ups (on-topic, no repeats).
-struct QAViewFile: Decodable { var threads: [String]; var followups: [String: [Drafted]]; var prospective: [String: Prospective]? }
+struct QAViewFile: Decodable {
+    var threads: [String]; var followups: [String: [Drafted]]; var prospective: [String: Prospective]?
+    var pruned: [String]?; var unsupported: [String]?
+}
 
 struct LiveData {
     var folder = URL(fileURLWithPath: "/")
@@ -250,6 +272,8 @@ struct LiveData {
     var threads: [QAThread] = []
     var followups: [String: [Drafted]] = [:]
     var prospective: [String: Prospective] = [:]
+    var pruned: Set<String> = []
+    var unsupported: Set<String> = []
     var questions: [Drafted] = []
     var outline: [OutlinePart] = []
     var slides: [SlideEntry] = []
@@ -299,6 +323,8 @@ struct LiveData {
             d.threads = d.threads.filter { keep.contains($0.id) }
             d.followups = v.followups
             d.prospective = v.prospective ?? [:]
+            d.pruned = Set(v.pruned ?? [])
+            d.unsupported = Set(v.unsupported ?? [])
         } else {
             for f in lines("qa_followups.jsonl", Drafted.self) { d.followups[f.thread ?? "", default: []].append(f) }
         }

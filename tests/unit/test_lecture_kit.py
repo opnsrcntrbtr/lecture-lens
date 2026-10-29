@@ -123,3 +123,21 @@ def test_classify_drop_by_content(tmp_path):
     kinds = {f.name: k.classify_drop(f) for f in sorted(tmp_path.iterdir())}
     assert kinds == {"a.md": "zoom_transcript", "b.txt": "zoom_transcript", "c.txt": "qa_export",
                      "d.pptx": "deck", "e.txt": None}
+
+
+def test_audio_between_mic_fills_only_unrecorded_stretches():
+    import sqlite3, datetime as dt
+    con = sqlite3.connect(":memory:"); con.row_factory = sqlite3.Row
+    con.execute("CREATE TABLE audio_transcriptions (id INTEGER PRIMARY KEY, timestamp TEXT, start_time REAL, transcription TEXT, device TEXT, is_input_device INT)")
+    con.execute("CREATE TABLE audio_chunks (id INTEGER PRIMARY KEY, file_path TEXT, timestamp TEXT)")
+    t0 = dt.datetime(2026, 1, 5, 4, 0, tzinfo=dt.timezone.utc)
+    iso = lambda s: (t0 + dt.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    for s in range(0, 600, 30):
+        if not 300 <= s < 420:                                    # System Audio not recorded 300-420
+            con.execute("INSERT INTO audio_chunks (file_path, timestamp) VALUES (?, ?)", (f"/d/System Audio (output)_{s}.mp4", iso(s)))
+        if s < 120 or s >= 420:                                   # but transcribed text only here (silence 120-300)
+            con.execute("INSERT INTO audio_transcriptions (timestamp, start_time, transcription, device, is_input_device) VALUES (?, 0, ?, 'System Audio', 0)", (iso(s), f"cactus {s}"))
+        con.execute("INSERT INTO audio_transcriptions (timestamp, start_time, transcription, device, is_input_device) VALUES (?, 0, ?, 'MacBook Pro Microphone', 1)", (iso(s), f"room {s}"))
+    out = k.audio_between(con, t0, t0 + dt.timedelta(seconds=600))
+    mic = [o["text"] for o in out if o["text"].startswith("(mic)")]
+    assert mic == ["(mic) room 300", "(mic) room 330", "(mic) room 360", "(mic) room 390"]   # silence 120-300 is not a gap

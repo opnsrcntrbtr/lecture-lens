@@ -50,3 +50,14 @@ def test_whisper_runs_on_audio_health_alone():
     assert lc.audio_ok({"frame_status": "disabled", "audio_status": "ok"})
     assert not lc.healthy({"frame_status": "disabled", "audio_status": "ok"})
     assert not lc.audio_ok({"frame_status": "ok", "audio_status": "stale"})
+
+
+def test_gap_fill_uses_backup_only_in_long_gaps():
+    import datetime as dt
+    t0 = dt.datetime(2026, 1, 5, 4, 0, tzinfo=dt.timezone.utc)
+    at = lambda s: t0 + dt.timedelta(seconds=s)
+    primary = [at(s) for s in range(0, 390, 30) if not 120 <= s < 240 and s != 300]   # gap 120-240, single miss at 300
+    backup = [(at(s), f"m{s}") for s in range(0, 390, 30)]
+    kept = [x for _, x in tc.gap_fill(primary, backup)]
+    assert kept == ["m120", "m150", "m180", "m210"]          # the 2-minute hole; not the single chunk at 300
+    assert tc.gap_fill([], [(at(0), "only")], min_gap_s=60) == []

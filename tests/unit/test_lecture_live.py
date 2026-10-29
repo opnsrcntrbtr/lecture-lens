@@ -61,3 +61,23 @@ def test_partial_export_keeps_live_threads_it_lacks(tmp_path, monkeypatch):
     lk.live_qa_source(s, folder)
     md = (folder / "qa.md").read_text()
     assert "Rain is rare" in md and "full sun" in md and "export and the live capture" in md
+
+
+def test_qa_md_moves_pruned_followups_and_tags_unsupported(tmp_path, monkeypatch):
+    monkeypatch.setattr(lk, "LECTURES", tmp_path)
+    s = _session(); d = lk._live_dir(s); d.mkdir(parents=True)
+    threads = [{"id": "a", "by": "Attendee", "time": "10:01 AM", "q": "Why do cacti store water in stems?",
+                "answers": [{"by": "Tutor Tom", "time": "10:02 AM", "text": "Rain is rare."}]}]
+    (d / "qa_threads.json").write_text(json.dumps(threads))
+    fus = [{"thread": "a", "type": "clarify", "q": "Which cacti store the most water?", "answer": "Barrel cacti."},
+           {"thread": "a", "type": "clarify", "q": "How deep do cacti roots grow in sand?", "answer": "Metres."}]
+    (d / "qa_followups.jsonl").write_text("".join(json.dumps(f) + "\n" for f in fus))
+    ok = {"pass": True, "votes": "2/2"}; bad = {"pass": False, "votes": "0/2"}
+    (d / "live_scores.json").write_text(json.dumps({"rubric": "v1", "items": {
+        "Which cacti store the most water?": {"relevance": ok, "answerability": ok, "pruned": False, "unsupported": True},
+        "How deep do cacti roots grow in sand?": {"relevance": bad, "answerability": ok, "pruned": True, "unsupported": False}}}))
+    folder = tmp_path / "lec"; folder.mkdir()
+    lk.live_qa_source(s, folder)
+    md, pm = (folder / "qa.md").read_text(), (folder / "qa_pruned.md").read_text()
+    assert "Which cacti" in md and "unsupported by the class context" in md and "How deep" not in md
+    assert "How deep" in pm and "failed: relevance" in pm

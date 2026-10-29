@@ -198,7 +198,25 @@ def audio_between(con, start, end, device_filter=None):
             for r in rows:
                 chars[r["device"]] = chars.get(r["device"], 0) + len(r["transcription"])
         best = max(chars, key=chars.get) if chars else None
-        rows = [r for r in rows if r["device"] == best]
+        chosen = [r for r in rows if r["device"] == best]
+        # microphone backup: where the chosen output recorded nothing for 60 s+, use the mic, marked (mic)
+        mic = [r for r in rows if r["is_input_device"] and r["device"] != best]
+        if mic and chosen and not any(r["is_input_device"] for r in chosen):
+            import transcript_clean
+            # coverage = every chunk the output device recorded, silent ones included (a quiet break is
+            # not missing audio), from audio_chunks; transcribed rows alone would miss silences
+            try:
+                recorded = con.execute(
+                    "SELECT timestamp FROM audio_chunks WHERE datetime(timestamp) >= datetime(?) AND datetime(timestamp) <= datetime(?) "
+                    "AND file_path LIKE ?", (start.strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ"), f"%{best}%")).fetchall()
+            except Exception:
+                recorded = []
+            primary = sorted({t for t in [_ts(x[0]) for x in recorded] + [_ts(r["timestamp"]) for r in chosen] if t})
+            fill = transcript_clean.gap_fill(primary, [(t, r) for r in mic if (t := _ts(r["timestamp"]))])
+            fill_rows = [dict(r, transcription="(mic) " + r["transcription"]) for _, r in fill]
+            rows = sorted(chosen + fill_rows, key=lambda r: (r["timestamp"], r["start_time"] or 0, r["id"]))
+        else:
+            rows = chosen
     else:
         rows = [r for r in rows if want in (r["device"] or "").lower()]
     out = []
@@ -591,6 +609,17 @@ def live_qa_source(session, folder, budget=9000):
             if l.strip():
                 x = json.loads(l); fus.setdefault(x["thread"], []).append(x)
     fus = live_qa.curate_followups(threads, fus) if hasattr(live_qa, "curate_followups") else fus
+    # Post-class judge scores (tests/evals/score_live.py): follow-ups failing relevance or
+    # answerability move to qa_pruned.md; drafts failing faithfulness are tagged.
+    scores = json.loads((d / "live_scores.json").read_text()).get("items", {}) if (d / "live_scores.json").exists() else {}
+    pruned = {}
+    if scores:
+        for tid in list(fus):
+            keep = []
+            for f in fus[tid]:
+                sc = scores.get(f["q"])
+                (pruned.setdefault(tid, []) if sc and sc["pruned"] else keep).append(f)
+            fus[tid] = keep
     # The meeting app's own Q&A export, anonymised by qa_export.py, is complete where the
     # live capture may have missed a thread: use its threads, keep the live follow-ups.
     ref = folder / "qa_threads_export.json"
@@ -616,8 +645,25 @@ def live_qa_source(session, folder, budget=9000):
         md += [f"## {t['time']} · {t['by']} · {live_qa.thread_kind(t)}", "", t["q"], ""]
         md += [f"> **{a['by']}** ({a['time']}): {a['text']}".replace("\n", "\n> ") for a in t["answers"]] + [""]
         for f in fus.get(t["id"], []):
-            md += [f"- Follow-up ({f['type']}): {f['q']}", f"  - Draft: {f['answer']}"]
+            tag = " _(unsupported by the class context)_" if (scores.get(f["q"]) or {}).get("unsupported") else ""
+            md += [f"- Follow-up ({f['type']}): {f['q']}", f"  - Draft: {f['answer']}{tag}"]
         md += [""]
+    if scores:
+        n_p = sum(len(v) for v in pruned.values())
+        md.insert(3, f"_Judged after class ({len(scores)} drafted items, rules {json.loads((d / 'live_scores.json').read_text()).get('rubric', '?')}): "
+                     f"{n_p} follow-ups that failed relevance or answerability are in qa_pruned.md._\n")
+        pm = [f"# Pruned follow-ups — {session['title']}", "",
+              "_Failed Question relevance or Answerability in the post-class judge run (majority of up to 3 calls)._", ""]
+        by_id = {t["id"]: t for t in threads}
+        for tid, fl in pruned.items():
+            pm += [f"## Thread: {(by_id.get(tid) or {}).get('q', tid)[:200]}", ""]
+            for f in fl:
+                sc = scores[f["q"]]
+                why = ", ".join(m for m in ("relevance", "answerability") if not sc[m]["pass"])
+                pm += [f"- {f['q']}", f"  - failed: {why} ({sc['relevance']['votes']} / {sc['answerability']['votes']} pass votes)",
+                       f"  - Draft: {f['answer']}"]
+            pm += [""]
+        (folder / "qa_pruned.md").write_text("\n".join(pm) + "\n")
     (folder / "qa.md").write_text("\n".join(md) + "\n")
     lines = [f"Q ({t['time']}): {t['q'][:300]} | A: " + " / ".join(a["text"][:500] for a in t["answers"])
              for t in threads if live_qa.thread_kind(t) == "content" and t["answers"]]
@@ -1027,6 +1073,15 @@ def classify_drop(path: Path) -> str | None:
     return None
 
 
+def cmd_qa(a):
+    """Rewrite qa.md (and qa_pruned.md) for a built lecture from the live folder; no model."""
+    folder = find_folder(a.id)
+    man = json.loads((folder / "manifest.json").read_text())
+    session = {"title": man["title"], "start": dt.datetime.fromisoformat(man["start"])}
+    live_qa_source(session, folder)
+    print(f"✓ {folder / 'qa.md'}" + (f" · pruned: {folder / 'qa_pruned.md'}" if (folder / "qa_pruned.md").exists() else ""))
+
+
 def cmd_ingest(a):
     """After class: find the meeting app's files beside the class (live folder or the built
     lecture folder), then clean the live transcript, import the Q&A export, merge and score
@@ -1115,6 +1170,8 @@ def main():
     p.add_argument("--title", required=True); p.add_argument("--agenda", help="text file with the agenda")
     p.add_argument("--preread", help="text file: pre-read or homework instructions"); p.add_argument("--date", help="YYYYMMDD (default today)")
     p.add_argument("--budget", type=int, default=24000); p.set_defaults(fn=cmd_brief)
+    p = sub.add_parser("qa", help="rewrite qa.md from the live folder (uses post-class judge scores when present)")
+    p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_qa)
     p = sub.add_parser("ingest", help="after class: use the meeting app's transcript/Q&A export/deck found beside the class")
     p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_ingest)
     a = ap.parse_args(); a.fn(a)

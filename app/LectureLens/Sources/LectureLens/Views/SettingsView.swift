@@ -34,7 +34,7 @@ struct SettingsView: View {
         ]),
         ("Audio sources (next Start capture)", [
             Field(key: "SP_RECORD_MIC", label: "Record my microphone",
-                  help: "Off: only lecture audio is transcribed (System Audio and the Zoom app tap). On: your microphone too, so anything said in the room is transcribed.",
+                  help: "On: the microphone is recorded as backup. Transcripts use it only where System Audio recorded nothing for 60 s or more, marked (mic). Off: lecture audio only.",
                   kind: .toggle),
             Field(key: "SP_MEETING_PIGGYBACK", label: "Meeting piggyback (experimental)",
                   help: "During a detected meeting, screenpipe captures the meeting app's own audio and the microphone it uses. Needs the microphone on.",

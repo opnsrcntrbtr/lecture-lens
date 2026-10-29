@@ -20,6 +20,7 @@ Slides from the Vision OCR fallback are labelled rather than dropped:
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import datetime as dt
 import json
 import re
@@ -186,3 +187,37 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def gap_fill(primary: list, backup: list, chunk_s: float = 30.0, min_gap_s: float = 60.0, overlap_s: float = 5.0) -> list:
+    """Backup items (time, item) that fall where the primary source recorded nothing.
+
+    primary: start times (datetime) of the primary source's ~chunk_s pieces.
+    A backup piece is uncovered when it overlaps primary audio by less than overlap_s; uncovered
+    pieces are kept only in runs at least min_gap_s long, so a single dropped chunk is not
+    patched with microphone audio. Used to let the microphone back up System Audio.
+    """
+    ps = sorted(primary)
+
+    def overlap(t):
+        tot = 0.0
+        for p in ps:
+            a, b = max(p, t), min(p + _dt.timedelta(seconds=chunk_s), t + _dt.timedelta(seconds=chunk_s))
+            if b > a:
+                tot += (b - a).total_seconds()
+        return tot
+
+    unc = sorted(((t, x) for t, x in backup if overlap(t) < overlap_s), key=lambda z: z[0])
+    runs, cur = [], []
+    for t, x in unc:
+        if cur and (t - cur[-1][0]).total_seconds() > chunk_s + 10:
+            runs.append(cur); cur = []
+        cur.append((t, x))
+    if cur:
+        runs.append(cur)
+    keep = []
+    for r in runs:
+        span = (r[-1][0] - r[0][0]).total_seconds() + chunk_s
+        if span >= min_gap_s:
+            keep += r
+    return keep
