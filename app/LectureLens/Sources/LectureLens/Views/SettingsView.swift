@@ -32,6 +32,19 @@ struct SettingsView: View {
                   help: "Slides are downscaled to this before the vision model sees them.", kind: .number(512...2048, 128)),
             Field(key: "STUDY_AUDIO_DEVICE", label: "Lecture audio device", help: "Name of the app-audio tap device used for transcripts."),
         ]),
+        ("Audio sources (next Start capture)", [
+            Field(key: "SP_RECORD_MIC", label: "Record my microphone",
+                  help: "On: the microphone is recorded as backup. Transcripts use it only where System Audio recorded nothing for 60 s or more, marked (mic). Off: lecture audio only.",
+                  kind: .toggle),
+            Field(key: "SP_MEETING_PIGGYBACK", label: "Meeting piggyback (experimental)",
+                  help: "During a detected meeting, screenpipe captures the meeting app's own audio and the microphone it uses. Needs the microphone on.",
+                  kind: .toggle),
+        ]),
+        ("After class", [
+            Field(key: "STUDY_AUTO_IMPORT", label: "Import Zoom files automatically",
+                  help: "When Zoom's transcript, Q&A export or the deck lands in today's live folder or the class folder, run Import Zoom files by itself.",
+                  kind: .toggle),
+        ]),
     ]
 
     @State private var env = EnvFile()
@@ -39,6 +52,7 @@ struct SettingsView: View {
     @State private var dirty = false
     @State private var status: String? = nil
     @State private var studyPath = UserDefaults.standard.string(forKey: "studyPath") ?? ""
+    @AppStorage(TextScale.key) private var textScale = TextScale.default
 
     private var availableModels: [String] {
         var m = model.omlx?.loaded_models ?? []
@@ -50,6 +64,25 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Appearance") {
+                LabeledContent("Text size") {
+                    HStack(spacing: 10) {
+                        Image(systemName: "textformat.size.smaller").foregroundStyle(.secondary)
+                        Slider(value: Binding(
+                                get: { Double(TextScale.steps.firstIndex { abs($0 - textScale) < 0.001 } ?? 1) },
+                                set: { textScale = TextScale.steps[Int($0.rounded())] }),
+                               in: 0...Double(TextScale.steps.count - 1), step: 1)
+                            .frame(maxWidth: 260)
+                            .accessibilityLabel("Text size")
+                            .accessibilityValue(TextScale.label(textScale))
+                        Image(systemName: "textformat.size.larger").foregroundStyle(.secondary)
+                        Text(TextScale.label(textScale)).monospacedDigit().frame(width: 48, alignment: .trailing)
+                        Button("Reset") { textScale = TextScale.default }.disabled(textScale == TextScale.default)
+                    }
+                }
+                Text("Applies to every screen. Shortcuts: ⌘+ bigger, ⌘− smaller, ⌘0 actual size (View menu).")
+                    .font(.scaled(.caption)).foregroundStyle(.secondary)
+            }
             ForEach(groups, id: \.0) { title, fields in
                 Section(title) {
                     ForEach(fields) { f in row(f) }
@@ -66,7 +99,7 @@ struct SettingsView: View {
                         Button("Choose…") { choose() }
                     }
                 }
-                Text("Currently \(Paths.study.path)").font(.caption).foregroundStyle(.secondary)
+                Text("Currently \(Paths.study.path)").font(.scaled(.caption)).foregroundStyle(.secondary)
                 HStack {
                     Button("Open .env in editor") { NSWorkspace.shared.open(Paths.envFile) }
                     Button("Open study folder") { NSWorkspace.shared.open(Paths.study) }
@@ -74,13 +107,13 @@ struct SettingsView: View {
             }
             Section("About permissions") {
                 Text("This app is ad-hoc signed. After each rebuild macOS may ask again for Screen Recording and Microphone. Sign into Xcode with your Apple ID to get a free Development certificate; build_app.sh then signs with it and grants persist across rebuilds.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.scaled(.callout)).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
         .toolbar {
-            if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
+            if let status { Text(status).font(.scaled(.caption)).foregroundStyle(.secondary) }
             Button("Revert") { load() }.disabled(!dirty)
             Button("Save") { save() }.keyboardShortcut("s").buttonStyle(.borderedProminent).disabled(!dirty)
         }
@@ -97,7 +130,7 @@ struct SettingsView: View {
             case .model:
                 LabeledContent(f.label) {
                     HStack {
-                        TextField("", text: binding).textFieldStyle(.roundedBorder).font(.body.monospaced())
+                        TextField("", text: binding).textFieldStyle(.roundedBorder).font(.scaled(.body, design: .monospaced))
                         Menu("") {
                             ForEach(availableModels, id: \.self) { m in Button(m) { binding.wrappedValue = m } }
                             if availableModels.isEmpty { Text("oMLX not reachable") }
@@ -117,7 +150,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            Text(f.help).font(.caption).foregroundStyle(.secondary)
+            Text(f.help).font(.scaled(.caption)).foregroundStyle(.secondary)
         }
     }
 

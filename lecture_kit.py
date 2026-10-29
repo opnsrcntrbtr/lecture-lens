@@ -19,7 +19,8 @@ Design notes
   * Every artefact records where it came from, so a claim in notes.md can be
     traced to a timestamp in the transcript or a keyframe image.
 """
-import argparse, datetime as dt, json, os, re, sqlite3, sys, urllib.error, urllib.request, urllib.parse
+from __future__ import annotations
+import argparse, datetime as dt, json, os, re, shutil, sqlite3, subprocess, sys, urllib.error, urllib.request, urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -197,7 +198,25 @@ def audio_between(con, start, end, device_filter=None):
             for r in rows:
                 chars[r["device"]] = chars.get(r["device"], 0) + len(r["transcription"])
         best = max(chars, key=chars.get) if chars else None
-        rows = [r for r in rows if r["device"] == best]
+        chosen = [r for r in rows if r["device"] == best]
+        # microphone backup: where the chosen output recorded nothing for 60 s+, use the mic, marked (mic)
+        mic = [r for r in rows if r["is_input_device"] and r["device"] != best]
+        if mic and chosen and not any(r["is_input_device"] for r in chosen):
+            import transcript_clean
+            # coverage = every chunk the output device recorded, silent ones included (a quiet break is
+            # not missing audio), from audio_chunks; transcribed rows alone would miss silences
+            try:
+                recorded = con.execute(
+                    "SELECT timestamp FROM audio_chunks WHERE datetime(timestamp) >= datetime(?) AND datetime(timestamp) <= datetime(?) "
+                    "AND file_path LIKE ?", (start.strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ"), f"%{best}%")).fetchall()
+            except Exception:
+                recorded = []
+            primary = sorted({t for t in [_ts(x[0]) for x in recorded] + [_ts(r["timestamp"]) for r in chosen] if t})
+            fill = transcript_clean.gap_fill(primary, [(t, r) for r in mic if (t := _ts(r["timestamp"]))])
+            fill_rows = [dict(r, transcription="(mic) " + r["transcription"]) for _, r in fill]
+            rows = sorted(chosen + fill_rows, key=lambda r: (r["timestamp"], r["start_time"] or 0, r["id"]))
+        else:
+            rows = chosen
     else:
         rows = [r for r in rows if want in (r["device"] or "").lower()]
     out = []
@@ -590,6 +609,17 @@ def live_qa_source(session, folder, budget=9000):
             if l.strip():
                 x = json.loads(l); fus.setdefault(x["thread"], []).append(x)
     fus = live_qa.curate_followups(threads, fus) if hasattr(live_qa, "curate_followups") else fus
+    # Post-class judge scores (tests/evals/score_live.py): follow-ups failing relevance or
+    # answerability move to qa_pruned.md; drafts failing faithfulness are tagged.
+    scores = json.loads((d / "live_scores.json").read_text()).get("items", {}) if (d / "live_scores.json").exists() else {}
+    pruned = {}
+    if scores:
+        for tid in list(fus):
+            keep = []
+            for f in fus[tid]:
+                sc = scores.get(f["q"])
+                (pruned.setdefault(tid, []) if sc and sc["pruned"] else keep).append(f)
+            fus[tid] = keep
     # The meeting app's own Q&A export, anonymised by qa_export.py, is complete where the
     # live capture may have missed a thread: use its threads, keep the live follow-ups.
     ref = folder / "qa_threads_export.json"
@@ -601,8 +631,12 @@ def live_qa_source(session, folder, budget=9000):
             k = qa_export.norm(t["q"])
             tid = by_norm.get(k) or next((v for c, v in by_norm.items() if min(len(c), len(k)) >= 12 and (c.startswith(k) or k.startswith(c))), None)
             exp.append(dict(t, id=tid or live_qa.thread_id({"time": t["time"], "text": t["q"]})))
-        threads = [t for t in exp if live_qa.thread_kind(t) != "trivial"]
-        say_src = "the meeting app's Q&A export"
+        # An attendee's export may hold only their own questions ("My questions"): the export
+        # wins where it has the thread, the live capture keeps every thread it lacks.
+        have = {t["id"] for t in exp}
+        rest = [t for t in threads if t["id"] not in have]
+        threads = sorted([t for t in exp if live_qa.thread_kind(t) != "trivial"] + rest, key=lambda t: live_qa._minutes(t["time"]))
+        say_src = "the meeting app's Q&A export" + (" and the live capture" if rest else "")
     else:
         say_src = "the live capture"
     md = [f"# Class Q&A — {session['title']}", "",
@@ -611,8 +645,25 @@ def live_qa_source(session, folder, budget=9000):
         md += [f"## {t['time']} · {t['by']} · {live_qa.thread_kind(t)}", "", t["q"], ""]
         md += [f"> **{a['by']}** ({a['time']}): {a['text']}".replace("\n", "\n> ") for a in t["answers"]] + [""]
         for f in fus.get(t["id"], []):
-            md += [f"- Follow-up ({f['type']}): {f['q']}", f"  - Draft: {f['answer']}"]
+            tag = " _(unsupported by the class context)_" if (scores.get(f["q"]) or {}).get("unsupported") else ""
+            md += [f"- Follow-up ({f['type']}): {f['q']}", f"  - Draft: {f['answer']}{tag}"]
         md += [""]
+    if scores:
+        n_p = sum(len(v) for v in pruned.values())
+        md.insert(3, f"_Judged after class ({len(scores)} drafted items, rules {json.loads((d / 'live_scores.json').read_text()).get('rubric', '?')}): "
+                     f"{n_p} follow-ups that failed relevance or answerability are in qa_pruned.md._\n")
+        pm = [f"# Pruned follow-ups — {session['title']}", "",
+              "_Failed Question relevance or Answerability in the post-class judge run (majority of up to 3 calls)._", ""]
+        by_id = {t["id"]: t for t in threads}
+        for tid, fl in pruned.items():
+            pm += [f"## Thread: {(by_id.get(tid) or {}).get('q', tid)[:200]}", ""]
+            for f in fl:
+                sc = scores[f["q"]]
+                why = ", ".join(m for m in ("relevance", "answerability") if not sc[m]["pass"])
+                pm += [f"- {f['q']}", f"  - failed: {why} ({sc['relevance']['votes']} / {sc['answerability']['votes']} pass votes)",
+                       f"  - Draft: {f['answer']}"]
+            pm += [""]
+        (folder / "qa_pruned.md").write_text("\n".join(pm) + "\n")
     (folder / "qa.md").write_text("\n".join(md) + "\n")
     lines = [f"Q ({t['time']}): {t['q'][:300]} | A: " + " / ".join(a["text"][:500] for a in t["answers"])
              for t in threads if live_qa.thread_kind(t) == "content" and t["answers"]]
@@ -938,6 +989,160 @@ def cmd_doctor(a):
         print(f"{'artefacts':<13}  {LECTURES}")
     sys.exit(0 if ok else 1)
 
+def find_folder(ident):
+    """A built lecture folder by session id, 'last', or folder name."""
+    folders = sorted((d for d in LECTURES.iterdir() if (d / "manifest.json").exists()),
+                     key=lambda d: json.loads((d / "manifest.json").read_text()).get("built_at", ""))
+    if not folders:
+        sys.exit("no built lectures yet (lecture build first)")
+    if ident in (None, "last"):
+        return folders[-1]
+    for d in folders:
+        if d.name == ident or d.name.startswith(f"{ident}_"):
+            return d
+    sys.exit(f"no built lecture {ident} (see: lecture list)")
+
+
+def cmd_qa_import(a):
+    """Use the meeting app's own Q&A export for a built lecture: score the live capture
+    against it and save an anonymised copy that the next build uses for qa.md."""
+    import qa_export
+    folder = find_folder(a.id)
+    man = json.loads((folder / "manifest.json").read_text())
+    staff = {x.strip() for x in os.environ.get("LIVE_QA_STAFF", "").split(",") if x.strip()}
+    if not staff:
+        sys.exit("set LIVE_QA_STAFF (comma-separated staff names) first: everyone else is anonymised by it")
+    ref = qa_export.export_threads(qa_export.parse_export(Path(a.export).read_text(encoding="utf-8-sig")), staff)
+    (folder / "qa_threads_export.json").write_text(json.dumps(qa_export.anonymise(ref, staff), indent=1))
+    live = LECTURES / "live" / dt.datetime.fromisoformat(man["start"]).astimezone().strftime("%Y%m%d") / "qa_threads.json"
+    msg = f"✓ {len(ref)} threads from the export, anonymised: {folder / 'qa_threads_export.json'}"
+    if live.exists():
+        r = qa_export.capture_recall(ref, json.loads(live.read_text()))
+        (folder / "qa_capture_eval.json").write_text(json.dumps(r, indent=1))
+        msg += (f"\n  live capture found {r['questions_found']}/{r['questions']} questions and "
+                f"{r['replies_found']}/{r['replies']} staff replies")
+    print(msg + "\n  rebuild the lecture to use it for qa.md; keep the raw export out of git (it names attendees)")
+
+
+BRIEF_PROMPT_VERSION = "brief-v1"
+
+def brief_prompt(title, agenda, prior, preread):
+    return (f"NEXT CLASS: {title}\nAGENDA (quoted):\n{agenda}\n\nPRE-READ / HOMEWORK (quoted):\n{preread or '(none given)'}\n\n"
+            f"NOTES FROM EARLIER CLASSES (quoted, newest last):\n{prior}\n\n"
+            "Write a pre-class brief in markdown: (1) '## What to recall' - 5 bullets from the earlier notes that the agenda "
+            "builds on, each naming the framework or example; (2) '## Questions to ask' - 10 questions grouped under the agenda "
+            "items, each short enough for a Q&A box, one question mark each, each followed by '  - Draft:' with a 1-2 sentence "
+            "answer from the earlier notes, or 'not covered yet'; (3) '## To verify' - claims or numbers a learner should check "
+            "against a primary source before class. Never invent sources or numbers; quote the notes' own terms.")
+
+
+def cmd_brief(a):
+    """Before class: a brief from the agenda, pre-read and the notes of earlier classes, with
+    the local model. Sources are not added here; the evidence bank is verified separately."""
+    agenda = Path(a.agenda).read_text() if a.agenda else ""
+    preread = Path(a.preread).read_text()[:6000] if a.preread else ""
+    built = []
+    for d in sorted(LECTURES.iterdir()):
+        if (d / "notes.md").exists() and (d / "manifest.json").exists():
+            built.append((json.loads((d / "manifest.json").read_text()).get("start", ""), d))
+    prior = "\n\n".join(f"### {d.name}\n{(d / 'notes.md').read_text()[:a.budget // max(1, min(3, len(built)))]}"
+                         for _, d in sorted(built)[-3:])
+    md = study.llm(study.SYS_TUTOR, brief_prompt(a.title, agenda, prior, preread), max_tokens=2500, temperature=0.3)
+    day = a.date or dt.datetime.now().astimezone().strftime("%Y%m%d")
+    out = LECTURES / "live" / day
+    out.mkdir(parents=True, exist_ok=True)
+    head = f"---\ndate: {day}\ntype: class-brief\nlecture: {a.title}\nprompt: {BRIEF_PROMPT_VERSION}\n---\n\n# Brief: {a.title}\n\n"
+    (out / "brief.md").write_text(head + md.strip() + "\n")
+    (VAULT / VAULT_SUB).mkdir(parents=True, exist_ok=True)
+    (VAULT / VAULT_SUB / f"{day} Brief - {slugify(a.title)}.md").write_text(head + md.strip() + "\n")
+    print(f"✓ {out / 'brief.md'}")
+
+
+def classify_drop(path: Path) -> str | None:
+    """What a file dropped beside a class is: zoom_transcript, qa_export, deck or None.
+    Decided by content, not name, so Zoom's own file names work as saved."""
+    if path.suffix.lower() == ".pptx":
+        return "deck"
+    if path.suffix.lower() not in (".txt", ".md", ".vtt") or path.stat().st_size > 5_000_000:
+        return None
+    head = path.read_text(encoding="utf-8-sig", errors="ignore")[:20000]
+    if re.search(r"^\[\d{1,3}:\d{2}\]\s*[^:\n]{1,40}:", head, re.M) or re.search(r"\d\d:\d\d:\d\d(\.\d+)? --> ", head):
+        return "zoom_transcript"
+    if len(re.findall(r"^.+?\s{2,}\d{1,2}:\d{2}\s?[AP]M\s*$", head, re.M)) >= 2:
+        return "qa_export"
+    return None
+
+
+def cmd_qa(a):
+    """Rewrite qa.md (and qa_pruned.md) for a built lecture from the live folder; no model."""
+    folder = find_folder(a.id)
+    man = json.loads((folder / "manifest.json").read_text())
+    session = {"title": man["title"], "start": dt.datetime.fromisoformat(man["start"])}
+    live_qa_source(session, folder)
+    print(f"✓ {folder / 'qa.md'}" + (f" · pruned: {folder / 'qa_pruned.md'}" if (folder / "qa_pruned.md").exists() else ""))
+
+
+def cmd_ingest(a):
+    """After class: find the meeting app's files beside the class (live folder or the built
+    lecture folder), then clean the live transcript, import the Q&A export, merge and score
+    the reference transcript and score prospective answers. Idempotent; prints a report."""
+    import qa_export, transcript_clean, live_qa
+    folder = find_folder(a.id)
+    man = json.loads((folder / "manifest.json").read_text())
+    day = dt.datetime.fromisoformat(man["start"]).astimezone().strftime("%Y%m%d")
+    live = LECTURES / "live" / day
+    report = {"lecture": folder.name, "found": {}}
+    for d in (live, folder):
+        for f in sorted(d.glob("*")) if d.exists() else []:
+            k = classify_drop(f) if f.is_file() else None
+            if k and k not in report["found"]:
+                report["found"][k] = str(f)
+    seg = live / "whisper_segments.jsonl"
+    if seg.exists() and not seg.with_suffix(".jsonl.raw").exists():
+        rows = [json.loads(l) for l in seg.read_text().splitlines() if l.strip()]
+        kept, dropped = transcript_clean.clean_segments(rows, os.environ.get("STUDY_LIVE_PROMPT", ""))
+        transcript_clean._rewrite(seg, kept)
+        report["whisper_clean"] = {"in": len(rows), "kept": len(kept), "dropped": dict(dropped)}
+    if "deck" in report["found"] and not (folder / Path(report["found"]["deck"]).name).exists():
+        shutil.copy2(report["found"]["deck"], folder)
+        report["deck"] = "copied into the lecture folder; rebuild to use it"
+    if "qa_export" in report["found"]:
+        cmd_qa_import(argparse.Namespace(id=folder.name, export=report["found"]["qa_export"]))
+        staff = {x.strip() for x in os.environ.get("LIVE_QA_STAFF", "").split(",") if x.strip()}
+        ref = qa_export.export_threads(qa_export.parse_export(Path(report["found"]["qa_export"]).read_text(encoding="utf-8-sig")), staff)
+        pro = live / "qa_prospective.jsonl"
+        if pro.exists():                          # prospective drafts vs the authoritative replies
+            drafts = [json.loads(l) for l in pro.read_text().splitlines() if l.strip()]
+            rows = []
+            for d in drafts:
+                t = next((t for t in ref if qa_export.norm(t["q"]) == qa_export.norm(d["q"])), None)
+                if t and t["answers"]:
+                    rows.append({"time": t["time"], "confidence": d.get("confidence"),
+                                 **live_qa.agreement(d["answer"], " ".join(x["text"] for x in t["answers"]))})
+            if rows:
+                report["prospective"] = {"n": len(rows), "mean_recall": round(sum(r["recall"] for r in rows) / len(rows), 3)}
+                (folder / "qa_prospective_eval.json").write_text(json.dumps({"rows": rows, **report["prospective"]}, indent=1))
+        for name in ("qa_capture_eval.json",):
+            if (folder / name).exists():
+                report["qa_capture"] = json.loads((folder / name).read_text())
+    if "zoom_transcript" in report["found"] and (folder / "transcript.md").exists():
+        r = subprocess.run([sys.executable, str(HERE / "transcript_ref.py"), str(folder), report["found"]["zoom_transcript"]],
+                           capture_output=True, text=True, timeout=600)
+        report["transcript_ref"] = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else {"error": r.stderr[-400:]}
+    # judge calibration: 15 fresh rows from this class for blind labelling (Evals > Holdout check);
+    # scoring them needs the judge model and runs separately (tests/evals/run_holdout_check.sh)
+    cal = HERE / "tests" / "evals" / "calibration.py"
+    if cal.exists() and (live / "questions.jsonl").exists():
+        r = subprocess.run([sys.executable, str(cal), "holdout", "--day", day, "--n", "15"],
+                           capture_output=True, text=True, timeout=120, cwd=cal.parent)
+        try:
+            report["holdout"] = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            report["holdout"] = {"error": (r.stderr or r.stdout)[-300:]}
+    (folder / "ingest_report.json").write_text(json.dumps(report, indent=1))
+    print(json.dumps(report, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser(prog="lecture", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -959,6 +1164,16 @@ def main():
     p = sub.add_parser("doctor"); p.add_argument("--json", action="store_true")
     p.add_argument("--quick", action="store_true", help="skip the vision-model image probe")
     p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("qa-import", help="use the meeting app's Q&A export: score the live capture, anonymise, feed the build")
+    p.add_argument("id"); p.add_argument("export"); p.set_defaults(fn=cmd_qa_import)
+    p = sub.add_parser("brief", help="before class: recall points and questions from the agenda and earlier notes")
+    p.add_argument("--title", required=True); p.add_argument("--agenda", help="text file with the agenda")
+    p.add_argument("--preread", help="text file: pre-read or homework instructions"); p.add_argument("--date", help="YYYYMMDD (default today)")
+    p.add_argument("--budget", type=int, default=24000); p.set_defaults(fn=cmd_brief)
+    p = sub.add_parser("qa", help="rewrite qa.md from the live folder (uses post-class judge scores when present)")
+    p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_qa)
+    p = sub.add_parser("ingest", help="after class: use the meeting app's transcript/Q&A export/deck found beside the class")
+    p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_ingest)
     a = ap.parse_args(); a.fn(a)
 
 if __name__ == "__main__":

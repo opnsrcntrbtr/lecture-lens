@@ -16,6 +16,8 @@ struct Signal: Identifiable, Sendable {
 @Observable
 final class AppModel {
     // capture
+    /// Sidebar selection; also set by the Go menu (⌘1…⌘7).
+    var screen: Screen? = .capture
     var mode = ModeState(running: false, mode: "stopped", pinned: nil, autoswitch: false)
     var screenpipe: ScreenpipeHealth? = nil
     var omlx: OmlxStatus? = nil
@@ -47,6 +49,8 @@ final class AppModel {
                 Task { @MainActor in await self?.refreshFast() } },
             Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                 Task { @MainActor in await self?.refreshDoctor(probeVision: false) } },
+            Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.checkAutoImport() } },
         ]
     }
 
@@ -243,6 +247,45 @@ final class AppModel {
         guard let id = s.id else { return }
         jobs.enqueue("Build \(s.displayTitle)", Paths.tool("lecture"), ["build", id, "--since", "90d"]) { [weak self] _ in
             Task { await self?.loadSessions() }
+        }
+    }
+
+    /// Last automatic import, shown on the Lectures screen.
+    var autoImportNote: String? = nil
+
+    /// Runs `lecture ingest` when Zoom's files land beside today's built class (Settings > After class).
+    func checkAutoImport() {
+        guard AutoImport.enabled, !jobs.busy else { return }
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd"
+        guard let p = AutoImport.pending(day: f.string(from: Date()), commit: true) else { return }
+        autoImportNote = "Importing \(p.files.map(\.lastPathComponent).joined(separator: ", "))"
+        ingest(p.lecture.lastPathComponent)
+    }
+
+    /// After class: judge the drafted questions and follow-ups (prunes the Live tab and qa.md).
+    /// Skipped while capture runs; the script also waits for oMLX to be idle and resumes if stopped.
+    func scoreLiveIfNeeded(_ folderName: String) {
+        let day = String(folderName.prefix(8))
+        let live = Paths.lectures.appendingPathComponent("live/\(day)")
+        guard !mode.running, FileManager.default.fileExists(atPath: live.appendingPathComponent("questions.jsonl").path) else { return }
+        jobs.enqueue("Judge live drafts (~1–2 h)", Paths.study.appendingPathComponent("tests/evals/run_live_scores.sh"), [live.path]) { _ in }
+    }
+
+    /// New holdout rows (added by ingest) are judged with the old and candidate rules, majority of 3,
+    /// about an hour on the judge model. Skipped while capture runs; the script also waits for oMLX to be idle.
+    func scoreHoldoutIfNeeded() {
+        guard !mode.running,
+              let sheet = try? CalibrationSheet.load("holdout.csv"),
+              sheet.rows.contains(where: { ($0.cells["judge_v1x3_pass"] ?? "").isEmpty }) else { return }
+        jobs.enqueue("Holdout scoring (judge, ~1 h)", Paths.study.appendingPathComponent("tests/evals/run_holdout_check.sh"), []) { _ in }
+    }
+
+    /// After class: transcript merge + WER, Q&A import (anonymised), prospective-answer scores.
+    func ingest(_ folderName: String) {
+        jobs.enqueue("Import Zoom files", Paths.tool("lecture"), ["ingest", folderName]) { [weak self] _ in
+            Task { await self?.loadSessions() }
+            self?.scoreLiveIfNeeded(folderName)
+            self?.scoreHoldoutIfNeeded()
         }
     }
 

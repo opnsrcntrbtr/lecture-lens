@@ -49,3 +49,5 @@ website/build/
 website/.docusaurus/
 .DS_Store
 tests/evals/.live_questions.json
+tests/evals/calibration/
+tests/evals/.prospective.json

@@ -32,6 +32,7 @@ import tempfile
 
 import live_qa
 import time
+import transcript_clean
 import urllib.request
 from pathlib import Path
 
@@ -40,6 +41,9 @@ DATA = Path(os.path.expanduser(os.environ.get("SCREENPIPE_DATA", "~/.screenpipe/
 LECTURES = Path(os.path.expanduser(os.environ.get("STUDY_LECTURE_DIR", str(HERE / "lectures"))))
 VAULT = Path(os.path.expanduser(os.environ.get("STUDY_VAULT", "~/vaults/ai-product-course")))
 AUDIO_DEVICE = os.environ.get("LIVE_AUDIO_DEVICE", "System Audio (output)")
+# Backup: the microphone fills stretches of 60 s or more with no system audio, marked "(mic)".
+# "" = the first input device found; "off" = never.
+MIC_DEVICE = os.environ.get("LIVE_MIC_DEVICE", "")
 LIVE_APP = os.environ.get("LIVE_APP", "zoom").lower()
 CLASS_WINDOWS = {"zoom webinar", "zoom meeting", "zoom", ""}
 SIDE_WINDOWS = {"q&a", "webinar chat", "meeting chat", "chat"}
@@ -78,6 +82,25 @@ def finished_files(names: list[str], device: str, start: dt.datetime, now: dt.da
         if t and t >= start - dt.timedelta(seconds=CHUNK_S) and t + dt.timedelta(seconds=CHUNK_S + grace_s) <= now:
             out.append((t, n))
     return sorted(out)
+
+
+def mic_device(names: list[str]) -> str | None:
+    if MIC_DEVICE.lower() == "off":
+        return None
+    if MIC_DEVICE:
+        return MIC_DEVICE
+    found = sorted({n.rsplit("_", 2)[0] for n in names if "(input)_" in n})
+    return found[0] if found else None
+
+
+def backup_files(names: list[str], start: dt.datetime, now: dt.datetime, done: set) -> list[tuple[dt.datetime, str]]:
+    """Microphone chunks where System Audio recorded nothing for 60 s or more (see transcript_clean.gap_fill)."""
+    mic = mic_device(names)
+    if not mic:
+        return []
+    primary = [t for t, _ in finished_files(names, AUDIO_DEVICE, start, now)]
+    cand = [(t, n) for t, n in finished_files(names, mic, start, now) if n not in done]
+    return [(t, n) for t, n in transcript_clean.gap_fill(primary, cand)]
 
 
 def batches(files: list[tuple[dt.datetime, str]], size: int = 10, gap_s: float = 45.0) -> list[list[tuple[dt.datetime, str]]]:
@@ -253,6 +276,12 @@ def healthy(h: dict) -> bool:
     return h.get("frame_status") == "ok" and h.get("audio_status") == "ok"
 
 
+def audio_ok(h: dict) -> bool:
+    """Whisper only needs audio: keep transcribing when screen frames pause (e.g. a display
+    sleep or screenpipe's pause gate) as long as audio capture is healthy."""
+    return h.get("audio_status") == "ok"
+
+
 def whisper_model() -> str | None:
     pat = os.path.expanduser(os.environ.get("LIVE_WHISPER_MODEL",
           "~/.cache/huggingface/hub/models--ggerganov--whisper.cpp/snapshots/*/ggml-large-v3-turbo-q8_0.bin"))
@@ -381,6 +410,22 @@ def ask_now_round(seg_f, q_f, fu_f, qa_f, out_f, now):
     return top
 
 
+def score_prospective(drafts: dict, threads: list[dict], out: Path) -> None:
+    """Once staff reply to a question that had a prospective answer, score the draft
+    against the reply (model-free); the file feeds the app and the evals."""
+    rows = []
+    for t in threads:
+        d = drafts.get(t["id"])
+        if d and t["answers"]:
+            reply = " ".join(x["text"] for x in t["answers"])
+            rows.append({"thread": t["id"], "time": t["time"], "confidence": d.get("confidence"),
+                         **live_qa.agreement(d["answer"], reply)})
+    if rows:
+        mean = lambda k: round(sum(r[k] for r in rows) / len(rows), 3)
+        out.write_text(json.dumps({"n": len(rows), "mean_recall": mean("recall"), "mean_precision": mean("precision"),
+                                   "rows": rows}, indent=1))
+
+
 def qa_round(a, side_f, seg_f, slide_f, ev_f, qa_f, fu_f, qa_done, ok, now, log):
     """Rebuild Q&A threads from every panel snapshot so far; draft follow-ups for up to
     `a.qa_per_round` answered threads, the learner's own first, then the newest."""
@@ -392,7 +437,11 @@ def qa_round(a, side_f, seg_f, slide_f, ev_f, qa_f, fu_f, qa_done, ok, now, log)
     qa_f.write_text(json.dumps(threads, indent=1))
     todo = [t for t in threads if live_qa.needs_followup(t, qa_done)]
     todo.sort(key=lambda t: (t["by"] != "You", -threads.index(t)))
-    if not todo or not ok:
+    pro_f = qa_f.with_name("qa_prospective.jsonl")
+    drafts = {d["thread"]: d for d in (json.loads(l) for l in pro_f.read_text().splitlines() if l.strip())} if pro_f.exists() else {}
+    score_prospective(drafts, threads, qa_f.with_name("qa_prospective_eval.json"))
+    pro_todo = [t for t in threads if live_qa.needs_prospective(t, drafts)]
+    if not (todo or pro_todo) or not ok:
         return qa_done
     import study
     bank = json.loads(ev_f.read_text()) if ev_f.exists() else []
@@ -400,9 +449,19 @@ def qa_round(a, side_f, seg_f, slide_f, ev_f, qa_f, fu_f, qa_done, ok, now, log)
     segs = [json.loads(l) for l in seg_f.read_text().splitlines() if l.strip()] if seg_f.exists() else []
     since = (now - dt.timedelta(minutes=10)).isoformat()
     transcript = " ".join(s["text"] for s in segs if s["t"] >= since)
-    titles = [json.loads(l)["title"] for l in slide_f.read_text().splitlines()[-4:]] if slide_f.exists() else []
+    rows = [json.loads(l) for l in slide_f.read_text().splitlines() if l.strip()] if slide_f.exists() else []
+    titles = [r["title"] for r in rows if r.get("kind", "slide") == "slide"][-4:]
     prior = [json.loads(l)["q"] for l in fu_f.read_text().splitlines() if l.strip()] if fu_f.exists() else []
     bank_by_id = {e["id"]: e for e in bank}
+    for t in pro_todo[-1:]:          # the learner's newest unanswered question first, one per round
+        at = qa_time(t["time"], now)
+        ctx = " ".join(s["text"] for s in segs if (at - dt.timedelta(minutes=10)).isoformat() <= s["t"] <= at.isoformat()) or transcript
+        raw = study.llm(live_qa.SYS_TA, live_qa.prospective_prompt(a.title, t, ctx, titles, bank_txt), max_tokens=600, temperature=0.2)
+        d = live_qa.parse_prospective(raw, set(bank_by_id))
+        if d:
+            with pro_f.open("a") as f:
+                f.write(json.dumps({"thread": t["id"], "t": now.isoformat(), "q": t["q"], **d}) + "\n")
+            log(f"qa prospective answer for {t['time']} ({d['confidence']})")
     for t in todo[:a.qa_per_round]:
         at = qa_time(t["time"], now)  # what the professor said around the time of the question
         ctx = " ".join(s["text"] for s in segs if (at - dt.timedelta(minutes=8)).isoformat() <= s["t"] <= (at + dt.timedelta(minutes=4)).isoformat()) or transcript
@@ -467,7 +526,7 @@ def run(a):
             if side:
                 with side_f.open("a") as f:
                     f.writelines(json.dumps(r) + "\n" for r in side)
-            fresh = new_slides(cls, last_tokens)
+            fresh = transcript_clean.label_slides(new_slides(cls, last_tokens))
             if fresh:
                 with slide_f.open("a") as f:
                     f.writelines(json.dumps(s) + "\n" for s in fresh)
@@ -481,28 +540,45 @@ def run(a):
         # whisper, at most once per interval, only when capture is healthy
         if not a.no_whisper and time.time() >= next_whisper:
             next_whisper = time.time() + a.whisper_every
-            if ok:
+            if audio_ok(h):
                 try:
                     names = os.listdir(DATA)
                     files = [f for f in finished_files(names, AUDIO_DEVICE, start, now) if f[1] not in done]
-                    titles = [s["title"] for s in load(slide_f)[-3:]]
+                    titles = [s["title"] for s in load(slide_f) if s.get("kind", "slide") == "slide"][-3:]
                     prompt = (a.prompt + " " + " ".join(titles)).strip()[:600]
                     for b in batches(files):
                         prev = [f for f in finished_files(names, AUDIO_DEVICE, start, now)
                                 if f[0] < b[0][0] and (b[0][0] - f[0]).total_seconds() <= CHUNK_S + 15][-1:]
                         t0 = time.time()
                         segs = transcribe(prev + b, b[0][0], prompt, a.threads)
+                        recent = load(seg_f)[-40:]
+                        kept, dropped = transcript_clean.clean_segments(recent + segs, prompt)
+                        new_keys = {(s["t"], s["text"]) for s in segs}
+                        segs = [s for s in kept if (s["t"], s["text"]) in new_keys]
+                        if dropped:
+                            log("whisper filter dropped", dict(dropped))
                         with seg_f.open("a") as f:
                             f.writelines(json.dumps(s) + "\n" for s in segs)
                         done.update(n for _, n in b)
                         log(f"whisper {len(b)} files -> {len(segs)} segments in {time.time() - t0:.0f}s")
-                        if not healthy(health()):
-                            log("capture health dipped; pausing whisper this round")
+                        if not audio_ok(health()):
+                            log("audio health dipped; pausing whisper this round")
                             break
+                    # microphone backup for stretches with no system audio
+                    mics = backup_files(os.listdir(DATA), start, now, done)
+                    for b in batches(mics):
+                        segs = [dict(s, text="(mic) " + s["text"]) for s in transcribe(b, b[0][0], prompt, a.threads)]
+                        kept, _ = transcript_clean.clean_segments(load(seg_f)[-40:] + segs, prompt)
+                        new_keys = {(s["t"], s["text"]) for s in segs}
+                        segs = [s for s in kept if (s["t"], s["text"]) in new_keys]
+                        with seg_f.open("a") as f:
+                            f.writelines(json.dumps(s) + "\n" for s in segs)
+                        done.update(n for _, n in b)
+                        log(f"mic backup {len(b)} files -> {len(segs)} segments (no system audio there)")
                 except Exception as e:
                     log("whisper error", e)
             else:
-                log("capture not healthy; whisper skipped", status)
+                log("audio not healthy; whisper skipped", status)
 
         # Zoom Q&A: threads every round, follow-ups for newly answered threads
         if not a.no_qa:
@@ -523,7 +599,7 @@ def run(a):
             frm, to = last_outline, last_outline + dt.timedelta(minutes=10)
             segs = [s for s in load(seg_f) if frm.isoformat() <= s["t"] < to.isoformat()]
             text = " ".join(s["text"] for s in segs) or api_transcript(frm, to)
-            titles = [s["title"] for s in load(slide_f) if frm.isoformat() <= s["t"] < to.isoformat()]
+            titles = [s["title"] for s in load(slide_f) if frm.isoformat() <= s["t"] < to.isoformat() and s.get("kind", "slide") == "slide"]
             if len(text.split()) > 40 and ok:
                 try:
                     import study
@@ -565,8 +641,15 @@ def run(a):
                     fus.setdefault(f["thread"], []).append(f)
                 threads = json.loads(qa_f.read_text())
                 fus = live_qa.curate_followups(threads, fus)
+                pro_f = out / "qa_prospective.jsonl"
+                pros = {d["thread"]: d for d in load(pro_f)}
+                ev_f2 = out / "qa_prospective_eval.json"
+                for r in (json.loads(ev_f2.read_text())["rows"] if ev_f2.exists() else []):
+                    if r["thread"] in pros:
+                        pros[r["thread"]]["agreement"] = r["recall"]
                 (out / "qa_view.json").write_text(json.dumps(  # what the app's Live tab shows
-                    {"threads": [t["id"] for t in threads if live_qa.thread_kind(t) != "trivial"], "followups": fus}))
+                    {"threads": [t["id"] for t in threads if live_qa.thread_kind(t) != "trivial"], "followups": fus,
+                     "prospective": pros}))
                 qa_md = "\n".join(live_qa.render_section(threads, fus, ev))
                 if qa_md:
                     i = md.find("\n## ")
@@ -579,6 +662,40 @@ def run(a):
                                        "status": status, "words": words, "updated": now.isoformat()}))
         time.sleep(a.every)
     log("until reached; stopping")
+
+
+def replay(a):
+    """Replay prospective answers for a past class: for each of the learner's questions,
+    draft the answer from only what was said before it was asked (no peeking at the reply),
+    write qa_prospective.jsonl, and score it against the staff reply. Used to evaluate the
+    feature on real classes; needs the local model."""
+    import study
+    d = LECTURES / "live" / a.day
+    load = lambda f: [json.loads(l) for l in (d / f).read_text().splitlines() if l.strip()] if (d / f).exists() else []
+    threads = json.loads((d / "qa_threads.json").read_text())
+    segs = load("whisper_segments.jsonl")
+    bank = json.loads((d / "evidence.json").read_text()) if (d / "evidence.json").exists() else []
+    bank_txt = "\n".join(f"{e['id']}: {e['title']} ({e.get('date', '')}): {e['fact']}" for e in bank)
+    rows = [r for r in load("slides.jsonl") if r.get("kind", "slide") == "slide"]
+    day = dt.datetime.strptime(a.day, "%Y%m%d").replace(tzinfo=LOCAL)
+    out = d / "qa_prospective.jsonl"
+    done = {x["thread"] for x in load("qa_prospective.jsonl")}
+    for t in threads:
+        if t["by"] != "You" or live_qa.thread_kind(t) != "content" or t["id"] in done:
+            continue
+        at = qa_time(t["time"], day.replace(hour=12)).astimezone(dt.timezone.utc)
+        ctx = " ".join(s["text"] for s in segs if (at - dt.timedelta(minutes=10)).isoformat() <= s["t"] <= at.isoformat())
+        titles = [r["title"] for r in rows if r["t"] <= at.isoformat()][-4:]
+        q = dict(t, answers=[])
+        raw = study.llm(live_qa.SYS_TA, live_qa.prospective_prompt(a.title, q, ctx, titles, bank_txt), max_tokens=600, temperature=0.2)
+        p = live_qa.parse_prospective(raw, {e["id"] for e in bank})
+        if p:
+            with out.open("a") as f:
+                f.write(json.dumps({"thread": t["id"], "t": at.isoformat(), "q": t["q"], "replay": True, **p}) + "\n")
+            print(t["time"], p["confidence"], p["answer"][:100], flush=True)
+    drafts = {x["thread"]: x for x in load("qa_prospective.jsonl")}
+    score_prospective(drafts, threads, d / "qa_prospective_eval.json")
+    print((d / "qa_prospective_eval.json").read_text()[:400])
 
 
 def status(a):
@@ -606,6 +723,9 @@ def main():
     r.add_argument("--qa-per-round", type=int, default=2, help="follow-ups generated per round (model calls)")
     r.set_defaults(fn=run)
     sub.add_parser("status").set_defaults(fn=status)
+    rp = sub.add_parser("replay", help="draft prospective answers for a past class's own questions and score them")
+    rp.add_argument("day", help="YYYYMMDD"); rp.add_argument("--title", default="")
+    rp.set_defaults(fn=replay)
     a = p.parse_args()
     a.fn(a)
 

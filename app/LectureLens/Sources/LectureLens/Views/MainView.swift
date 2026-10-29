@@ -17,23 +17,22 @@ enum Screen: String, CaseIterable, Identifiable {
 
 struct MainView: View {
     @Bindable var model: AppModel
-    @State private var screen: Screen? = .capture
 
     var body: some View {
         NavigationSplitView {
-            List(Screen.allCases, selection: $screen) { s in
-                Label(s.rawValue, systemImage: s.symbol).tag(s)
+            List(Screen.allCases, selection: $model.screen) { s in
+                Label(s.rawValue, systemImage: s.symbol).font(.scaled(.body)).tag(s)
             }
-            .navigationSplitViewColumnWidth(170)
+            .navigationSplitViewColumnWidth(min: 150, ideal: 150 + 40 * (TextScale.current - 1) * 2, max: 320)
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 6) {
                     Circle().fill(model.overall.color).frame(width: 8, height: 8)
                     Text(model.mode.running ? "Capturing · \(model.mode.mode)" : "Not capturing")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.scaled(.caption)).foregroundStyle(.secondary)
                 }.padding(10)
             }
         } detail: {
-            switch screen ?? .capture {
+            switch model.screen ?? .capture {
             case .capture: CaptureView(model: model)
             case .live: LiveView()
             case .lectures: LecturesView(model: model)
