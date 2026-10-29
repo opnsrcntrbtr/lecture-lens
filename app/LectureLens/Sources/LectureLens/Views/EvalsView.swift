@@ -10,6 +10,8 @@ struct EvalsView: View {
     @State private var feedback: [FeedbackRecord] = []
     @State private var calibrating = false
     @State private var calibration = CalibrationSheet()
+    @State private var holdout = CalibrationSheet()
+    @State private var checkingHoldout = false
 
     var body: some View {
         ScrollView {
@@ -30,6 +32,10 @@ struct EvalsView: View {
         .sheet(isPresented: $calibrating, onDismiss: { calibration = (try? CalibrationSheet.load()) ?? CalibrationSheet() }) {
             CalibrationView()
         }
+        .sheet(isPresented: $checkingHoldout, onDismiss: { holdout = (try? CalibrationSheet.load("holdout.csv")) ?? CalibrationSheet() }) {
+            CalibrationView(sheetName: "holdout.csv", title: "Holdout check")
+        }
+        .task { holdout = (try? CalibrationSheet.load("holdout.csv")) ?? CalibrationSheet() }
     }
 
     // MARK: calibration
@@ -51,6 +57,20 @@ struct EvalsView: View {
                 Button(calibration.labelled == 0 ? "Start labelling" : calibration.panel > 0 ? "Review panel labels" : "Continue labelling") { calibrating = true }
                     .buttonStyle(.borderedProminent).disabled(calibration.rows.isEmpty)
             }.padding(6)
+            if !holdout.rows.isEmpty {
+                Divider()
+                HStack(alignment: .center, spacing: 14) {
+                    Image(systemName: "checkmark.shield").font(.scaled(.title2)).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Holdout check: \(holdout.yours) of \(holdout.rows.count) new rows labelled")
+                            .font(.scaled(.callout, weight: .semibold))
+                        Text("Rows from a class nobody has labelled. Label them blind; then Compute report shows whether the new judge rules (v2) beat the old ones on rows they were not written from.")
+                            .font(.scaled(.caption)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(holdout.yours == 0 ? "Start holdout" : "Continue holdout") { checkingHoldout = true }
+                }.padding(6)
+            }
         }
     }
 

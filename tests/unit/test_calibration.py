@@ -32,3 +32,19 @@ def test_report_splits_human_and_panel_labels():
     r = cal.report(rows)
     assert r["by_source"]["human"]["n"] == 1 and r["by_source"]["panel"]["n"] == 2
     assert r["by_source"]["panel"]["false_pass_rate"] == 1.0
+
+
+def test_versions_include_dotted_and_majority_columns():
+    rows = [{"judge_pass": "1", "judge_v2.1x3_pass": "0", "judge_v1x3_pass": "1", "human_pass": "1", "metric": "m"}]
+    assert cal._versions(rows) == ["v1", "v1x3", "v2.1x3"]
+    assert cal._jp(rows[0], "v2.1x3") == "0"
+
+
+def test_merge_write_keeps_labels_saved_meanwhile(tmp_path):
+    import csv
+    f = tmp_path / "h.csv"
+    with f.open("w", newline="") as fh:
+        w = csv.DictWriter(fh, ["id", "human_pass"]); w.writeheader(); w.writerows([{"id": "a", "human_pass": "1"}, {"id": "b", "human_pass": ""}])
+    cal._merge_write(f, "b", {"judge_v2.1x3_pass": "0"})
+    rows = list(csv.DictReader(f.open()))
+    assert rows[0]["human_pass"] == "1" and rows[1]["judge_v2.1x3_pass"] == "0" and rows[0]["judge_v2.1x3_pass"] == ""

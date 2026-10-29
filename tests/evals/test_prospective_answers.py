@@ -15,6 +15,7 @@ from deepeval.metrics import FaithfulnessMetric, GEval
 from deepeval.test_case import LLMTestCase, SingleTurnParams as P
 
 from judge import JUDGE
+import rubric   # versioned judge instructions (JUDGE_RUBRIC)
 
 CASES = json.loads((Path(__file__).parent / ".prospective.json").read_text())
 
@@ -38,11 +39,11 @@ HEDGING = GEval(
     ],
     evaluation_params=[P.INPUT, P.ACTUAL_OUTPUT, P.RETRIEVAL_CONTEXT], threshold=0.6, model=JUDGE, async_mode=False)
 
-FAITHFUL = FaithfulnessMetric(threshold=0.6, model=JUDGE, async_mode=False)
+FAITHFUL = rubric.faithfulness(0.6)   # v2: DeepEval Faithfulness + claim support
 
 
 @pytest.mark.parametrize("c", CASES, ids=lambda c: c["input"][:50])
 def test_prospective_answer(c):
     assert_test(LLMTestCase(input=c["input"], actual_output=c["actual_output"], expected_output=c["expected_output"],
                             retrieval_context=c["retrieval_context"]),
-                metrics=[AGREEMENT, HEDGING, FAITHFUL])
+                metrics=[AGREEMENT, HEDGING, *FAITHFUL])

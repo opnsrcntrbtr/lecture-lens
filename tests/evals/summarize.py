@@ -62,7 +62,7 @@ def main(res_dir):
     except Exception:
         git = None
     summary = {"suite": "smoke" if os.environ.get("EVAL_SUITE") == "smoke" else "deepeval-study", "generator": outputs.get("generator"),
-               "judge": os.environ.get("OMLX_JUDGE_MODEL"), "prompt_versions": outputs.get("prompt_versions"),
+               "judge": os.environ.get("OMLX_JUDGE_MODEL"), "judge_rubric": os.environ.get("JUDGE_RUBRIC", "v2"), "prompt_versions": outputs.get("prompt_versions"),
                "cases": per_suite, "metrics": metrics,
                "latency": {"ask_p50": round(statistics.median(lat), 2) if lat else None},
                "failures": failures[:50], "source": runs[-1], "git": git}
