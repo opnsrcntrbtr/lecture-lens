@@ -262,10 +262,20 @@ final class AppModel {
         ingest(p.lecture.lastPathComponent)
     }
 
+    /// New holdout rows (added by ingest) are judged with the old and candidate rules, majority of 3,
+    /// about an hour on the judge model. Skipped while capture runs; the script also waits for oMLX to be idle.
+    func scoreHoldoutIfNeeded() {
+        guard !mode.running, !jobs.busy,
+              let sheet = try? CalibrationSheet.load("holdout.csv"),
+              sheet.rows.contains(where: { ($0.cells["judge_v1x3_pass"] ?? "").isEmpty }) else { return }
+        jobs.enqueue("Holdout scoring (judge, ~1 h)", Paths.study.appendingPathComponent("tests/evals/run_holdout_check.sh"), []) { _ in }
+    }
+
     /// After class: transcript merge + WER, Q&A import (anonymised), prospective-answer scores.
     func ingest(_ folderName: String) {
         jobs.enqueue("Import Zoom files", Paths.tool("lecture"), ["ingest", folderName]) { [weak self] _ in
             Task { await self?.loadSessions() }
+            self?.scoreHoldoutIfNeeded()
         }
     }
 

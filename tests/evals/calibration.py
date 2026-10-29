@@ -147,14 +147,24 @@ METRIC_LABEL = {"relevance": "Question relevance [GEval]", "answerability": "Ans
 
 def holdout(day: str, n: int) -> Path:
     """Fresh rows from a class nobody labelled: questions and follow-ups the follower drafted,
-    one metric per case, cycling through the four question metrics."""
+    one metric per case, cycling through the four question metrics. Appends to holdout.csv;
+    a class already in the sheet is skipped, and labels already given are never touched."""
     study = HERE.parents[1]
     live = study / "lectures" / "live" / day
+    out = HERE / "calibration" / "holdout.csv"
+    cases_f = HERE / "calibration" / "holdout_cases.json"
+    existing = list(csv.DictReader(out.open())) if out.exists() else []
+    if any(r["run"] == f"live-{day}" for r in existing):
+        print(json.dumps({"rows": 0, "skipped": f"{day} already in the holdout"}))
+        return out
+    if not (live / "questions.jsonl").exists() and not (live / "qa_followups.jsonl").exists():
+        print(json.dumps({"rows": 0, "skipped": f"no live questions for {day}"}))
+        return out
     subprocess.run([sys.executable, str(HERE / "live_questions_dataset.py"), str(live), "--n", str(n * 2)],
                    check=True, capture_output=True, cwd=HERE)
     cases = json.loads((HERE / ".live_questions.json").read_text())
     kinds = ["relevance", "answerability", "pedagogy", "faithfulness"]
-    rows, full = [], {}
+    rows, full = [], json.loads(cases_f.read_text()) if cases_f.exists() else {}
     for i, c in enumerate(cases[:n]):
         k = kinds[i % 4]
         rid = hashlib.sha1(f"holdout|{day}|{c['input']}|{k}".encode()).hexdigest()[:10]
@@ -163,13 +173,14 @@ def holdout(day: str, n: int) -> Path:
                      "output": c["actual_output"][:900], "expected": "", "context": " | ".join(c["retrieval_context"])[:1200],
                      "judge_score": "", "judge_pass": "", "judge_reason": "", "human_pass": "", "note": "",
                      "label_source": "", "panel_claude": "", "panel_local": ""})
-    out = HERE / "calibration" / "holdout.csv"
-    if out.exists():
-        raise SystemExit(f"{out} exists; not overwriting labels")
-    (HERE / "calibration" / "holdout_cases.json").write_text(json.dumps(full))
-    with out.open("w", newline="") as f:
-        w = csv.DictWriter(f, FIELDS); w.writeheader(); w.writerows(rows)
-    print(json.dumps({"rows": len(rows), "file": str(out)}))
+    cases_f.write_text(json.dumps(full))
+    header = list(existing[0].keys()) if existing else FIELDS
+    header += [k for k in FIELDS if k not in header]
+    tmp = out.with_suffix(".tmp")
+    with tmp.open("w", newline="") as f:
+        w = csv.DictWriter(f, header); w.writeheader(); w.writerows(existing + rows)
+    os.replace(tmp, out)
+    print(json.dumps({"rows": len(rows), "day": day, "total": len(existing) + len(rows), "file": str(out)}))
     return out
 
 

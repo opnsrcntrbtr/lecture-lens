@@ -1,7 +1,7 @@
 """Judge instructions, versioned. Every eval suite builds its metrics here so the judge
 reads the same rubric everywhere and results record which version scored them.
 
-    JUDGE_RUBRIC=v2.1 (default) | v2 | v1
+    JUDGE_RUBRIC=v1 (default) | v2.1 | v2
 
 v1: the original QGEval-style steps (Oct 2026).
 v2: v1 plus an explicit scoring contract, from calibration against the learner's own labels
@@ -17,6 +17,13 @@ v2.1: per metric, the better of v1 and v2 on the 50-row calibration set (29 Oct 
     passed, but failed four good ones and missed a wrong cost figure in long notes).
     The same judge at temperature 0 changed its verdict on 16 of 50 rows between two runs, so
     calibration and before/after checks take the majority of 3 runs (calibration.py --runs 3).
+
+Holdout (29 Oct 2026): 15 rows from a class nobody had labelled, labelled blind by the learner,
+majority of 3 runs: v1 80% (kappa 0.44, false pass 9%), v2.1 80% (kappa 0.29, false pass 15%).
+v2.1 did not beat v1 on fresh rows, so v1 stays the default and v2.1 stays selectable while the
+holdout grows by 15 rows per class; the comparison is decided again at about 50 blind labels.
+The claim-support check raised a false warning on all 3 holdout faithfulness rows (5 of 7 good
+answers across both sets) and missed a wrong figure, so it is off unless JUDGE_CLAIM_WARNING=1.
 """
 from __future__ import annotations
 
@@ -27,7 +34,8 @@ from deepeval.test_case import SingleTurnParams as P
 
 from judge import JUDGE
 
-VERSION = os.environ.get("JUDGE_RUBRIC", "v2.1")
+VERSION = os.environ.get("JUDGE_RUBRIC", "v1")
+CLAIM_WARNING = os.environ.get("JUDGE_CLAIM_WARNING", "0") in ("1", "true", "on", "yes")
 # v2.1 picks, per metric, which version's steps and threshold to use
 MIX = {"v2.1": {"relevance": "v2", "coverage": "v2", "answerability": "v2", "pedagogy": "v1", "claims": "v2"}}
 
@@ -125,7 +133,7 @@ def faithfulness(threshold: float = 0.7, version: str | None = None) -> list:
 
 def claim_warning(version: str | None = None) -> list:
     """v2.1: the claim-support check, reported but not gating (empty for other versions)."""
-    return [geval("claims", "v2")] if (version or VERSION) == "v2.1" else []
+    return [geval("claims", "v2")] if (version or VERSION) == "v2.1" and CLAIM_WARNING else []
 
 
 def metric_kind(name: str) -> str:

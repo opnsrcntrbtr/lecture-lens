@@ -1074,6 +1074,16 @@ def cmd_ingest(a):
         r = subprocess.run([sys.executable, str(HERE / "transcript_ref.py"), str(folder), report["found"]["zoom_transcript"]],
                            capture_output=True, text=True, timeout=600)
         report["transcript_ref"] = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else {"error": r.stderr[-400:]}
+    # judge calibration: 15 fresh rows from this class for blind labelling (Evals > Holdout check);
+    # scoring them needs the judge model and runs separately (tests/evals/run_holdout_check.sh)
+    cal = HERE / "tests" / "evals" / "calibration.py"
+    if cal.exists() and (live / "questions.jsonl").exists():
+        r = subprocess.run([sys.executable, str(cal), "holdout", "--day", day, "--n", "15"],
+                           capture_output=True, text=True, timeout=120, cwd=cal.parent)
+        try:
+            report["holdout"] = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            report["holdout"] = {"error": (r.stderr or r.stdout)[-300:]}
     (folder / "ingest_report.json").write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1))
 

@@ -48,3 +48,27 @@ def test_merge_write_keeps_labels_saved_meanwhile(tmp_path):
     cal._merge_write(f, "b", {"judge_v2.1x3_pass": "0"})
     rows = list(csv.DictReader(f.open()))
     assert rows[0]["human_pass"] == "1" and rows[1]["judge_v2.1x3_pass"] == "0" and rows[0]["judge_v2.1x3_pass"] == ""
+
+
+def test_holdout_appends_new_days_and_keeps_labels(tmp_path, monkeypatch):
+    import csv, json, subprocess
+    monkeypatch.setattr(cal, "HERE", tmp_path / "tests" / "evals")
+    ev = tmp_path / "tests" / "evals"; (ev / "calibration").mkdir(parents=True)
+    for day in ("20260101", "20260108"):
+        live = tmp_path / "lectures" / "live" / day; live.mkdir(parents=True)
+        (live / "questions.jsonl").write_text("{}\n")
+    def fake_run(cmd, **kw):
+        day = cmd[2].split("/")[-1]
+        (ev / ".live_questions.json").write_text(json.dumps([
+            {"input": f"Why do cacti store water ({day} {i})?", "actual_output": "Rain is rare.", "retrieval_context": ["rain is rare"]}
+            for i in range(6)]))
+    monkeypatch.setattr(cal.subprocess, "run", fake_run)
+    out = cal.holdout("20260101", 4)
+    rows = list(csv.DictReader(out.open())); rows[0]["human_pass"] = "1"
+    with out.open("w", newline="") as f:
+        w = csv.DictWriter(f, rows[0].keys()); w.writeheader(); w.writerows(rows)
+    cal.holdout("20260101", 4)                     # same day again: skipped
+    cal.holdout("20260108", 4)
+    rows = list(csv.DictReader(out.open()))
+    assert len(rows) == 8 and rows[0]["human_pass"] == "1"
+    assert {r["metric"] for r in rows[:4]} == {"Question relevance [GEval]", "Answerability [GEval]", "Pedagogical value [GEval]", "Faithfulness"}

@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Holdout check: old (v1) and current (v2.1) judge rules on the holdout rows, majority of 3 runs each.
+# Holdout check: old (v1) and candidate (v2.1) judge rules on the holdout rows, majority of 3 runs each.
+# Resumable: rows already scored are skipped, so after each class only the 15 new rows are judged.
 set -e; setopt pipefail
 HERE="${0:A:h}"; STUDY="${HERE:h:h}"; cd "$HERE"
 set -a; source "$STUDY/.env"; set +a; source "$STUDY/.venv-eval/bin/activate"
