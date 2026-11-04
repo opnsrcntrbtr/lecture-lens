@@ -386,6 +386,19 @@ def is_repeat(h, toks, hashes, texts, distance=12, thumb=None, thumbs=None, rece
                for i in near if i >= lo and thumbs[i] is not None)
 
 
+def keyframe_step(state, h, toks, thumb, distance=12):
+    """One frame through the keyframe rule: True if it repeats a kept frame (drop
+    it), else False, after recording it in state = {"hashes", "thumbs", "texts"}.
+    keyframes() and eval/keyframe_bench.py both call this, so the benchmark
+    measures this code."""
+    if is_repeat(h, toks, state["hashes"], state["texts"], distance, thumb, state["thumbs"]):
+        return True
+    state["hashes"].append(h); state["thumbs"].append(thumb)
+    if len(toks) >= MIN_SLIDE_TOKENS:
+        state["texts"].append(toks)
+    return False
+
+
 def _hash_and_thumb(path):
     """(dHash, grey thumbnail) of an image file, opened once; (None, None) if unreadable."""
     try:
@@ -409,7 +422,8 @@ def keyframes(con, session, max_frames=40, distance=12):
     cands = session["frames"]
     preferred = [f for f in cands if (f["capture_trigger"] or "") == "visual_change"] or cands
     tmpdir = tempfile.mkdtemp(prefix="lecture-kf-")
-    picked, hashes, thumbs, seen_text, texts = [], [], [], set(), []
+    picked, seen_text = [], set()
+    state = {"hashes": [], "thumbs": [], "texts": []}
     for f in preferred:
         img = frame_image(con, f, tmpdir)
         if img is None:
@@ -419,11 +433,8 @@ def keyframes(con, session, max_frames=40, distance=12):
         if h is not None:
             # Slides from one deck share a template, so a coarse image hash calls two
             # different slides the same. Structural similarity and on-screen text decide.
-            toks = _text_tokens(f["text"])
-            if is_repeat(h, toks, hashes, texts, distance, thumb, thumbs):
+            if keyframe_step(state, h, _text_tokens(f["text"]), thumb, distance):
                 continue
-            hashes.append(h); thumbs.append(thumb)
-            if len(toks) >= MIN_SLIDE_TOKENS: texts.append(toks)
         else:
             key = re.sub(r"\W+", " ", (f["text"] or ""))[:400]
             if key in seen_text: continue

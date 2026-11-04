@@ -95,9 +95,12 @@ as the code that relies on it.
   different slides of one template). Score the current dHash+text rule and an SSIM
   rule (Wang et al. 2004). Switch only if the numbers say so.
   Done when: benchmark script + unit test; result recorded in an ADR.
-- [ ] **T4 Prefer the fuller frame of an animation build.** v2 keeps both the partial
-  and the full slide (precision 0.50 on build decks, ADR-005). Replace a kept frame by a
-  later one that adds content in place; measure with keyframe_bench.
+- [~] **T4 Prefer the fuller frame of an animation build. Rejected on evidence.**
+  Tried: replace a kept frame when every changed grid cell went from blank to
+  content. With a webcam inset, 3-8 cells also change content-to-content during a
+  build against 9-14 on a real slide change: a one-cell margin on our own synthetic
+  layout, and an error drops a real slide to save one vision call. Kept both frames
+  (ADR-005). Revisit only with real build examples.
 - [m] **T5 Check v2 keyframes on a real class**: slides kept vs a hand count, before/after.
 - [m] **T3 Re-transcribe saved audio after class** (D10) and report WER against the
   reference with T1's normaliser.

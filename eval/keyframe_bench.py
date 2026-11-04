@@ -13,9 +13,9 @@ Rules compared, each fed the same frames in order, through the production code:
               and no new on-screen text (text counts only with >= 40 tokens)
   ssim alone  repeat when structural similarity (Wang et al. 2004) to one of
               the last three kept frames is at least 0.95 (160x90 grey)
-  v2          is_repeat as keyframes() now calls it: v1, and at most 5 of 36
-              grid cells changed (local SSIM < 0.8) against a recent hash-near
-              kept frame
+  v2          keyframe_step as keyframes() now calls it: v1, and at most 5 of
+              36 grid cells changed (local SSIM < 0.8) against a recent
+              hash-near kept frame
 
 `--margin` prints, for each pooling, the gap between same-slide and
 different-slide pairs, including a held-out dark template.
@@ -129,15 +129,16 @@ def run_rule(frames, rule):
 
 
 def production(img, text, st, v1=False):
-    """lecture_kit.is_repeat as keyframes() calls it; v1 = without the SSIM check."""
-    h, thumb = k.dhash_image(img), (None if v1 else k.grey_thumb(img))
-    toks = k._text_tokens(text)
-    if k.is_repeat(h, toks, st["hashes"], st["texts"], 12, thumb, None if v1 else st["thumbs"]):
-        return True
-    st["hashes"].append(h); st.setdefault("thumbs", []).append(thumb)
-    if len(toks) >= k.MIN_SLIDE_TOKENS:
-        st["texts"].append(toks)
-    return False
+    """lecture_kit.keyframe_step, as keyframes() calls it; v1 = the rule before ADR-005."""
+    h = k.dhash_image(img); toks = k._text_tokens(text)
+    if v1:
+        if k.is_repeat(h, toks, st["hashes"], st["texts"]):
+            return True
+        st["hashes"].append(h)
+        if len(toks) >= k.MIN_SLIDE_TOKENS:
+            st["texts"].append(toks)
+        return False
+    return k.keyframe_step(st, h, toks, k.grey_thumb(img))
 
 
 def ssim_rule(threshold):
@@ -157,7 +158,7 @@ def score(kept, n_slides):
 
 RULES = {"v1 (dhash+text)": lambda i, t, s: production(i, t, s, v1=True),
          "ssim>=0.95 alone": ssim_rule(0.95),
-         "v2 production (dhash+text+changed cells)": production}
+         "v2 production": production}
 CONDITIONS = {"short text": {}, "long text": {"long_text": True},
               "big webcam": {"big_cam": True}, "builds + big webcam": {"builds": True, "big_cam": True}}
 

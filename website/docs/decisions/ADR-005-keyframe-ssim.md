@@ -36,7 +36,7 @@ Keep the hash as the first, cheap test. A frame the hash calls the same is a rep
 
 ## Consequences
 - More slides are kept, so more vision calls per build. The cap of 40 slides per session still holds.
-- Animation builds now yield two frames per slide (the partial and the full one). That costs a vision call and loses nothing; preferring the fuller frame is a follow-up (plan item T4).
+- Animation builds now yield two frames per slide (the partial and the full one). That costs a vision call and loses nothing. Replacing the partial frame with the fuller one was tried and rejected: with a webcam inset, 3–8 cells change content-to-content during a build against 9–14 on a real slide change, too thin a margin when an error loses a slide.
 - About 50 ms per candidate frame, against roughly 30 s per vision call.
 - The evidence is synthetic: perfect on-screen text, two templates, invented content, a one-cell worst-case margin. Recall on a real class is the check that matters (plan item T5, on the Mac).
 
