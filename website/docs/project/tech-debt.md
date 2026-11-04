@@ -20,7 +20,7 @@ Scored as (impact + risk) × (6 − effort), each factor 1 to 5. Higher means so
 | D10 | Transcripts lose about a quarter of spoken words | Dependency | 5 | 4 | 4 | 18 | Re-transcribe saved audio after class; raise upstream |
 | D11 | Private windows of the meeting app are captured in live mode | Code | 2 | 4 | 2 | 24 | Window-title filter |
 | D12 | Two code bases: the public repository and the author's private working copy | Infrastructure | 3 | 3 | 2 | 24 | Make the public repository the only source; keep private files in ignored folders |
-| D13 | The card metric rejects recall cards that the card prompt allows | Test | 2 | 2 | 1 | 20 | Change the metric: recall cards are supported by the evidence |
+| D13 | ~~The card metric rejects recall cards that the card prompt allows~~ | Test | 2 | 2 | 1 | 20 | **Done:** the criterion judges the mix (at most about a third recall); confirm on the next judged run |
 
 ## Order
 

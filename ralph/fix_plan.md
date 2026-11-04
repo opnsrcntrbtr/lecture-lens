@@ -47,7 +47,7 @@ as the code that relies on it.
   2009). Prefer why/apply/compare cards over recall. (Answers go after the notes:
   the app's Markdown view does not fold `<details>`.)
   Done when: a unit test on the pure function; notes text unchanged below the block.
-- [ ] **L3 D13: the card metric must accept recall cards.** The card prompt allows
+- [x] **L3 D13: the card metric must accept recall cards.** The card prompt allows
   up to a third recall cards, and recall itself is supported by the testing-effect
   evidence (Roediger & Karpicke 2006). Rewrite the "Card quality" criterion to
   judge the mix, not to reject recall.
@@ -74,6 +74,8 @@ as the code that relies on it.
   unsupported atomic fact in one claim, after FActScore, Min et al. 2023) and more
   `derived` pairs, all on invented content.
   Done when: pairs added, balance kept, `about` updated.
+- [m] **L4 Confirm L3 on a judged run.** Smoke eval before/after the new card criterion;
+  report card-quality pass rate with n and the E1 interval.
 - [m] **E5 D5: re-baseline thresholds** after the next full judged run, using the
   interval from E1 rather than the point estimate.
 
