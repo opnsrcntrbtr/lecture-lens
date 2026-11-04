@@ -189,15 +189,194 @@ def new_slides(rows: list[dict], last_tokens: set | None, threshold: float = 0.5
     """Keep a row when its words differ enough from the slide kept before it."""
     out = []
     for r in rows:
-        body = slide_body(r["text"])
+        body = r.get("body") or slide_body(r["text"])
         if not body or len(tokens(body)) < 3:
             continue
         tk = tokens(body)
         if last_tokens is not None and same_slide(tk, last_tokens, threshold):
             continue
-        out.append({"t": r["t"], "title": slide_title(body), "text": body[:1500]})
+        out.append({"t": r["t"], "title": r.get("title") or slide_title(body), "text": body[:1500],
+                    **({"src": r["src"]} if r.get("src") else {})})
         last_tokens = tk
     return out
+
+
+# ------------------------------------------------------------------ slide OCR fallback
+# screenpipe keeps a window's accessibility text instead of OCR when the app exposes
+# any, and the meeting app's toolbar and docked panels count, so the shared slide can stop
+# being read. When no slide has been seen for a while, read the latest class-window frame
+# with Apple Vision (tools/vision_ocr) and keep only the text inside the slide region.
+VISION_OCR = HERE / "tools" / "vision_ocr"
+# x0,y0,x1,y1 as fractions of the frame: below the speaker strip, left of a docked panel
+SLIDE_REGION = tuple(float(v) for v in os.environ.get("LIVE_SLIDE_REGION", "0,0.12,0.76,1").split(","))
+
+
+def notify(title: str, text: str) -> None:
+    """A macOS notification; argv only, the text is ours, never captured content."""
+    script = f'display notification {json.dumps(text)} with title {json.dumps(title)}'
+    try:
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+
+SPEAKER_LINE = re.compile(r"\bis talking\b|'s screen\b|^\s*(REC|Show captions)\s*$", re.I)
+
+
+# Zoom's Q&A / chat panel docks on the right; its own labels mark where it starts, so the
+# slide region's right edge follows the panel instead of a fixed fraction per class.
+PANEL_MARK = re.compile(r"^\s*(q\s*&\s*a|type your question here|answered|dismissed|open \(\d+\)|webinar chat|"
+                        r"to: (host|everyone)|type message here|who can see your (questions|messages)|polls?/quizzes)\b", re.I)
+# Slide-show apps shared in edit view (PowerPoint, Keynote) add ribbon and status-bar lines:
+# a line made only of ribbon words, or a status-bar line, is the app's chrome.
+RIBBON = set("""autosave file home insert draw design transitions animations slide show record review view help acrobat
+comments share editing paste clipboard paragraph drawing voice add ins designer dictate style styles shapes arrange quick
+search notes display settings saved to this pc the ink touch replay undo tools stencils convert math ruler with
+format arrange zoom pictures photo album icons models smartart chart screenshot media embed link wordart symbols
+header footer camera flash illustrations comments""".split())
+STATUS_BAR = re.compile(r"(slide \d+ of \d+|accessibility:|display settings|^\s*\d{1,3}%\s*$|^\s*english( \([a-z ]+\))?\s*$|\benglish \((india|us|uk|united states|united kingdom)\))", re.I)
+
+
+RIBBON_ALONE = {"autosave", "acrobat", "designer", "dictate", "clipboard", "transitions", "animations", "paste", "editing"}
+
+
+# Meeting-app and desktop text that lands inside the slide region:
+ZOOM_TOOLBAR = re.compile(r"^\W*(chat|react|reactions|q\s*&\s*a|settings|leave|share|participants|mute|unmute|video|"
+                          r"more|apps|record|whiteboards|notes|captions|polls?)\W*$", re.I)
+QA_PANEL_LINE = re.compile(r"^\W*(all|my) questions\s*\(\d+\)\W*$|send anonymously|^\W*(open|answered|dismissed)\s*\(\d+\)\W*$", re.I)
+DIALOG = re.compile(r"product notice|sign in to office|^\W*sign in\W*$|stored credentials|license status|saved to (this pc|onedrive)|"
+                    r"microsoft 365 account|activated with|unlicensed product|so we can verify", re.I)
+MEETING_WINDOW = re.compile(r"you'?re screen sharing|stop share|^\W*rec\b|\d{1,2} \w{3}, \d{4} \d{1,2}:\d{2}:\d{2}", re.I)
+ROLE_TILE = re.compile(r"\s[-\u2013]\s*(program\b|coordinator|co-host|host|panelist|faculty)", re.I)
+CHAT_TOAST = re.compile(r"^\W*from\s+\S.*\s[-\u2013]\s", re.I)          # "From <name> - <role>" chat pop-up
+BROWSER_CHROME = re.compile(r"docs\.google\.com/\S*edit|[?#]slide\s*=\s*id|^\W*ask google\W*$|^\W*slideshow\W*$", re.I)
+TITLE_JUNK = re.compile(r"\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\b\d{1,2}:\d{2}\b")
+
+
+def staff_names() -> set[str]:
+    return {n.strip().lower() for n in os.environ.get("LIVE_QA_STAFF", "").split(",") if n.strip()}
+
+
+def is_person_label(text: str) -> bool:
+    """A video-tile or presenter name label: 'Name - Program Coordinator' or a known staff name."""
+    t = text.strip().rstrip(".\u2026").strip()
+    return bool(ROLE_TILE.search(t)) or t.lower() in staff_names()
+
+
+def is_ui_line(text: str) -> bool:
+    """Toolbar buttons, Q&A panel lines, app dialogs and name labels: never slide text."""
+    return bool(ZOOM_TOOLBAR.search(text) or QA_PANEL_LINE.search(text) or DIALOG.search(text)
+                or CHAT_TOAST.search(text) or BROWSER_CHROME.search(text)) or is_person_label(text)
+
+
+def meeting_window(texts: list[str]) -> bool:
+    """Two or more meeting-window markers (share banner, REC, the meeting's own title and times)
+    mean the frame shows the meeting app itself, with its video tiles, not a slide."""
+    return (sum(bool(MEETING_WINDOW.search(t.strip())) for t in texts) >= 2
+            or sum(bool(BROWSER_CHROME.search(t.strip())) for t in texts) >= 2)   # the presenter's browser/editor
+
+
+def plausible_title(title: str) -> bool:
+    """A slide title: at least two real words, mostly letters, no dates or clock times, not a name label."""
+    t = title.strip()
+    if not t or TITLE_JUNK.search(t) or is_person_label(t) or not t[0].isalnum():   # "• Section" is a nav item
+        return False
+    first = next((c for c in t if c.isalpha()), "")
+    if first and not first.isupper():                                              # "outcome stage?" is a fragment
+        return False
+    letters = sum(c.isalpha() for c in t)
+    return len(re.findall(r"[A-Za-z]{3,}", t)) >= 2 and letters >= 0.6 * len(t.replace(" ", ""))
+
+
+def is_editor_chrome(text: str) -> bool:
+    """A status-bar line, two or more ribbon words and nothing else, or one unmistakable ribbon word.
+    A slide line like "Design" or "Review" alone is kept."""
+    words = [w for w in re.findall(r"[A-Za-z]+", text.lower()) if len(w) > 2]
+    if STATUS_BAR.search(text):
+        return True
+    if len(words) >= 2:
+        return all(w in RIBBON for w in words)
+    return len(words) == 1 and words[0] in RIBBON_ALONE
+
+
+def panel_edge(lines: list[dict], default: float = SLIDE_REGION[2], lo: float = 0.5) -> float:
+    """Left edge of a docked side panel (x in 0..1), from its own labels; default when none is seen."""
+    xs = [l["x"] for l in lines if l["x"] >= lo and PANEL_MARK.search(l["text"])]
+    return round(min(xs) - 0.005, 3) if xs else default
+
+
+def region_lines(lines: list[dict], region=SLIDE_REGION) -> list[dict]:
+    """Vision lines ({text,x,y,w,h}, origin top-left) inside the region, in reading order.
+    Fewer than 8 words in all means a video tile or a bare toolbar, not a slide."""
+    x0, y0, x1, y1 = region
+    keep = [l for l in lines if l["x"] >= x0 and l["x"] + l["w"] <= x1 + 0.01 and l["y"] >= y0 and l["y"] + l["h"] <= y1
+            and not SPEAKER_LINE.search(l["text"]) and not is_editor_chrome(l["text"]) and not is_ui_line(l["text"])
+            and not (len(tokens(l["text"])) <= 3 and UI_NOISE.search(l["text"]))]   # a toolbar button
+    if len(tokens(" ".join(l["text"] for l in keep))) < 8:
+        return []
+    keep.sort(key=lambda l: (round(l["y"] / 0.015), l["x"]))
+    return keep
+
+
+def region_text(lines: list[dict], region=SLIDE_REGION) -> str:
+    return "\n".join(l["text"] for l in region_lines(lines, region))
+
+
+def ocr_title(lines: list[dict]) -> str | None:
+    """A slide's title is set in its largest type: the tallest line of two or more words."""
+    cand = [l for l in lines if len(l["text"].split()) >= 2 and len(l["text"]) >= 6 and not UI_NOISE.search(l["text"])
+            and plausible_title(l["text"])]
+    return max(cand, key=lambda l: l["h"])["text"].strip() if cand else None
+
+
+def vision_lines(image: Path) -> list[dict]:
+    if not VISION_OCR.exists():
+        return []
+    r = subprocess.run([str(VISION_OCR), "--json", str(image)], capture_output=True, text=True, timeout=60)
+    return [json.loads(l) for l in r.stdout.splitlines() if l.startswith("{")]
+
+
+def class_frames(since: dt.datetime, limit: int = 1):
+    """Newest class-window frames after `since`, read-only from screenpipe's database."""
+    import lecture_kit
+    con = lecture_kit.db()
+    names = sorted(w for w in CLASS_WINDOWS if w)
+    q = (f"SELECT id, timestamp, window_name, snapshot_path, video_chunk_id, offset_index FROM frames "
+         f"WHERE lower(app_name) LIKE ? AND timestamp > ? AND (lower(window_name) IN ({','.join('?' * len(names))}) "
+         f"OR window_name = '' OR window_name IS NULL) ORDER BY timestamp DESC LIMIT ?")
+    rows = [dict(r) for r in con.execute(q, (f"%{LIVE_APP}%", since.isoformat(), *names, limit))]
+    return rows, con
+
+
+def slide_from_lines(lines: list[dict]) -> tuple[str, str | None]:
+    """Slide text and title from one frame's Vision lines; ("", None) when the frame is not a
+    slide (the meeting window with its video tiles, or no plausible title)."""
+    if meeting_window([l["text"] for l in lines]):
+        return "", None
+    x0, y0, _, y1 = SLIDE_REGION
+    keep = region_lines(lines, (x0, y0, panel_edge(lines), y1))
+    title = ocr_title(keep)
+    if not keep or not title:
+        return "", None
+    return "\n".join(l["text"] for l in keep), title
+
+
+def ocr_frame(frame: dict, con) -> tuple[str, str | None]:
+    import lecture_kit
+    p = Path(frame["snapshot_path"]) if frame.get("snapshot_path") else None   # Path("") is "." and exists
+    tmp = None
+    if p is None or not p.is_file():
+        tmp = Path(tempfile.mkstemp(suffix=".jpg")[1])
+        if not lecture_kit.extract_from_chunk(con, frame, tmp):
+            tmp.unlink(missing_ok=True)
+            return "", None
+        p = tmp
+    try:
+        lines = vision_lines(p)
+        return slide_from_lines(lines)
+    finally:
+        if tmp:
+            tmp.unlink(missing_ok=True)
 
 
 Q_TYPES = ("clarify", "challenge", "practical", "capstone")
@@ -273,13 +452,58 @@ def health() -> dict:
 
 
 def healthy(h: dict) -> bool:
-    return h.get("frame_status") == "ok" and h.get("audio_status") == "ok"
+    return h.get("frame_status") == "ok" and audio_ok(h)
+
+
+def _fresh_chunk(max_age_s: float) -> bool:
+    """True when screenpipe wrote a system-audio or app-tap chunk within max_age_s."""
+    try:
+        newest = max((p.stat().st_mtime for pat in ("System Audio*", "App Tap*") for p in DATA.glob(pat)), default=0)
+    except OSError:
+        return False
+    return newest > 0 and time.time() - newest < max_age_s
+
+
+def window_ready(segs: list[dict], to: dt.datetime, now: dt.datetime, max_wait_s: float = 1500) -> bool:
+    """Outline a 10-minute window only once whisper has transcribed past its end
+    (or it is too late to wait), so a lagging transcript doesn't make it skip."""
+    return bool(segs) and segs[-1]["t"] >= to.isoformat() or (now - to).total_seconds() >= max_wait_s
+
+
+SYNC_KINDS = {"slides", "outline", "questions"}
+
+
+def take_sync(out: Path) -> set[str]:
+    """On-demand sync requested by the app: lectures/live/<day>/sync_request.json with
+    {"what": ["questions"|"outline"|"slides"|"all", ...]}. The file is consumed."""
+    f = out / "sync_request.json"
+    if not f.exists():
+        return set()
+    try:
+        raw = json.loads(f.read_text() or "{}").get("what", [])
+    except (ValueError, AttributeError):
+        raw = []
+    f.unlink(missing_ok=True)
+    what = {raw} if isinstance(raw, str) else set(raw)
+    return SYNC_KINDS if "all" in what else what & SYNC_KINDS
 
 
 def audio_ok(h: dict) -> bool:
     """Whisper only needs audio: keep transcribing when screen frames pause (e.g. a display
     sleep or screenpipe's pause gate) as long as audio capture is healthy."""
-    return h.get("audio_status") == "ok"
+    if h.get("audio_status") == "ok":
+        return True
+    # "no_input_device" only means no microphone is recorded; system audio may still be fresh.
+    if h.get("audio_status") == "no_input_device" and _fresh_chunk(180):
+        return True   # last_audio_timestamp lags when screenpipe batches transcription; the files don't
+    ts = h.get("last_audio_timestamp")
+    if h.get("audio_status") == "no_input_device" and ts:
+        try:
+            age = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))).total_seconds()
+            return age < 180
+        except ValueError:
+            return False
+    return False
 
 
 def whisper_model() -> str | None:
@@ -385,7 +609,7 @@ def make_questions(a, frm, to, text, titles, outline, prior, side_text, ev_f, q_
     prior_q = [q["q"] for q in prior] + [l for l in side_text.split(" / ") if "?" in l]
     qs = parse_questions(raw, {e["id"] for e in bank}, prior_q)
     ground = " ".join([text, str(titles), earlier])
-    qs = [q for q in qs if live_qa.grounded(q["q"], ground)]   # ungrounded questions failed relevance 3/3 on 14 Oct
+    qs = [q for q in qs if live_qa.grounded(q["q"], ground)]   # ungrounded questions failed relevance 3/3 in a replay
     with q_f.open("a") as f:
         f.writelines(json.dumps({"t": to.isoformat(), **q}) + "\n" for q in qs)
     return qs
@@ -508,6 +732,10 @@ def run(a):
     note = VAULT / "Lectures" / f"{today.strftime('%Y%m%d')} LIVE - {safe}.md"
     load = lambda f: [json.loads(l) for l in f.read_text().splitlines() if l.strip()] if f.exists() else []
     next_whisper = time.time()
+    next_ocr, last_seen = time.time(), dt.datetime.now(dt.timezone.utc)
+    next_save = time.time() + (a.save_reminder or 30) * 60
+    final_save = until - dt.timedelta(minutes=10)      # one last reminder before the class ends
+    final_sent = False
     log = lambda *m: print(dt.datetime.now(LOCAL).strftime("%H:%M:%S"), *m, flush=True)
     log("start", start.isoformat(), "until", until.isoformat(), "out", out)
 
@@ -516,6 +744,14 @@ def run(a):
         ok = healthy(h)
         status = "ok" if ok else f"CHECK ({h.get('frame_status')}/{h.get('audio_status')})"
         now = dt.datetime.now(dt.timezone.utc)
+        sync = take_sync(out)
+        if sync:
+            log("sync requested", ",".join(sorted(sync)))
+            if sync & {"outline", "questions"}:
+                next_whisper = 0          # transcribe the newest audio first
+            if "slides" in sync:
+                next_ocr = 0
+        sync_result = {}
 
         # slides and side windows
         try:
@@ -532,10 +768,42 @@ def run(a):
                     f.writelines(json.dumps(s) + "\n" for s in fresh)
                 last_tokens = tokens(fresh[-1]["text"])  # text is the slide body
                 log("slides +", len(fresh), "|", fresh[-1]["title"][:60])
+            if any(slide_body(r["text"]) for r in cls):
+                last_seen = now
             if rows:
                 last_slide_t = rows[-1]["t"]
         except Exception as e:
             log("slides error", e)
+
+        # the meeting app's own transcript has stopped early in past classes; a reminder to
+        # save it is the only safe backup (nothing here drives the meeting app)
+        if a.save_reminder and time.time() >= next_save:
+            next_save = time.time() + a.save_reminder * 60
+            notify("Live class", "Save the meeting transcript now (Transcript panel > Save).")
+            log("reminder: save the meeting transcript")
+        if a.save_reminder and not final_sent and now >= final_save:
+            final_sent = True
+            notify("Live class", "Class ends soon: save the meeting transcript and export the Q&A.")
+            log("reminder: final save before the end")
+
+        # no slide text for 2 minutes: read the latest class frame with Vision instead
+        if not a.no_ocr_fallback and ((now - last_seen).total_seconds() > 120 or "slides" in sync) and time.time() >= next_ocr:
+            next_ocr = time.time() + 60
+            try:
+                frames, con = class_frames(now - dt.timedelta(minutes=3))
+                if frames:
+                    body, title = ocr_frame(frames[0], con)
+                    row = {"t": utc_iso(frames[0]["timestamp"]), "text": body, "src": "vision", "title": title,
+                           "body": body if body and not is_noise(body) else None}
+                    fresh = transcript_clean.label_slides(new_slides([row], last_tokens)) if row["body"] else []
+                    if fresh:
+                        with slide_f.open("a") as f:
+                            f.writelines(json.dumps(x) + "\n" for x in fresh)
+                        last_tokens = tokens(fresh[-1]["text"])
+                        log("slides + 1 (vision) |", fresh[-1]["title"][:60])
+                con.close()
+            except Exception as e:
+                log("ocr fallback error", e)
 
         # whisper, at most once per interval, only when capture is healthy
         if not a.no_whisper and time.time() >= next_whisper:
@@ -595,11 +863,18 @@ def run(a):
                 log("ask-now error", e)
 
         # outline every 10 minutes
-        if not a.no_outline and (now - last_outline).total_seconds() >= 600:
+        due = (not a.no_outline and (now - last_outline).total_seconds() >= 600
+               and window_ready(load(seg_f), last_outline + dt.timedelta(minutes=10), now))
+        forced = bool(sync & {"outline", "questions"}) and not due
+        if due or forced:
             frm, to = last_outline, last_outline + dt.timedelta(minutes=10)
+            if forced:   # since the last batch, up to the newest transcribed line
+                all_segs = load(seg_f)
+                to = min(dt.datetime.fromisoformat(all_segs[-1]["t"]), now) if all_segs else now
             segs = [s for s in load(seg_f) if frm.isoformat() <= s["t"] < to.isoformat()]
             text = " ".join(s["text"] for s in segs) or api_transcript(frm, to)
             titles = [s["title"] for s in load(slide_f) if frm.isoformat() <= s["t"] < to.isoformat() and s.get("kind", "slide") == "slide"]
+            wrote = False
             if len(text.split()) > 40 and ok:
                 try:
                     import study
@@ -608,17 +883,29 @@ def run(a):
                         "Write exactly 3 short bullets ('- ') on what was taught: concepts, frameworks, numbers. Only what the material says. No citations, no brackets, no preamble.",
                         max_tokens=260, temperature=0.2)
                     with outl_f.open("a") as f:
-                        f.write(json.dumps({"from": frm.isoformat(), "to": to.isoformat(), "bullets": bullets.strip()}) + "\n")
-                    log("outline", frm.astimezone(LOCAL).strftime("%H:%M"))
+                        f.write(json.dumps({"from": frm.isoformat(), "to": to.isoformat(), "bullets": bullets.strip(),
+                                            **({"partial": True} if forced and "questions" not in sync else {})}) + "\n")
+                    log("outline", frm.astimezone(LOCAL).strftime("%H:%M"), "(sync)" if forced else "")
+                    sync_result["outline_window"] = [frm.isoformat(), to.isoformat()]
                 except Exception as e:
                     log("outline error", e)
-                if not a.no_questions:
-                    try:
-                        make_questions(a, frm, to, text, titles, load(outl_f), load(q_f), load_side(side_f, frm, to), ev_f, q_f)
-                        log("questions", frm.astimezone(LOCAL).strftime("%H:%M"))
-                    except Exception as e:
-                        log("questions error", e)
-            last_outline = to if (now - to).total_seconds() < 1200 else now - dt.timedelta(minutes=10)
+            if len(text.split()) > 40 and ok and not a.no_questions and (not forced or "questions" in sync):
+                try:
+                    before = len(load(q_f))
+                    make_questions(a, frm, to, text, titles, load(outl_f), load(q_f), load_side(side_f, frm, to), ev_f, q_f)
+                    log("questions", frm.astimezone(LOCAL).strftime("%H:%M"), "(sync)" if forced else "")
+                    sync_result["questions"] = len(load(q_f)) - before
+                    wrote = sync_result["questions"] > 0 or not forced   # an empty sync doesn't use up the window
+                except Exception as e:
+                    log("questions error", e)
+            if forced:
+                sync_result["window"] = [frm.isoformat(), to.isoformat()]
+                if wrote:   # questions were drafted: the next scheduled batch starts where this sync ended
+                    last_outline = to
+                else:
+                    sync_result["note"] = "not enough new transcript yet" if ok else f"capture {status}"
+            else:
+                last_outline = to if (now - to).total_seconds() < 1800 else now - dt.timedelta(minutes=10)
 
         words = sum(len(s["text"].split()) for s in load(seg_f))
         try:
@@ -660,7 +947,13 @@ def run(a):
         state_f.write_text(json.dumps({"done_files": sorted(done), "last_slide_t": last_slide_t, "qa_done": qa_done,
                                        "last_tokens": sorted(last_tokens or []), "last_outline": last_outline.isoformat(),
                                        "status": status, "words": words, "updated": now.isoformat()}))
-        time.sleep(a.every)
+        if sync:
+            sync_result.update({"what": sorted(sync), "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                                "slides": len(load(slide_f)), "outline": len(load(outl_f))})
+            (out / "sync_done.json").write_text(json.dumps(sync_result))
+        t_end = time.time() + a.every       # sleep, but wake within 2 s for an on-demand sync
+        while time.time() < t_end and not (out / "sync_request.json").exists():
+            time.sleep(2)
     log("until reached; stopping")
 
 
@@ -713,11 +1006,14 @@ def main():
     r.add_argument("--until", required=True, help="HH:MM local, when to stop following")
     r.add_argument("--title", required=True)
     r.add_argument("--every", type=int, default=60, help="seconds between rounds")
-    r.add_argument("--whisper-every", type=int, default=300)
+    r.add_argument("--whisper-every", type=int, default=120)  # 300 s rounds fell behind live audio
     r.add_argument("--threads", type=int, default=4)
     r.add_argument("--prompt", default="", help="vocabulary to bias whisper (course terms, names)")
     r.add_argument("--no-whisper", action="store_true")
     r.add_argument("--no-outline", action="store_true")
+    r.add_argument("--no-ocr-fallback", action="store_true", help="never OCR frames with Vision when slide text stops")
+    r.add_argument("--save-reminder", type=int, default=int(os.environ.get("LIVE_SAVE_REMINDER", "30")),
+                   help="minutes between 'save the meeting transcript' reminders, plus one 10 min before --until (0 = off)")
     r.add_argument("--no-questions", action="store_true", help="skip the 10-minute questions to ask")
     r.add_argument("--no-qa", action="store_true", help="skip Zoom Q&A threads and follow-ups")
     r.add_argument("--qa-per-round", type=int, default=2, help="follow-ups generated per round (model calls)")

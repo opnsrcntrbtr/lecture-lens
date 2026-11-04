@@ -38,13 +38,25 @@ Every minute it writes to `lectures/live/<yyyymmdd>/` and to a live note in your
 
 | File | What it holds |
 |---|---|
-| `whisper_segments.jsonl` | The class re-transcribed with whisper.cpp, in 5-minute batches with 30 s of overlap, at background priority |
+| `whisper_segments.jsonl` | The class re-transcribed with whisper.cpp, in 2-minute rounds with 30 s of overlap, at background priority |
 | `slides.jsonl` | One entry per distinct slide. Set `LIVE_SLIDE_MARKER` (and optionally `LIVE_SLIDE_FOOTER`) to your deck's marker and footer regexes for clean titles |
 | `outline.jsonl` | Three bullets every 10 minutes from the transcript and slide titles |
 | `questions.jsonl` | Three questions to ask every 10 minutes, each with a draft answer. A draft may cite only the sources in `evidence.json`, a list you check yourself before class |
 | `qa_threads.json` | The meeting app's Q&A panel as threads: a question and the staff replies |
 | `qa_followups.jsonl`, `qa_view.json` | Drafted follow-ups for answered threads, and the curated set the app shows |
 | `ask_now.json` | The top 3 questions to ask now, refreshed every 5 minutes |
+
+### Health checks and batches
+
+A round is skipped only when frames are not being saved or no audio is arriving. A recorder that reports no input device (no microphone recorded) still counts as healthy while system-audio chunks keep being written, since only the microphone is missing. An outline or question batch waits until the re-transcription has caught up with the end of its 10-minute window, so a lagging transcript delays a batch rather than skipping it.
+
+### Sync now
+
+The **Live** tab has a **Sync now** button on Questions, Running outline and Slides. From a terminal, `./live-sync questions` (or `outline`, `slides`, `all`) does the same. The request goes into `sync_request.json`; the follower wakes within 2 seconds, runs a batch on the transcript since the last one, and writes `sync_done.json`. An outline made this way is marked "(so far)". A questions sync that drafts nothing does not use up the window, so the next scheduled batch still covers it.
+
+### Programme calendar
+
+Put your timetable in `lectures/calendar.json` (see `calendar.example.json`; the real one stays out of git). `sp-start` then takes today's class title from it, using the title as a short whisper prompt (long prompts caused repetition loops), `lecture build` tags the lecture with its week and module, `lecture next` prints the next class, and the app's Capture tab shows a Next class card.
 
 ### Q&A threads and follow-ups
 
@@ -57,7 +69,7 @@ The app's **Live** tab shows all of this with a Copy button on each question. Pa
 
 ### Why slides can stop appearing
 
-The recorder stores a window's accessibility text in preference to OCR and runs OCR only when that text is empty. Some meeting apps expose their toolbar and docked panels as accessibility text, so the shared screen stops being read. The build's keyframes and slide descriptions still recover the slides after class.
+The recorder stores a window's accessibility text in preference to OCR and runs OCR only when that text is empty. Some meeting apps expose their toolbar and docked panels as accessibility text, so the shared screen stops being read. When no slide text has arrived for 2 minutes, the follower reads the latest class frame with Apple Vision (build it once: `swiftc -O tools/vision_ocr.swift -o tools/vision_ocr`) and keeps the text inside `LIVE_SLIDE_REGION`. It drops meeting-app toolbar and Q&A panel lines, office-app dialogs, editor ribbons and status bars, chat pop-ups, name tiles (`Name - Role` and the names in `LIVE_QA_STAFF`), frames of the meeting window itself or of a browser slide editor, and titles that are dates, times or fragments. Turn it off with `--no-ocr-fallback`. The build's keyframes and slide descriptions still recover the slides after class.
 
 ## After class
 

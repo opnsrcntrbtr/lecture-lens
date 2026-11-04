@@ -26,6 +26,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import study  # shared config + llm() + oMLX plumbing
+import course_calendar  # programme calendar (data in lectures/calendar.json, gitignored)
 sys.path.insert(0, str(HERE / "eval"))
 import vlm_client as vc  # the evaluated vision client
 from player_crop import player_box  # crops page chrome away (eval: 9/20 -> 0/20 leaking answers)
@@ -789,6 +790,8 @@ def build(session, con, describe=True, cards=20, quiet=False):
             f"{c['q'].replace(chr(9),' ')}\t{c['a'].replace(chr(9),' ')}\t{session['title']} {c.get('at','')}"
             for c in card_rows) + "\n")
 
+    cal_s = course_calendar.session_at(session["start"])   # programme calendar (gitignored)
+    module = course_calendar.module_label(cal_s) if cal_s else ""
     # 4. Obsidian note (links, not copies — the vault points at the artefacts)
     vault_dir = VAULT / VAULT_SUB
     vault_dir.mkdir(parents=True, exist_ok=True)
@@ -806,7 +809,7 @@ def build(session, con, describe=True, cards=20, quiet=False):
         f"\n- Flashcards: `{folder/'cards.tsv'}` ({len(card_rows)} cards)"
         + (f"\n- Class Q&A: `{folder/'qa.md'}`" if (folder / "qa.md").exists() else "") + "\n")
 
-    manifest = {"id": session["id"], "title": session["title"],
+    manifest = {"id": session["id"], "title": session["title"], "module": module or None,
                 "start": session["start"].isoformat(), "end": session["end"].isoformat(),
                 "minutes": session["minutes"], "frames": len(session["frames"]),
                 "frames_with_image": sum(1 for f in session["frames"] if f.get("snapshot_path") or f.get("video_chunk_id")),
@@ -818,6 +821,11 @@ def build(session, con, describe=True, cards=20, quiet=False):
                 "cards": len(card_rows), "vl_model": VL_MODEL or None, "llm": study.MODEL,
                 "player_box": list(box) if box else None,
                 "built_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if cal_s:
+        manifest["calendar"] = {"week": cal_s["week"], "title": cal_s["title"], "date": cal_s["date"],
+                                "module": cal_s.get("module") or "", "module_title": cal_s.get("module_title") or ""}
+        if module:
+            manifest["module_source"] = "programme calendar"
     try:   # a module set by hand (or by an earlier build) survives a rebuild
         old = json.loads((folder / "manifest.json").read_text())
         for k in ("module", "module_source"):
@@ -1036,6 +1044,14 @@ def brief_prompt(title, agenda, prior, preread):
             "against a primary source before class. Never invent sources or numbers; quote the notes' own terms.")
 
 
+def cmd_next(a):
+    """The next scheduled class from the programme calendar."""
+    s = course_calendar.next_session()
+    if a.json:
+        print(json.dumps(s or {}, ensure_ascii=False)); return
+    print(course_calendar.describe(s) if s else "no upcoming class in the calendar (lectures/calendar.json)")
+
+
 def cmd_brief(a):
     """Before class: a brief from the agenda, pre-read and the notes of earlier classes, with
     the local model. Sources are not added here; the evidence bank is verified separately."""
@@ -1166,6 +1182,7 @@ def main():
     p.set_defaults(fn=cmd_doctor)
     p = sub.add_parser("qa-import", help="use the meeting app's Q&A export: score the live capture, anonymise, feed the build")
     p.add_argument("id"); p.add_argument("export"); p.set_defaults(fn=cmd_qa_import)
+    p = sub.add_parser("next", help="the next class from the programme calendar"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_next)
     p = sub.add_parser("brief", help="before class: recall points and questions from the agenda and earlier notes")
     p.add_argument("--title", required=True); p.add_argument("--agenda", help="text file with the agenda")
     p.add_argument("--preread", help="text file: pre-read or homework instructions"); p.add_argument("--date", help="YYYYMMDD (default today)")

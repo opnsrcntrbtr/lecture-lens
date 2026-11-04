@@ -12,6 +12,8 @@ struct LiveView: View {
     @State private var showPruned = false
     private func visible(_ q: String) -> Bool { showPruned || !live.pruned.contains(q) }
     @State private var qaSearch = ""
+    @State private var syncing: String?
+    @State private var syncNote: [String: String] = [:]
 
     enum QAFilter: String, CaseIterable, Identifiable {
         case all = "All", mine = "Mine", unanswered = "Unanswered"
@@ -182,13 +184,14 @@ struct LiveView: View {
 
     // MARK: questions to ask
     private var questionsBox: some View {
-        GroupBox("Questions to ask (every 10 minutes)") {
+        GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 if live.questions.isEmpty { Text("First questions after 10 minutes of class.").foregroundStyle(.secondary) }
-                ForEach(live.questions.reversed().filter { visible($0.q) }.prefix(9)) { q in
+                ForEach(live.questions.reversed().filter { visible($0.q) }) { q in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(alignment: .top) {
-                            Text("\(q.type): ").font(.scaled(.callout, weight: .semibold)) + Text(q.q).font(.scaled(.callout))
+                            Text(LiveData.clock(q.t) + "  ").font(.scaled(.caption, weight: .semibold)).foregroundStyle(.secondary)
+                            + Text("\(q.type): ").font(.scaled(.callout, weight: .semibold)) + Text(q.q).font(.scaled(.callout))
                             Spacer()
                             copyButton(q.q)
                         }
@@ -198,29 +201,71 @@ struct LiveView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        } label: { syncHeader("Questions to ask (every 10 minutes · \(live.questions.count))", what: "questions") }
+    }
+
+    // MARK: on-demand sync (live_class.py picks up sync_request.json within ~2 s)
+    private func syncHeader(_ title: String, what: String) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+            Spacer()
+            if let n = syncNote[what] { Text(n).font(.scaled(.caption)).foregroundStyle(.secondary) }
+            if syncing == what { ProgressView().controlSize(.small) }
+            Button("Sync now", systemImage: "arrow.triangle.2.circlepath") { requestSync(what) }
+                .controlSize(.small)
+                .disabled(syncing != nil || !live.isFresh)
+                .help(live.isFresh ? "Ask the live follower to update this now" : "The live follower isn't running")
+        }
+    }
+
+    private func requestSync(_ what: String) {
+        let req = live.folder.appendingPathComponent("sync_request.json")
+        let done = live.folder.appendingPathComponent("sync_done.json")
+        let asked = Date()
+        guard (try? JSONSerialization.data(withJSONObject: ["what": [what]]))
+                .map({ (try? $0.write(to: req, options: .atomic)) != nil }) == true else {
+            syncNote[what] = "couldn't write the request"; return
+        }
+        syncing = what; syncNote[what] = nil
+        Task {
+            defer { syncing = nil }
+            for _ in 0..<180 {
+                try? await Task.sleep(for: .seconds(1))
+                guard let data = try? Data(contentsOf: done),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let at = (obj["at"] as? String).flatMap({ ISO8601DateFormatter.flexible.date(from: $0) }),
+                      at > asked else { continue }
+                live = await LiveData.load()
+                if let note = obj["note"] as? String { syncNote[what] = note }
+                else if what == "questions" { syncNote[what] = "\((obj["questions"] as? Int) ?? 0) new" }
+                else { syncNote[what] = "updated \(LiveData.clock(obj["at"] as? String ?? ""))" }
+                return
+            }
+            syncNote[what] = "no answer yet (follower busy)"
         }
     }
 
     // MARK: outline and slides
     private var outlineBox: some View {
-        GroupBox("Running outline") {
+        GroupBox {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(live.outline.reversed()) { o in
-                    Text(LiveData.clock(o.from) + "–" + LiveData.clock(o.to)).font(.scaled(.caption, weight: .semibold))
+                    Text(LiveData.clock(o.from) + "–" + LiveData.clock(o.to) + (o.partial == true ? " (so far)" : ""))
+                        .font(.scaled(.caption, weight: .semibold))
                     Text(o.bullets).font(.scaled(.callout)).textSelection(.enabled)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        } label: { syncHeader("Running outline", what: "outline") }
     }
 
     private var slidesBox: some View {
-        GroupBox("Slides") {
+        GroupBox {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(live.slideTitles, id: \.self) { s in Text(s).font(.scaled(.callout)) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        } label: { syncHeader("Slides", what: "slides") }
     }
 
     /// Post-class judge marks: pruned (shown only with the toggle) and unsupported drafts.
@@ -253,7 +298,7 @@ struct Drafted: Decodable, Identifiable {
     var thread: String?; var t: String; var type: String; var q: String; var answer: String; var sources: [String]
     var id: String { t + q }
 }
-struct OutlinePart: Decodable, Identifiable { var from: String; var to: String; var bullets: String; var id: String { from } }
+struct OutlinePart: Decodable, Identifiable { var from: String; var to: String; var bullets: String; var partial: Bool?; var id: String { from + to } }
 struct SlideEntry: Decodable { var t: String; var title: String; var kind: String? }
 struct Prospective: Decodable {
     var thread: String; var answer: String; var confidence: String; var listen_for: String?; var agreement: Double?

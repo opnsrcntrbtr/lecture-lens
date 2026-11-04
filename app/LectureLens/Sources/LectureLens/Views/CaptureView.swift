@@ -10,6 +10,21 @@ struct CaptureView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                if let next = model.nextClass {
+                    GroupBox("Next class") {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "calendar").font(.system(size: 22 * TextScale.current)).foregroundStyle(.tint)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(next.title).font(.scaled(.headline))
+                                Text(next.moduleText).foregroundStyle(.secondary)
+                                Text(next.whenText).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }.padding(6)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Next class: \(next.title), \(next.moduleText), \(next.whenText)")
+                }
                 GroupBox("Health") {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(model.signals) { s in

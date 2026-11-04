@@ -1,0 +1,15 @@
+#!/bin/zsh
+# On-demand sync for the live follower: ./live-sync questions|outline|slides|all
+# Writes lectures/live/<today>/sync_request.json; the running live_class.py picks it up within ~2 s.
+DIR="${0:A:h}"; OUT="$DIR/lectures/live/$(date +%Y%m%d)"
+what=("${@:-all}")
+[[ -d "$OUT" ]] || { echo "no live class folder for today ($OUT)"; exit 1; }
+pgrep -f "live_class.py run" >/dev/null || { echo "live follower is not running"; exit 1; }
+rm -f "$OUT/sync_done.json"
+python3 -c 'import json,sys; print(json.dumps({"what": sys.argv[1:]}))' "${what[@]}" > "$OUT/sync_request.json"
+echo "sync requested: ${what[*]} (waiting up to 3 min)"
+for i in {1..90}; do
+  [[ -f "$OUT/sync_done.json" ]] && { cat "$OUT/sync_done.json"; echo; exit 0; }
+  sleep 2
+done
+echo "no answer yet; the follower may be busy (check logs/live_class_$(date +%Y%m%d).log)"
