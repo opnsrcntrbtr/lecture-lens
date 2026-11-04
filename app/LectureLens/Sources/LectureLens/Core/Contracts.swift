@@ -81,6 +81,8 @@ struct EvalSummary: Decodable, Sendable {
         let pass: Int?
         let n: Int?
         let threshold: Double?
+        /// 95% Wilson interval [low, high] for pass/n; absent in older summaries.
+        let ci95: [Double]?
     }
 }
 

@@ -30,6 +30,18 @@ A run refuses to start while capture is running in live mode.
 - **Check what a failure is before fixing the model.** In the first full baseline, most failed question-answering cases were the judge penalising the answer's source list, which it could not see in the context. The harness now scores the answer body only.
 - **Trust the judge only as far as the judge benchmark.** A perfect score on easy pairs says little; add hard pairs (derived claims, partial support).
 
+### How sure a number is
+
+Every pass rate in `summary.json` carries `ci95`, a 95% Wilson score interval. On the six smoke cases, 5 of 6 passing is "somewhere between 44% and 97%": enough to catch a collapse, not a small change. Quote the interval with the rate.
+
+After each run, `run.sh` compares it with the previous run of the same suite and writes `compare.md`: per metric, the cases fixed and broken, and McNemar's exact test on those pairs. Compare any two runs by hand with:
+
+```sh
+tests/evals/compare_runs.py eval/results/<before>/summary.json eval/results/<after>/summary.json
+```
+
+A p-value above 0.05 does not mean "no change"; on a few cases it usually means the suite is too small to tell. The methods and references are on [Research basis](../project/research-basis.md).
+
 ## Adding cases from your own classes
 
 Cases built from a real class are course material. Keep them in files named `tests/evals/session_*`, which git ignores and the content guard blocks. They run with the full suite on your machine.

@@ -55,12 +55,12 @@ as the code that relies on it.
 
 ## Evaluation rigour
 
-- [ ] **E1 Confidence intervals on every pass rate.** Six smoke cases cannot show a
+- [x] **E1 Confidence intervals on every pass rate.** Six smoke cases cannot show a
   small change. Report a Wilson score interval with each pass rate (Wilson 1927;
   recommended over the normal interval by Brown, Cai & DasGupta 2001) in
   `summarize.py` and the judge benchmark.
   Done when: unit tests check known Wilson values; summary.json carries `ci95`.
-- [ ] **E2 Compare two runs case by case.** Roadmap "results show the change against
+- [x] **E2 Compare two runs case by case.** Roadmap "results show the change against
   the previous run". Store per-case outcomes and compare runs with McNemar's exact
   test on the discordant pairs (McNemar 1947; Dietterich 1998).
   Done when: `tests/evals/compare_runs.py A B` prints per-metric change and p-value;

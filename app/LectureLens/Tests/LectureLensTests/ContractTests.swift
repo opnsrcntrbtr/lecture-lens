@@ -48,6 +48,9 @@ import Testing
     let deep = #"{"suite":"deepeval-study","generator":"g","judge":"j","metrics":{"ask:Faithfulness":{"mean":0.91,"pass":30,"n":36,"threshold":0.8}}}"#
     let s1 = try JSONDecoder().decode(EvalSummary.self, from: Data(deep.utf8))
     #expect(s1.metrics?["ask:Faithfulness"]?.pass == 30)
+    #expect(s1.metrics?["ask:Faithfulness"]?.ci95 == nil)
+    let withCI = #"{"metrics":{"ask:Faithfulness":{"mean":0.91,"pass":5,"n":6,"ci95":[0.436,0.97]}}}"#
+    #expect(try JSONDecoder().decode(EvalSummary.self, from: Data(withCI.utf8)).metrics?["ask:Faithfulness"]?.ci95?.first == 0.436)
     let vision = #"{"model":"m","by_config":{"think_off":{"title_exact":{"pass":30,"n":36},"latency_p50":4.2,"note":"x"}}}"#
     let s2 = try JSONDecoder().decode(EvalSummary.self, from: Data(vision.utf8))
     guard case .agg(let p, let n, _) = s2.by_config?["think_off"]?["title_exact"] else { Issue.record("not agg"); return }
