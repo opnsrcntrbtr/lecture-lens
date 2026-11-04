@@ -107,5 +107,5 @@ as the code that relies on it.
 
 ## Docs
 
-- [ ] **D1 Research basis page** listing every reference above with what it is used
+- [x] **D1 Research basis page** listing every reference above with what it is used
   for, linked from the study-method, evaluation and testing pages.
