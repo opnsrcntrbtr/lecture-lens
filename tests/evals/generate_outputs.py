@@ -58,7 +58,7 @@ def main():
         for f in sorted(HERE.glob("session_*_goldens.json")): goldens += json.loads(f.read_text())
         for f in sorted(HERE.glob("session_*_contexts.json")): contexts += json.loads(f.read_text())
     out = {"generator": study.MODEL, "prompt_versions": {
-        "ask": study.PROMPT_VERSION, "notes": lecture_kit.NOTES_PROMPT_VERSION,
+        "ask": study.PROMPT_VERSION, "retrieval": study.RETRIEVAL_VERSION, "notes": lecture_kit.NOTES_PROMPT_VERSION,
         "cards": lecture_kit.CARDS_PROMPT_VERSION}, "ask": [], "notes": [], "cards": []}
     t0 = time.time()
     for i, g in enumerate(goldens, 1):

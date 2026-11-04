@@ -174,10 +174,54 @@ def retrieve(question, start, end, app=None, log=sys.stderr):
     return queries, rows
 
 
+RETRIEVAL_VERSION = "bm25-v1"
+_TOKEN = re.compile(r"[a-z0-9]+")
+_STOP = frozenset("a an and are as at be by for from has have how in is it its of on or that the this "
+                  "to was were what when where which who why will with does do did not".split())
+
+
+def _terms(text):
+    return [t for t in _TOKEN.findall(text.lower()) if t not in _STOP and len(t) > 1]
+
+
+def bm25_rank(question, rows, k1=1.5, b=0.75):
+    """Order rows by Okapi BM25 relevance to the question, best first.
+
+    BM25 as in Robertson & Zaragoza (2009), "The Probabilistic Relevance
+    Framework: BM25 and Beyond", with the non-negative idf
+    log(1 + (N - n + 0.5) / (n + 0.5)). The collection is the candidate rows
+    themselves, so the score needs no index. Ties keep time order. A row with no
+    query term scores 0 and goes last, but is kept: the model may still need it.
+    """
+    import math
+    docs = [_terms(r["text"]) for r in rows]
+    if not docs:
+        return []
+    q = list(dict.fromkeys(_terms(question)))
+    N = len(docs); avg = sum(map(len, docs)) / N or 1.0
+    df = {t: sum(1 for d in docs if t in d) for t in q}
+    def score(d):
+        s = 0.0
+        for t in q:
+            f = d.count(t)
+            if f:
+                idf = math.log(1 + (N - df[t] + 0.5) / (df[t] + 0.5))
+                s += idf * f * (k1 + 1) / (f + k1 * (1 - b + b * len(d) / avg))
+        return s
+    scored = sorted(enumerate(rows), key=lambda ir: (-score(docs[ir[0]]), ir[0]))
+    return [r for _, r in scored]
+
+
 def answer_from(question, rows, think=False):
     """Generation step, separated from retrieval so evals can run it on fixed
-    context. Returns (answer, ctx_rows_used, source_block_sent_to_model)."""
-    ctx = next(chunks(rows))  # best-effort single window within context budget
+    context. Returns (answer, ctx_rows_used, source_block_sent_to_model).
+
+    Rows are ranked by BM25 before packing (bm25-v1). Before this, rows were
+    packed in time order, so with many hits the earliest captures filled the
+    budget and a relevant late one was dropped. Best source first: models use
+    the start of a long context best (Liu et al. 2024, "Lost in the Middle").
+    """
+    ctx = next(chunks(bm25_rank(question, rows)), [])  # best-effort single window within budget
     src = as_sources(ctx)
     ans = llm(SYS_TUTOR, f"Sources:\n{src}\n\nQuestion: {question}\n\n{ANSWER_INSTRUCTIONS}",
               max_tokens=1500, think=think)
