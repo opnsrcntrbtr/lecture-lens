@@ -32,7 +32,7 @@ as the code that relies on it.
 
 ## Learning science
 
-- [ ] **L1 Spaced review with a pass/fail log.** Roadmap "Next" item. Practice
+- [x] **L1 Spaced review with a pass/fail log.** Roadmap "Next" item. Practice
   testing and distributed practice are the two high-utility techniques
   (Dunlosky et al. 2013); schedule with the FSRS memory model (Ye, Su & Cao 2022)
   using pass = Good, fail = Again, desired retention 0.9. `./lecture review`

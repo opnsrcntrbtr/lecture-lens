@@ -27,6 +27,8 @@ All commands live in the repository root and read `.env`.
 | `… --cards N` | Upper bound on cards (default 20) |
 | `./lecture watch [--idle 5]` | Build each session a few minutes after it ends |
 | `./lecture doctor [--quick] [--json]` | Health checks |
+| `./lecture review [--limit 30] [--new 10] [--lecture NAME]` | Ask the cards that are due; pass/fail goes to `reviews.jsonl` in the lecture's folder |
+| `./lecture review --stats [--json]` | Due and new counts, and cards that keep failing |
 | `./transcript_ref.py <folder> <reference.txt>` | Merge a reference transcript and measure word error rate |
 
 ## Study

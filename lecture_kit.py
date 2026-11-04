@@ -904,6 +904,7 @@ def main():
     p = sub.add_parser("doctor"); p.add_argument("--json", action="store_true")
     p.add_argument("--quick", action="store_true", help="skip the vision-model image probe")
     p.set_defaults(fn=cmd_doctor)
+    import review; review.add_parser(sub)
     a = ap.parse_args(); a.fn(a)
 
 if __name__ == "__main__":
