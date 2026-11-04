@@ -246,9 +246,14 @@ def dhash(path, size=8):
     except ImportError:
         return None
     try:
-        img = Image.open(path).convert("L").resize((size + 1, size))
+        return dhash_image(Image.open(path), size)
     except Exception:
         return None
+
+
+def dhash_image(img, size=8):
+    """dHash of an open PIL image (dhash() opens the file first)."""
+    img = img.convert("L").resize((size + 1, size))
     px = list(img.tobytes())  # mode L: one byte per pixel (getdata is deprecated in Pillow 12)
     bits = 0
     for row in range(size):
@@ -314,6 +319,84 @@ def _text_tokens(text):
 def _jaccard(a, b):
     return len(a & b) / max(1, len(a | b))
 
+MIN_SLIDE_TOKENS = 40
+SSIM_SIZE = (192, 108)          # 6 x 6 grid of 32 x 18 cells
+SSIM_GRID = 6
+SSIM_CELL_CHANGED = 0.8         # a cell whose local SSIM is below this has changed
+MAX_CHANGED_CELLS = int(os.environ.get("STUDY_KEYFRAME_MAX_CHANGED", "5"))
+
+
+def grey_thumb(img, size=SSIM_SIZE):
+    """Grey thumbnail as a flat byte list, computed once per frame for ssim()."""
+    return list(img.convert("L").resize(size).tobytes())
+
+
+def ssim(a, b, size=SSIM_SIZE, win=8, stride=4):
+    """Mean structural similarity of two grey thumbnails (Wang, Bovik, Sheikh &
+    Simoncelli 2004): square 8x8 windows, C1 = (0.01 L)^2, C2 = (0.03 L)^2, L = 255."""
+    w, h = size; c1, c2 = (0.01 * 255) ** 2, (0.03 * 255) ** 2
+    n = win * win; vals = []
+    for y in range(0, h - win + 1, stride):
+        for x in range(0, w - win + 1, stride):
+            pa = [a[(y + j) * w + x + i] for j in range(win) for i in range(win)]
+            pb = [b[(y + j) * w + x + i] for j in range(win) for i in range(win)]
+            ma = sum(pa) / n; mb = sum(pb) / n
+            va = sum((p - ma) ** 2 for p in pa) / (n - 1); vb = sum((p - mb) ** 2 for p in pb) / (n - 1)
+            cov = sum((p - ma) * (q - mb) for p, q in zip(pa, pb)) / (n - 1)
+            vals.append(((2 * ma * mb + c1) * (2 * cov + c2)) / ((ma * ma + mb * mb + c1) * (va + vb + c2)))
+    return sum(vals) / len(vals)
+
+
+def changed_cells(a, b, size=SSIM_SIZE, grid=SSIM_GRID, threshold=SSIM_CELL_CHANGED):
+    """How many cells of a grid x grid split changed, judged by each cell's own SSIM.
+
+    Pooling local SSIM by changed regions rather than by the mean: a moving
+    webcam inset changes a few adjacent cells, a new slide's title and bullets
+    change many. On the synthetic decks the mean SSIM of the same slide and of
+    two different slides overlapped; this count did not (ADR-005)."""
+    w, h = size; cw, ch = w // grid, h // grid; n = 0
+    for gy in range(grid):
+        for gx in range(grid):
+            ca = [a[(gy * ch + y) * w + gx * cw + x] for y in range(ch) for x in range(cw)]
+            cb = [b[(gy * ch + y) * w + gx * cw + x] for y in range(ch) for x in range(cw)]
+            n += ssim(ca, cb, size=(cw, ch), win=min(8, ch)) < threshold
+    return n
+
+
+def is_repeat(h, toks, hashes, texts, distance=12, thumb=None, thumbs=None, recent=3):
+    """The keyframe rule: a frame repeats a kept one when its image hash is within
+    `distance` bits of one, its on-screen text does not show a new slide, and,
+    when thumbnails are given, at most MAX_CHANGED_CELLS of its 36 grid cells
+    changed (local SSIM, changed_cells) against one of the `recent` last kept
+    frames that are also hash-near. A slide shown again later is kept again.
+
+    The SSIM check (keyframes-v2) is there because a 64-bit hash calls two slides
+    of one deck the same: on synthetic template decks the hash-and-text rule
+    alone kept 17-58% of the slides (ADR-005, eval/keyframe_bench.py). Without
+    thumbnails this is the v1 rule.
+    """
+    near = [i for i, prev in enumerate(hashes) if hamming(h, prev) < distance]
+    new_text = len(toks) >= MIN_SLIDE_TOKENS and all(_jaccard(toks, t) < 0.5 for t in texts)
+    if not near or new_text:
+        return False
+    if thumb is None or thumbs is None:
+        return True
+    lo = len(hashes) - recent
+    return any(changed_cells(thumb, thumbs[i]) <= MAX_CHANGED_CELLS
+               for i in near if i >= lo and thumbs[i] is not None)
+
+
+def _hash_and_thumb(path):
+    """(dHash, grey thumbnail) of an image file, opened once; (None, None) if unreadable."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            im.load()
+            return dhash_image(im), grey_thumb(im)
+    except Exception:
+        return None, None
+
+
 def keyframes(con, session, max_frames=40, distance=12):
     """Pick visually distinct frames — the slide changes, not every tick.
 
@@ -326,23 +409,21 @@ def keyframes(con, session, max_frames=40, distance=12):
     cands = session["frames"]
     preferred = [f for f in cands if (f["capture_trigger"] or "") == "visual_change"] or cands
     tmpdir = tempfile.mkdtemp(prefix="lecture-kf-")
-    picked, hashes, seen_text, texts = [], [], set(), []
+    picked, hashes, thumbs, seen_text, texts = [], [], [], set(), []
     for f in preferred:
         img = frame_image(con, f, tmpdir)
         if img is None:
             continue
         f = {**f, "image": img}
-        h = dhash(img)
+        h, thumb = _hash_and_thumb(img)
         if h is not None:
             # Slides from one deck share a template, so a coarse image hash calls two
-            # different slides the same. On-screen text decides in that case.
+            # different slides the same. Structural similarity and on-screen text decide.
             toks = _text_tokens(f["text"])
-            looks_same = any(hamming(h, prev) < distance for prev in hashes)
-            new_text = len(toks) >= 40 and all(_jaccard(toks, t) < 0.5 for t in texts)
-            if looks_same and not new_text:
+            if is_repeat(h, toks, hashes, texts, distance, thumb, thumbs):
                 continue
-            hashes.append(h)
-            if len(toks) >= 40: texts.append(toks)
+            hashes.append(h); thumbs.append(thumb)
+            if len(toks) >= MIN_SLIDE_TOKENS: texts.append(toks)
         else:
             key = re.sub(r"\W+", " ", (f["text"] or ""))[:400]
             if key in seen_text: continue

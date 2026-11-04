@@ -153,3 +153,38 @@ def test_recall_first_prefers_reasoning_cards_and_keeps_notes():
 def test_recall_first_without_cards_returns_notes_unchanged():
     assert k.recall_first("notes", []) == "notes"
     assert "1. Only recall?" in k.recall_first("notes", [{"q": "Only recall?", "a": "Yes", "kind": "recall"}])
+
+
+# --- keyframes-v2: structural similarity confirms a hash repeat (ADR-005) ---
+def _bench():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+    import keyframe_bench as kb
+    return kb
+
+
+def test_changed_cells_separate_template_slides_but_not_capture_noise():
+    import random
+    kb = _bench(); rng = random.Random(1)
+    a, _ = kb.slide("astronomy", 0, rng); b, _ = kb.slide("astronomy", 5, rng)
+    ta, tb = k.grey_thumb(a), k.grey_thumb(b)
+    assert k.ssim(ta, ta) == 1.0 and k.changed_cells(ta, ta) == 0
+    assert k.hamming(k.dhash_image(a), k.dhash_image(b)) < 12           # the hash alone calls them the same
+    assert k.changed_cells(ta, tb) > k.MAX_CHANGED_CELLS                 # a new slide changes many cells
+    seen = k.grey_thumb(kb.as_seen(a, rng, big_cam=True))                # cursor + big webcam + JPEG
+    assert k.changed_cells(ta, seen) <= k.MAX_CHANGED_CELLS
+
+
+def test_is_repeat_v1_vs_v2():
+    import random
+    kb = _bench(); rng = random.Random(2)
+    a, _ = kb.slide("biology", 0, rng); b, _ = kb.slide("biology", 3, rng)
+    ha, hb = k.dhash_image(a), k.dhash_image(b)
+    assert k.is_repeat(hb, set(), [ha], [])                         # v1: merged
+    assert not k.is_repeat(hb, set(), [ha], [], 12, k.grey_thumb(b), [k.grey_thumb(a)])   # v2: kept
+    assert not k.is_repeat(hb, set(), [], [])                       # nothing kept yet
+
+
+def test_keyframe_bench_v2_recovers_every_slide():
+    kb = _bench()
+    frames = kb.deck("astronomy", n_slides=4, views=2, seed=3)
+    assert kb.score(kb.run_rule(frames, kb.production), 4) == {"kept": 4, "recall": 1.0, "precision": 1.0}

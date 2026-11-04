@@ -90,11 +90,15 @@ as the code that relies on it.
   Keep S/D/I counts.
   Done when: unit tests show "twenty five" = "25", "don't" = "do not", and that
   "you" is kept.
-- [ ] **T2 Measure keyframe de-duplication before changing it.** Build a synthetic
+- [x] **T2 Measure keyframe de-duplication before changing it.** Build a synthetic
   benchmark from `eval/gen_dataset.py` slides (same slide + cursor/noise vs.
   different slides of one template). Score the current dHash+text rule and an SSIM
   rule (Wang et al. 2004). Switch only if the numbers say so.
   Done when: benchmark script + unit test; result recorded in an ADR.
+- [ ] **T4 Prefer the fuller frame of an animation build.** v2 keeps both the partial
+  and the full slide (precision 0.50 on build decks, ADR-005). Replace a kept frame by a
+  later one that adds content in place; measure with keyframe_bench.
+- [m] **T5 Check v2 keyframes on a real class**: slides kept vs a hand count, before/after.
 - [m] **T3 Re-transcribe saved audio after class** (D10) and report WER against the
   reference with T1's normaliser.
 
