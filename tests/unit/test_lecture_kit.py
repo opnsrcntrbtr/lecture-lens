@@ -112,3 +112,24 @@ def test_judge_scores_the_answer_not_its_source_list():
     ans = "H2 takes 12-24 months [2].\n\n**Sources used:**\n- [2] Tue 29 Sep 15:31 · audio · learn.example.edu"
     assert go.answer_body(ans) == "H2 takes 12-24 months [2]."
     assert go.answer_body("No list here.") == "No list here."
+
+
+# --- recall-first notes (retrieval before rereading) ---
+def test_recall_first_prefers_reasoning_cards_and_keeps_notes():
+    notes = "## TL;DR\n- Stars fuse hydrogen."
+    cards = [{"q": "What is a light year?", "a": "A distance", "kind": "recall"},
+             {"q": "Why do stars shine?", "a": "Fusion releases energy", "kind": "why", "at": "00:04:00"},
+             {"q": "Red dwarf or giant: which lives longer?", "a": "Red dwarf", "kind": "compare"},
+             {"q": "A star runs out of hydrogen: what next?", "a": "It expands", "kind": "apply"}]
+    out = k.recall_first(notes, cards)
+    assert out.startswith("## Before you read")
+    head, body, tail = out.split("\n\n---\n\n")
+    assert body == notes                                   # notes untouched, in the middle
+    assert "light year" not in head and "Fusion" not in head   # no answers before the notes
+    assert tail.splitlines()[2:] == ["1. Fusion releases energy [00:04:00]", "2. Red dwarf", "3. It expands"]
+    assert head.count("\n1. ") + head.count("\n2. ") + head.count("\n3. ") == 3
+
+
+def test_recall_first_without_cards_returns_notes_unchanged():
+    assert k.recall_first("notes", []) == "notes"
+    assert "1. Only recall?" in k.recall_first("notes", [{"q": "Only recall?", "a": "Yes", "kind": "recall"}])

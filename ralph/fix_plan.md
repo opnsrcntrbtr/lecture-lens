@@ -41,10 +41,11 @@ as the code that relies on it.
   feedback on the card.
   Done when: unit tests cover the forgetting curve, intervals growing on pass and
   shrinking on fail, due selection, and the log round trip.
-- [ ] **L2 Recall-first notes.** Roadmap "Next" item. Put three questions at the
+- [x] **L2 Recall-first notes.** Roadmap "Next" item. Put three questions at the
   top of `notes.md`, answers folded, before the notes: retrieval before review
   (Roediger & Karpicke 2006) and the pretesting effect (Richland, Kornell & Kao
-  2009). Prefer why/apply/compare cards over recall.
+  2009). Prefer why/apply/compare cards over recall. (Answers go after the notes:
+  the app's Markdown view does not fold `<details>`.)
   Done when: a unit test on the pure function; notes text unchanged below the block.
 - [ ] **L3 D13: the card metric must accept recall cards.** The card prompt allows
   up to a third recall cards, and recall itself is supported by the testing-effect

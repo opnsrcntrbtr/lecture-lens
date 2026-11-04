@@ -474,6 +474,28 @@ def dedupe_cards(cards, threshold=0.6):
     return kept
 
 
+RECALL_KINDS = ("why", "apply", "compare")   # preferred over plain recall for the opening questions
+
+
+def recall_first(notes, cards, k=3):
+    """Put k questions above the notes and their answers after them.
+
+    Answering before reading is retrieval practice (Roediger & Karpicke 2006),
+    and an attempt that fails still improves later learning of the answer (the
+    pretesting effect, Richland, Kornell & Kao 2009). Reasoning cards are
+    preferred over plain recall. The notes text itself is unchanged.
+    """
+    ranked = sorted(enumerate(cards), key=lambda ic: (str(ic[1].get("kind", "")).lower() not in RECALL_KINDS, ic[0]))
+    picked = [c for _, c in ranked[:k] if c.get("q") and c.get("a")]
+    if not picked:
+        return notes
+    qs = "\n".join(f"{i}. {c['q']}" for i, c in enumerate(picked, 1))
+    ans = "\n".join(f"{i}. {c['a']}" + (f" [{c['at']}]" if c.get("at") else "") for i, c in enumerate(picked, 1))
+    # Answers go after the notes, not in <details>: the app's Markdown view does not fold HTML.
+    return ("## Before you read\n\nAnswer these from memory first. The answers are at the end.\n\n"
+            f"{qs}\n\n---\n\n{notes}\n\n---\n\n## Answers to the opening questions\n\n{ans}")
+
+
 def _split_lines(lines, budget):
     """Pack transcript lines into consecutive parts of at most `budget` characters."""
     parts, cur, size = [], [], 0
@@ -676,9 +698,6 @@ def build(session, con, describe=True, cards=20, quiet=False):
     else:
         source = (f"TRANSCRIPT (timecoded):\n{transcript_src}\n\n" + slide_src)[: study.CTX]
     notes = make_notes(session["title"], source)
-    (folder / "notes.md").write_text(
-        f"# {session['title']}\n\n_{session['start'].astimezone():%a %d %b %Y %H:%M} · {session['minutes']} min · "
-        f"notes by {study.MODEL} from this Mac's own capture_\n\n{notes}\n")
 
     if cards and parts:   # cards from the words themselves, part by part, not from the digest
         card_rows, per = [], max(3, -(-cards // len(parts)))
@@ -690,6 +709,9 @@ def build(session, con, describe=True, cards=20, quiet=False):
             card_rows += make_cards(session["title"], slide_src[: study.CTX], per, say)
     else:
         card_rows = make_cards(session["title"], source, cards, say) if cards else []
+    (folder / "notes.md").write_text(
+        f"# {session['title']}\n\n_{session['start'].astimezone():%a %d %b %Y %H:%M} · {session['minutes']} min · "
+        f"notes by {study.MODEL} from this Mac's own capture_\n\n{recall_first(notes, card_rows)}\n")
     if card_rows:
         (folder / "cards.tsv").write_text("\n".join(
             f"{c['q'].replace(chr(9),' ')}\t{c['a'].replace(chr(9),' ')}\t{session['title']} {c.get('at','')}"
