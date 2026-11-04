@@ -3,8 +3,8 @@ the oMLX 27B LLM judge?
 
     python judge_bench.py OUT_DIR [--skip-llm] [--skip-metric]
 
-Part 1 — claim support. 72 hand-labelled claim/context pairs (judge_pairs.json,
-36 supported / 36 not). Each judge says P(supported). We report accuracy and
+Part 1 — claim support. 96 hand-labelled claim/context pairs (judge_pairs.json,
+48 supported / 48 not). Each judge says P(supported). We report accuracy and
 F1 for catching unsupported claims at 0.5, AUROC, ECE, per-kind accuracy and
 latency.
 
@@ -52,7 +52,7 @@ def scores(labels, probs, threshold=0.5):
     """Positive class = UNSUPPORTED (the judge's job is to catch hallucinations).
 
     Accuracy comes with a Wilson interval and AUROC with a seeded bootstrap
-    interval (stats.py), and agreement with the labels is Cohen's kappa: with 72
+    interval (stats.py), and agreement with the labels is Cohen's kappa: with ~100
     pairs, "perfect" is an interval, not a fact (Zheng et al. 2023 on why an LLM
     judge must itself be validated against human labels)."""
     pred_unsup = [p < threshold for p in probs]

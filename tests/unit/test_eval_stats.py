@@ -108,3 +108,20 @@ def test_judge_scores_carry_kappa_and_intervals():
     assert perfect["auroc_ci95"] == (1.0, 1.0)
     chance = judge_bench.scores(labels, [0.9, 0.1] * 36)
     assert abs(chance["kappa"]) < 1e-9 and chance["accuracy"] == 0.5
+
+
+def test_judge_pairs_are_balanced_and_well_formed():
+    import collections
+    import json
+    here = Path(__file__).resolve().parents[1] / "evals"
+    contexts = json.loads((here / "contexts.json").read_text())
+    pairs = json.loads((here / "judge_pairs.json").read_text())["pairs"]
+    supported = {"paraphrase", "derived"}
+    for p in pairs:
+        assert 0 <= p["ctx"] < len(contexts)
+        assert p["label"] == (1 if p["kind"] in supported else 0), p
+    labels = collections.Counter(p["label"] for p in pairs)
+    assert labels[0] == labels[1]                                  # balanced: accuracy is not inflated by a base rate
+    assert len({p["claim"] for p in pairs}) == len(pairs)          # no duplicate claims
+    kinds = collections.Counter(p["kind"] for p in pairs)
+    assert kinds["partial"] >= 12 and kinds["derived"] >= 12       # D6: hard pairs present

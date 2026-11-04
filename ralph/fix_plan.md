@@ -70,12 +70,14 @@ as the code that relies on it.
   (Efron & Tibshirani 1993), so "the judge scored perfectly on 72 pairs" comes with
   its uncertainty (Zheng et al. 2023 on judge reliability).
   Done when: unit tests on kappa; report.md shows both.
-- [ ] **E4 D6: harder judge pairs.** Add `partial` pairs (one supported and one
+- [x] **E4 D6: harder judge pairs.** Add `partial` pairs (one supported and one
   unsupported atomic fact in one claim, after FActScore, Min et al. 2023) and more
   `derived` pairs, all on invented content.
   Done when: pairs added, balance kept, `about` updated.
 - [m] **L4 Confirm L3 on a judged run.** Smoke eval before/after the new card criterion;
   report card-quality pass rate with n and the E1 interval.
+- [m] **E6 Run the judge benchmark on the 96 pairs** and record per-kind accuracy for
+  `partial` and `derived` with intervals; only then let the judge gate a build (roadmap risk 1).
 - [m] **E5 D5: re-baseline thresholds** after the next full judged run, using the
   interval from E1 rather than the point estimate.
 
