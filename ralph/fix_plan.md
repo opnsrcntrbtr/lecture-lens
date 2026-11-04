@@ -65,7 +65,7 @@ as the code that relies on it.
   test on the discordant pairs (McNemar 1947; Dietterich 1998).
   Done when: `tests/evals/compare_runs.py A B` prints per-metric change and p-value;
   unit tests on the test statistic.
-- [ ] **E3 Agreement, not only accuracy, for the judge.** Add Cohen's kappa
+- [x] **E3 Agreement, not only accuracy, for the judge.** Add Cohen's kappa
   (Cohen 1960) between judge and labels, with a bootstrap interval for AUROC
   (Efron & Tibshirani 1993), so "the judge scored perfectly on 72 pairs" comes with
   its uncertainty (Zheng et al. 2023 on judge reliability).

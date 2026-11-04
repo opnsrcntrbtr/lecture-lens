@@ -93,3 +93,18 @@ def test_compare_runs_pairs_cases_and_tests_the_change():
 def test_compare_runs_needs_per_case():
     with pytest.raises(ValueError):
         compare_runs.compare({"metrics": {}}, {"metrics": {}})
+
+
+# --- judge benchmark scores (E3) ---
+import judge_bench  # noqa: E402
+
+
+def test_judge_scores_carry_kappa_and_intervals():
+    labels = [1] * 36 + [0] * 36
+    perfect = judge_bench.scores(labels, [0.9] * 36 + [0.1] * 36)
+    assert perfect["accuracy"] == 1.0 and perfect["kappa"] == 1.0
+    lo, hi = perfect["accuracy_ci95"]
+    assert hi == 1.0 and lo < 0.96          # 72/72 is not proof of 100%
+    assert perfect["auroc_ci95"] == (1.0, 1.0)
+    chance = judge_bench.scores(labels, [0.9, 0.1] * 36)
+    assert abs(chance["kappa"]) < 1e-9 and chance["accuracy"] == 0.5
