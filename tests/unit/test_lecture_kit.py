@@ -94,8 +94,28 @@ def test_wer_counts_deletions_separately():
     assert (s, d, i) == (1, 1, 0)
 
 
-def test_fillers_are_dropped_from_content_words():
-    assert tr.words("Uh, so, the model, right, is non-deterministic") == ["the", "model", "is", "non", "deterministic"]
+def test_only_disfluencies_are_dropped():
+    # "so" and "right" are often real words; dropping them hid real deletions.
+    assert tr.words("Uh, so, the model, right, is non-deterministic") == \
+        ["so", "the", "model", "right", "is", "non", "deterministic"]
+    assert tr.normalize("You know, all of it") == ["you", "know", "all", "of", "it"]
+
+
+def test_normaliser_makes_formatting_differences_free():
+    assert tr.normalize("twenty five planets") == tr.normalize("25 planets") == ["25", "planets"]
+    assert tr.normalize("one hundred and twenty stars") == ["120", "stars"]
+    assert tr.normalize("two thousand and six") == ["2006"]
+    assert tr.normalize("We don't know; it's 0.82.") == ["we", "do", "not", "know", "it", "is", "0.82"]
+    assert tr.normalize("10,000 cells (inaudible) grew 5%") == ["10000", "cells", "grew", "5", "percent"]
+    assert tr.normalize("one and two") == ["1", "and", "2"]
+    assert tr.normalize("nine eleven") == ["9", "11"]
+    assert tr.normalize("seventy two thousand four hundred") == ["72400"]
+
+
+def test_normalised_wer_ignores_formatting_only_differences():
+    ref = tr.normalize("The probe reached twenty-five kilometres, didn't it?")
+    hyp = tr.normalize("the probe reached 25 kilometres did not it")
+    assert tr.align(ref, hyp) == (0, 0, 0)
 
 
 def test_zoom_export_is_parsed_with_speakers(tmp_path):

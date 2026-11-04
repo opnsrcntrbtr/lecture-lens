@@ -35,3 +35,9 @@ Each entry gives the claim we rely on and how far we rely on it. Most of these s
 | Validate the LLM judge against hand labels before trusting it as a gate; report agreement (Cohen's kappa) and intervals, not accuracy alone | `tests/evals/judge_bench.py` | Zheng, L., Chiang, W.-L., Sheng, Y. and others (2023). Judging LLM-as-a-judge with MT-Bench and Chatbot Arena. *NeurIPS 2023 Datasets and Benchmarks*. arXiv:2306.05685 · Cohen, J. (1960). A coefficient of agreement for nominal scales. *Educational and Psychological Measurement* 20(1), 37–46. doi:10.1177/001316446002000104 |
 | Bootstrap interval for AUROC, seeded for reproducible reports | `tests/evals/stats.py` | Efron, B. and Tibshirani, R. J. (1993). *An Introduction to the Bootstrap*. Chapman & Hall. doi:10.1201/9780429246593 |
 | Judge benchmark includes *partial* claims (one true and one false atomic fact) and multi-step *derived* claims, so a judge that checks only the first fact, or only word overlap, is caught | `tests/evals/judge_pairs.json` | Min, S., Krishna, K., Lyu, X., Lewis, M., Yih, W., Koh, P. W., Iyyer, M., Zettlemoyer, L. and Hajishirzi, H. (2023). FActScore: fine-grained atomic evaluation of factual precision in long form text generation. *Proceedings of EMNLP 2023*, 12076–12100. doi:10.18653/v1/2023.emnlp-main.741 |
+
+## Transcripts and slides
+
+| Decision | Where | Reference |
+| --- | --- | --- |
+| Normalise reference and hypothesis the same way before word error rate: case, punctuation, contractions, spelled-out numbers, and only true disfluencies (`uh`, `um`, `hmm`) removed | `transcript_ref.normalize` (`normalized` in `transcript_eval.json`) | Radford, A., Kim, J. W., Xu, T., Brockman, G., McLeavey, C. and Sutskever, I. (2023). Robust speech recognition via large-scale weak supervision. *Proceedings of ICML 2023*, PMLR 202, 28492–28518 (text normaliser, appendix). arXiv:2212.04356 |

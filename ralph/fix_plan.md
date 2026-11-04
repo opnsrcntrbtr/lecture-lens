@@ -83,7 +83,7 @@ as the code that relies on it.
 
 ## Transcript and slides
 
-- [ ] **T1 Standard text normalisation for word error rate.** The "content words"
+- [x] **T1 Standard text normalisation for word error rate.** The "content words"
   list drops real words (`you`, `all`, `right`, `know`). Normalise like Whisper's
   English normaliser (Radford et al. 2023): case, punctuation, contractions,
   number words, and only true disfluencies (`uh`, `um`, `hmm`, `mm`, `er`, `ah`).
