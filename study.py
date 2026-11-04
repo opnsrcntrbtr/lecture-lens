@@ -228,6 +228,54 @@ def answer_from(question, rows, think=False):
     return ans, ctx, src
 
 
+_SOURCES_TAIL = re.compile(r"\n[ \t>*#_-]*sources used\b.*\Z", re.I | re.S)
+_CITE = re.compile(r"\[(\d+(?:\s*[-–,]\s*\d+)*)\]")
+
+
+def answer_body(answer):
+    """The answer without the trailing 'Sources used' list the model is asked for."""
+    return _SOURCES_TAIL.sub("", answer).rstrip()
+
+
+def _cited(group):
+    out = set()
+    for part in re.split(r"\s*,\s*", group):
+        m = re.fullmatch(r"(\d+)\s*[-–]\s*(\d+)", part.strip())
+        if m:
+            lo, hi = int(m[1]), int(m[2])
+            out.update(range(lo, hi + 1) if 0 < hi - lo < 50 else (lo, hi))
+        else:
+            out.add(int(part))
+    return out
+
+
+def check_citations(answer, n_sources):
+    """Deterministic checks on an answer's [n] citations; no model.
+
+    After ALCE (Gao et al. 2023, "Enabling Large Language Models to Generate Text
+    with Citations"), a citation is part of the answer's correctness: it must
+    point at a source the model was given, and a substantive statement should
+    carry one. Returns (warnings, coverage) where coverage is the share of
+    substantive sentences (6+ words) in the answer body that cite something.
+    A plain "the sources don't say" answer is not flagged for having no citation.
+    """
+    body = answer_body(answer)
+    cited = set()
+    for g in _CITE.findall(body):
+        cited |= _cited(g)
+    warnings = []
+    bad = sorted(n for n in cited if not 1 <= n <= n_sources)
+    if bad:
+        warnings.append(f"cites source(s) {', '.join(map(str, bad))} but only {n_sources} were given")
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+|\n+", body) if len(re.findall(r"\w+", _CITE.sub("", x))) >= 6]
+    with_cite = sum(1 for x in sentences if _CITE.search(x))
+    coverage = round(with_cite / len(sentences), 3) if sentences else None
+    refusal = re.search(r"(sources|captures|lecture)s? (do not|don't|does not|doesn't) (contain|say|cover|mention)", body, re.I)
+    if sentences and not with_cite and not refusal:
+        warnings.append("the answer cites no source")
+    return warnings, coverage
+
+
 def cmd_ask(a):
     import time
     t0 = time.time()
@@ -244,15 +292,18 @@ def cmd_ask(a):
             print(json.dumps({"ok": False, "error": "no captures matched", "queries": queries})); sys.exit(1)
         sys.exit(f"No captures matched {queries} in that window. Try --since 30d or check `study check`.")
     ans, ctx, _ = answer_from(a.question, rows, a.think)
+    warns, coverage = check_citations(ans, len(ctx))
     if a.json:
         print(json.dumps({"ok": True, "question": a.question, "answer": ans, "queries": queries,
                           "sources": [{"n": i, "ts": r["ts"], "src": r["src"], "where": r["where"],
                                        "text": r["text"][:1500]} for i, r in enumerate(ctx, 1)],
+                          "citation_warnings": warns, "citation_coverage": coverage,
                           "model": MODEL, "prompt_version": PROMPT_VERSION,
                           "latency_s": round(time.time() - t0, 2)}))
         return
     print(f"  (searched {len(queries)} terms → {len(rows)} captures, using {len(ctx)})\n", file=sys.stderr)
     print(ans)
+    for w in warns: print(f"  ⚠ citation check: {w}", file=sys.stderr)
     legend = "\n".join(f"[{i}] {local_time(r['ts'])} · {r['where'][:90]}" for i, r in enumerate(ctx, 1))
     if a.show_sources: print("\n---\n" + legend)
 

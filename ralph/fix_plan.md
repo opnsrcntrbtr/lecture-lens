@@ -13,14 +13,14 @@ as the code that relies on it.
 
 ## Grounded Q&A
 
-- [ ] **R1 Rank retrieved captures by relevance before packing the context.**
+- [x] **R1 Rank retrieved captures by relevance before packing the context.**
   `study.answer_from` packs rows in timestamp order, so with many hits the
   earliest captures fill the budget, not the most relevant. Score with Okapi
   BM25 (Robertson & Zaragoza 2009) against the question, pack the best first,
   and put the strongest source first (Liu et al. 2024, "Lost in the Middle").
   Done when: a unit test shows a late, relevant capture beats early irrelevant
   ones under a tight budget.
-- [ ] **R2 Check the citations in an answer.** Following ALCE (Gao et al. 2023),
+- [x] **R2 Check the citations in an answer.** Following ALCE (Gao et al. 2023),
   citations are part of the answer's correctness. Detect citations to sources
   that were never sent, and answers with no citation at all; return them as
   `citation_warnings` in `--json` and print them on the CLI. Optional field in

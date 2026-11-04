@@ -41,3 +41,28 @@ def test_rare_terms_outweigh_common_ones():
     common = [row("the cell is a cell with a cell wall", f"t{i}") for i in range(5)]
     rare = row("the cell wall contains cellulose", "t9")
     assert study.bm25_rank("cell cellulose", common + [rare])[0] is rare
+
+
+# --- citation checks (ALCE-style, deterministic) ---
+def test_valid_citations_raise_no_warning():
+    ans = ("Mitochondria make ATP by oxidative phosphorylation [1]. The inner membrane holds the "
+           "electron transport chain [2, 3].\n\nSources used: [1] 10:00, [2] 10:05, [9] 10:07")
+    warns, cov = study.check_citations(ans, 3)
+    assert warns == [] and cov == 1.0          # [9] in the source list is not part of the answer
+
+
+def test_out_of_range_citation_is_reported():
+    warns, _ = study.check_citations("Comets have two tails, one of dust and one of ions [4-5].", 4)
+    assert warns == ["cites source(s) 5 but only 4 were given"]
+
+
+def test_uncited_answer_is_reported_but_a_refusal_is_not():
+    warns, cov = study.check_citations("Comets have two tails made of dust and ionised gas.", 3)
+    assert warns == ["the answer cites no source"] and cov == 0.0
+    warns, _ = study.check_citations("The sources do not contain an answer to this question; review week two.", 3)
+    assert warns == []
+
+
+def test_partial_coverage():
+    ans = "Comets have two tails made of dust and gas [1]. The ion tail always points away from the sun."
+    assert study.check_citations(ans, 1)[1] == 0.5

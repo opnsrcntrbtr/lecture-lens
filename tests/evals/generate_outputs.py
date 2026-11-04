@@ -22,7 +22,6 @@ import study  # noqa: E402
 import lecture_kit  # noqa: E402
 
 
-_SOURCES_TAIL = re.compile(r"\n[ \t>*#_-]*sources used\b.*\Z", re.I | re.S)
 
 def answer_body(answer):
     """The answer without its trailing 'Sources used' list.
@@ -32,7 +31,7 @@ def answer_body(answer):
     that list as fabricated or irrelevant: about 12 of 17 failed ask cases. The
     list is a UI feature, checked by the app; the judge scores the answer itself.
     """
-    return _SOURCES_TAIL.sub("", answer).rstrip()
+    return study.answer_body(answer)
 
 
 def rows_from(chunks):

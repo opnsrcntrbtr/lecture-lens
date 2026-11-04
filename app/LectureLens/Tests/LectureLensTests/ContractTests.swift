@@ -30,6 +30,13 @@ import Testing
     #expect(r.prompt_version == "ask-v1")
 }
 
+@Test func decodesAskCitationChecks() throws {
+    let json = #"{"ok":true,"answer":"a [7]","sources":[],"citation_warnings":["cites source(s) 7 but only 1 were given"],"citation_coverage":0.5}"#
+    let r = try JSONDecoder().decode(AskResult.self, from: Data(json.utf8))
+    #expect(r.citation_warnings?.count == 1)
+    #expect(r.citation_coverage == 0.5)
+}
+
 @Test func decodesSessionsWithMissingFields() throws {
     let json = #"{"sessions":[{"id":"a1","title":"Week 3","built":true,"folder":"/x/a1_Week-3"},{"built":false,"folder":"/x/b"}]}"#
     let l = try JSONDecoder().decode(SessionList.self, from: Data(json.utf8))
