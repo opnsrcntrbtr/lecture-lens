@@ -16,6 +16,38 @@ struct DoctorResult: Decodable, Sendable {
     }
 }
 
+/// `lecture next --json`: the next class from the programme calendar (lectures/calendar.json).
+struct NextClass: Decodable, Sendable {
+    let week: Int
+    let title: String
+    let date: String
+    let start: String
+    let end: String
+    let module: String?
+    let module_title: String?
+
+    var day: Date? {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.timeZone = TimeZone(identifier: "Asia/Kolkata")
+        return f.date(from: date)
+    }
+    var daysAway: Int? {
+        guard let d = day else { return nil }
+        var cal = Calendar.current; cal.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        return cal.dateComponents([.day], from: cal.startOfDay(for: .now), to: cal.startOfDay(for: d)).day
+    }
+    var whenText: String {
+        let f = DateFormatter(); f.dateFormat = "EEE d MMM"; f.timeZone = TimeZone(identifier: "Asia/Kolkata")
+        let d = day.map { f.string(from: $0) } ?? date
+        let rel: String
+        switch daysAway { case 0?: rel = "today"; case 1?: rel = "tomorrow"; case let n?: rel = "in \(n) days"; default: rel = "" }
+        return "\(d) · \(start)–\(end) IST" + (rel.isEmpty ? "" : " · \(rel)")
+    }
+    var moduleText: String {
+        guard let m = module, !m.isEmpty else { return "Week \(week) · orientation" }
+        return "Week \(week) · \(m)" + ((module_title ?? "").isEmpty ? "" : ": \(module_title!)")
+    }
+}
+
 struct ModeState: Decodable, Sendable {
     let running: Bool
     let mode: String

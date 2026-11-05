@@ -2,7 +2,7 @@
 # Two-phase DeepEval run: generator writes outputs, judge scores them, generator restored.
 #   ./run.sh                 full run (goldens are generated once if missing)
 #   ./run.sh --regen-goldens regenerate the dataset first
-#   ./run.sh --judge-only    re-score the cached .outputs.json (no generation)
+#   ./run.sh --judge-only    re-score the cached .outputs.json (no generation; EVAL_OUTPUTS=<file> for another one)
 #   ./run.sh --smoke         6 fixed cases, about 5-10 minutes
 set -e
 setopt pipefail   # `python x | tee` must fail when python fails
@@ -37,8 +37,10 @@ if [[ "$1" == "--regen-goldens" || ( "$SUITE" != smoke && ! -f .dataset.json ) ]
   python generate_goldens.py | tee "$RES/goldens.json"
 fi
 
-if [[ "$1" == "--judge-only" && -f .outputs.json ]]; then
-  echo "== phase G skipped: re-scoring cached .outputs.json"
+# EVAL_OUTPUTS names another outputs file, e.g. one written by the Studio's eval page in Chrome
+export EVAL_OUTPUTS=${EVAL_OUTPUTS:-.outputs.json}
+if [[ "$1" == "--judge-only" && -f "$EVAL_OUTPUTS" ]]; then
+  echo "== phase G skipped: re-scoring cached $EVAL_OUTPUTS"
 else
   echo "== phase G: generator produces answers, notes, cards"
   python omlx_swap.py generator

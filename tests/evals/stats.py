@@ -13,6 +13,8 @@ little without its uncertainty, and two runs must be compared case by case.
 - cohen_kappa: agreement beyond chance between two raters (Cohen 1960).
 - bootstrap_ci: percentile bootstrap interval for any statistic
   (Efron & Tibshirani 1993), seeded so reports are reproducible.
+- sign_test: exact two-sided sign test on paired differences (Dixon & Mood
+  1946); ties are dropped. Assumes nothing about the size of differences.
 """
 from __future__ import annotations
 
@@ -80,6 +82,16 @@ def bootstrap_ci(stat: Callable[[list], float | None], items: Sequence, n_boot: 
     lo = vals[int(alpha / 2 * (len(vals) - 1))]
     hi = vals[int((1 - alpha / 2) * (len(vals) - 1))]
     return lo, hi
+
+
+def sign_test(diffs: Sequence[float]) -> dict:
+    """Exact two-sided sign test on paired differences (after minus before); zeros are ties
+    and are dropped. p = min(1, 2 * P(X <= min(pos, neg))), X ~ Bin(pos + neg, 1/2)."""
+    pos = sum(1 for d in diffs if d > 0)
+    neg = sum(1 for d in diffs if d < 0)
+    n = pos + neg
+    p = 1.0 if n == 0 else min(1.0, 2 * sum(math.comb(n, i) for i in range(min(pos, neg) + 1)) / 2 ** n)
+    return {"better": pos, "worse": neg, "ties": len(diffs) - n, "p_value": p}
 
 
 def fmt_rate(successes: int, n: int) -> str:

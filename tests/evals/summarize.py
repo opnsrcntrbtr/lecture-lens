@@ -71,7 +71,8 @@ def main(res_dir):
     runs = sorted(glob.glob(str(res / "test_run_*.json"))) or [str(HERE / ".deepeval" / ".latest_run_full.json")]
     run = json.loads(Path(runs[-1]).read_text())
     metrics, per_suite, failures, per_case = aggregate(run)
-    outputs = json.loads((HERE / ".outputs.json").read_text()) if (HERE / ".outputs.json").exists() else {}
+    out_f = HERE / os.environ.get("EVAL_OUTPUTS", ".outputs.json")   # Studio outputs: EVAL_OUTPUTS=<file>
+    outputs = json.loads(out_f.read_text()) if out_f.exists() else {}
     lat = [r.get("latency_s") for r in outputs.get("ask", []) if r.get("latency_s")]
     try:
         git = subprocess.run(["git", "-C", str(HERE.parent.parent), "rev-parse", "--short", "HEAD"],
@@ -79,7 +80,7 @@ def main(res_dir):
     except Exception:
         git = None
     summary = {"suite": "smoke" if os.environ.get("EVAL_SUITE") == "smoke" else "deepeval-study", "generator": outputs.get("generator"),
-               "judge": os.environ.get("OMLX_JUDGE_MODEL"), "prompt_versions": outputs.get("prompt_versions"),
+               "judge": os.environ.get("OMLX_JUDGE_MODEL"), "judge_rubric": os.environ.get("JUDGE_RUBRIC", "v2"), "prompt_versions": outputs.get("prompt_versions"),
                "cases": per_suite, "metrics": metrics,
                "latency": {"ask_p50": round(statistics.median(lat), 2) if lat else None},
                "failures": failures[:50], "per_case": per_case, "source": runs[-1], "git": git}

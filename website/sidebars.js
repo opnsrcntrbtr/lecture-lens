@@ -6,7 +6,7 @@ const sidebars = {
     { type: 'category', label: 'Getting started', collapsed: false, items: ['getting-started/install', 'getting-started/configure'] },
     {
       type: 'category', label: 'Guides', collapsed: false,
-      items: ['guides/recorded-lectures', 'guides/live-classes', 'guides/build-and-review', 'guides/evaluation', 'guides/study-method'],
+      items: ['guides/recorded-lectures', 'guides/live-classes', 'guides/build-and-review', 'guides/evaluation', 'guides/studio', 'guides/study-method'],
     },
     { type: 'category', label: 'Concepts', items: ['concepts/architecture', 'concepts/privacy'] },
     { type: 'category', label: 'Reference', items: ['reference/cli', 'reference/configuration', 'reference/troubleshooting'] },

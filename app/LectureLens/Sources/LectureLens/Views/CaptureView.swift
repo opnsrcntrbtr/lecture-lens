@@ -10,13 +10,28 @@ struct CaptureView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                if let next = model.nextClass {
+                    GroupBox("Next class") {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "calendar").font(.system(size: 22 * TextScale.current)).foregroundStyle(.tint)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(next.title).font(.scaled(.headline))
+                                Text(next.moduleText).foregroundStyle(.secondary)
+                                Text(next.whenText).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }.padding(6)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Next class: \(next.title), \(next.moduleText), \(next.whenText)")
+                }
                 GroupBox("Health") {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(model.signals) { s in
                             VStack(alignment: .leading, spacing: 4) {
                                 SignalRow(signal: s)
                                 if let fix = s.fix, s.state == .down || s.state == .warn {
-                                    Text("→ \(fix)").font(.caption).foregroundStyle(.secondary).padding(.leading, 95)
+                                    Text("→ \(fix)").font(.scaled(.caption)).foregroundStyle(.secondary).padding(.leading, 95)
                                 }
                             }
                         }
@@ -38,7 +53,7 @@ struct CaptureView: View {
                         ForEach(domains, id: \.self) { d in
                             HStack {
                                 Image(systemName: "globe").foregroundStyle(.secondary)
-                                Text(d).font(.body.monospaced())
+                                Text(d).font(.scaled(.body, design: .monospaced))
                                 Spacer()
                                 Button("Remove", role: .destructive) { Task { await domain("remove", d) } }
                                     .buttonStyle(.borderless)
@@ -68,9 +83,9 @@ struct CaptureView: View {
     private var header: some View {
         HStack(spacing: 14) {
             Image(systemName: model.mode.running ? "record.circle.fill" : "record.circle")
-                .font(.system(size: 34)).foregroundStyle(model.mode.running ? .red : .secondary)
+                .font(.system(size: 34 * TextScale.current)).foregroundStyle(model.mode.running ? .red : .secondary)
             VStack(alignment: .leading) {
-                Text(model.mode.running ? "Capturing" : "Not capturing").font(.title2.bold())
+                Text(model.mode.running ? "Capturing" : "Not capturing").font(.scaled(.title2, weight: .bold))
                 Text(model.mode.running ? "\(model.mode.mode.capitalized) mode\(model.mode.autoswitch ? " · switches to Live during Zoom meetings" : "")"
                                         : "Start capture before a lecture").foregroundStyle(.secondary)
             }
@@ -94,15 +109,15 @@ struct CaptureView: View {
         GroupBox("Permissions") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("macOS grants recording to the app that launches screenpipe. Start capture from **this app**, then allow **Lecture Lens** under:")
-                    .font(.callout)
+                    .font(.scaled(.callout))
                 Label("Screen & System Audio Recording", systemImage: "rectangle.dashed.badge.record")
-                Label("Microphone (only if you enable the mic)", systemImage: "mic")
+                Label("Microphone (backup: fills stretches where System Audio recorded nothing)", systemImage: "mic")
                 Label("Accessibility (on-screen text)", systemImage: "accessibility")
                 HStack {
                     Button("Open Privacy & Security", systemImage: "lock.shield") { model.openPrivacySettings() }
                     Button("Relaunch app", systemImage: "arrow.clockwise.circle") { model.relaunch() }
                         .help("macOS tells a running app about a new Screen Recording grant only after it relaunches")
-                    Text("Restart capture after granting.").font(.caption).foregroundStyle(.secondary)
+                    Text("Restart capture after granting.").font(.scaled(.caption)).foregroundStyle(.secondary)
                 }
             }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
         }

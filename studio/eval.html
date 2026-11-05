@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Studio eval</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="src/eval_page.js"></script>
+</head>
+<body>
+  <h1>Studio eval</h1>
+  <p class="lede">Runs the synthetic suite (questions, notes and cards) on the in-browser engine and saves <code>.outputs.&lt;engine&gt;.json</code> for the local judge: <code>EVAL_OUTPUTS=.outputs.nano.json ./run.sh --judge-only</code>.</p>
+  <section class="card">
+    <div class="row">
+      <select id="engine-pref"></select>
+      <label>Limit <input id="limit" type="number" min="0" value="0" style="width:5em"></label>
+      <button id="go">Choose tests/evals folder and run</button>
+    </div>
+    <pre id="log"></pre>
+  </section>
+</body>
+</html>

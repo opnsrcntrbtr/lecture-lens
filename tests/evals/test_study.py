@@ -7,6 +7,7 @@ model loaded; this file only judges them, with the JUDGE model loaded. Run via:
     deepeval test run test_study.py     (if the judge is already loaded)
 """
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from deepeval.test_case import LLMTestCase
 from metrics import ASK_METRICS, CARDS_METRICS, NOTES_METRICS
 
 HERE = Path(__file__).parent
-OUT = json.loads((HERE / ".outputs.json").read_text())
+OUT = json.loads((HERE / os.environ.get("EVAL_OUTPUTS", ".outputs.json")).read_text())
 
 
 @pytest.mark.parametrize("row", OUT["ask"], ids=lambda r: r["input"][:60])

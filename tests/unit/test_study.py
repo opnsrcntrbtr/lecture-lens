@@ -66,3 +66,12 @@ def test_uncited_answer_is_reported_but_a_refusal_is_not():
 def test_partial_coverage():
     ans = "Comets have two tails made of dust and gas [1]. The ion tail always points away from the sun."
     assert study.check_citations(ans, 1)[1] == 0.5
+
+
+def test_citation_checks_match_the_studio_fixtures():
+    """The same fixtures pin studio/src/core/citations.js (node --test)."""
+    import json
+    fx = json.loads((Path(__file__).resolve().parents[2] / "studio/test/fixtures/citations.json").read_text())
+    for c in fx["answers"]:
+        warns, cov = study.check_citations(c["answer"], c["n"])
+        assert (warns, cov) == (c["warnings"], c["coverage"]), c["answer"]

@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct LectureLensApp: App {
     @State private var model: AppModel
+    @AppStorage(TextScale.key) private var textScale = TextScale.default
 
     init() {
         let m = AppModel()
@@ -14,10 +15,32 @@ struct LectureLensApp: App {
     var body: some Scene {
         Window("Lecture Lens", id: "main") {
             MainView(model: model)
+                .font(.scaled(.body))
+                .groupBoxStyle(ScaledGroupBoxStyle())
+                .id(textScale)          // rebuild on a text-size change so every view re-reads it
                 .frame(minWidth: 980, minHeight: 640)
         }
         .defaultSize(width: 1180, height: 760)
         .defaultLaunchBehavior(.presented)
+        .commands {
+            CommandGroup(after: .toolbar) {
+                Button("Bigger Text") { textScale = TextScale.next(textScale) }
+                    .keyboardShortcut("+", modifiers: .command)
+                    .disabled(textScale >= TextScale.steps.last!)
+                Button("Smaller Text") { textScale = TextScale.previous(textScale) }
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(textScale <= TextScale.steps.first!)
+                Button("Actual Size") { textScale = TextScale.default }
+                    .keyboardShortcut("0", modifiers: .command)
+                Divider()
+            }
+            CommandMenu("Go") {
+                ForEach(Array(Screen.allCases.enumerated()), id: \.element) { i, s in
+                    Button(s.rawValue) { model.screen = s }
+                        .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
+                }
+            }
+        }
 
         MenuBarExtra {
             MenuBarContent(model: model)
@@ -55,7 +78,7 @@ struct SignalRow: View {
             Circle().fill(signal.state.color).frame(width: 9, height: 9)
                 .accessibilityLabel("\(signal.label) \(String(describing: signal.state))")
             Text(signal.label).fontWeight(.medium).frame(width: 78, alignment: .leading)
-            Text(signal.detail).foregroundStyle(.secondary).lineLimit(2).font(.callout)
+            Text(signal.detail).foregroundStyle(.secondary).lineLimit(2).font(.scaled(.callout))
             Spacer(minLength: 0)
         }
     }
@@ -78,7 +101,7 @@ struct FeedbackBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                Text("Was this right?").font(.caption).foregroundStyle(.secondary)
+                Text("Was this right?").font(.scaled(.caption)).foregroundStyle(.secondary)
                 Button { rate(1) } label: { Image(systemName: rating == 1 ? "hand.thumbsup.fill" : "hand.thumbsup") }
                     .keyboardShortcut(.upArrow, modifiers: [.command])
                     .help("Correct (⌘↑)")
@@ -86,8 +109,8 @@ struct FeedbackBar: View {
                     Image(systemName: rating == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown") }
                     .keyboardShortcut(.downArrow, modifiers: [.command])
                     .help("Wrong (⌘↓) — add what's right")
-                if saved { Label("saved", systemImage: "checkmark").font(.caption).foregroundStyle(.green) }
-                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                if saved { Label("saved", systemImage: "checkmark").font(.scaled(.caption)).foregroundStyle(.green) }
+                if let error { Text(error).font(.scaled(.caption)).foregroundStyle(.red) }
             }
             .buttonStyle(.borderless)
             if rating == -1 && !saved {

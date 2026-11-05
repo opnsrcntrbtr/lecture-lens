@@ -25,11 +25,17 @@ All commands live in the repository root and read `.env`.
 | `./lecture build --from HH:MM [--to HH:MM] [--title T]` | Build one session for a time window |
 | `… --no-vision` | Skip slide descriptions |
 | `… --cards N` | Upper bound on cards (default 20) |
+| `./lecture qa-import <id> <export.txt>` | Use a meeting app's Q&A export: anonymise it for the build and score the live capture against it |
 | `./lecture watch [--idle 5]` | Build each session a few minutes after it ends |
 | `./lecture doctor [--quick] [--json]` | Health checks |
 | `./lecture review [--limit 30] [--new 10] [--lecture NAME]` | Ask the cards that are due; pass/fail goes to `reviews.jsonl` in the lecture's folder |
 | `./lecture review --stats [--json]` | Due and new counts, and cards that keep failing |
 | `./transcript_ref.py <folder> <reference.txt>` | Merge a reference transcript and measure word error rate |
+| `./lecture next [--json]` | The next class in the programme calendar |
+| `./lecture finish [<id>\|last\|all]` | Browser mode: after Lecture Lens Studio ran a lecture, write its vault note and update `manifest.json` |
+| `./live-sync questions\|outline\|slides\|all` | Ask the running live follower to update now instead of at its next 10-minute batch; waits up to 3 minutes for the result |
+| `tools/merge_reference_transcript.py <live_dir> <reference.txt> <out.md> [--keep 1,2] [--label 1=Name]` | Put clock times on a dictation app's `Speaker N: text` export by aligning it to the live whisper words; speakers not kept become "Attendee"; the follower's own lines fill any gap over 90 s. `lecture build` uses `transcript_merged.md` when present |
+| `tools/retranscribe_recordings.py <folder> <start_utc> <end_utc>` | Re-transcribe saved system-audio chunks with whisper.cpp (for a recording played back on this Mac) |
 
 ## Study
 
