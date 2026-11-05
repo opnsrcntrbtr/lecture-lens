@@ -6,6 +6,7 @@
 export const VERSIONS = {
   digest: "digest-nano-v1", notes: "notes-nano-v1", cards: "cards-nano-v1", slide: "slide-nano-v1",
   ask: "ask-nano-v1", outline: "outline-nano-v1", questions: "questions-nano-v1", recap: "recap-nano-v1",
+  citations: "cite-v1",   // not a prompt: the citation filter applied to replies (core/citations.js)
 };
 
 export const SYS_TUTOR =

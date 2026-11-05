@@ -1,0 +1,17 @@
+{
+  "about": "Shared by studio/test/citations.test.js and tests/unit/test_study.py: the Python and JS citation checks must agree. Invented content.",
+  "answers": [
+    {"answer": "Mitochondria make ATP by oxidative phosphorylation [1]. The inner membrane holds the electron transport chain [2, 3].\n\nSources used: [1] 10:00, [2] 10:05, [9] 10:07", "n": 3, "warnings": [], "coverage": 1.0},
+    {"answer": "Comets have two tails, one of dust and one of ions [4-5].", "n": 4, "warnings": ["cites source(s) 5 but only 4 were given"], "coverage": 1.0},
+    {"answer": "Comets have two tails made of dust and ionised gas.", "n": 3, "warnings": ["the answer cites no source"], "coverage": 0.0},
+    {"answer": "The material does not mention how long the ion tail is; review the comet slides.", "n": 3, "warnings": [], "coverage": 0.0},
+    {"answer": "Comets have two tails made of dust and gas [1]. The ion tail always points away from the sun.", "n": 1, "warnings": [], "coverage": 0.5},
+    {"answer": "Short.", "n": 2, "warnings": [], "coverage": null}
+  ],
+  "refs": {
+    "source": "SLIDES:\n[slide 1 @ 00:00:10] Photosynthesis\n[slide 3 @ 00:04:00] Light reactions\n\nCLASS DECK:\n[deck 2] Calvin cycle",
+    "text": "Plants capture light [slide 1]. The Calvin cycle fixes carbon [deck 2] [slide 4]. Light reactions [slide 3 @ 00:04:00] split water [deck 7].",
+    "expected": "Plants capture light [slide 1]. The Calvin cycle fixes carbon [deck 2]. Light reactions [slide 3 @ 00:04:00] split water.",
+    "removed": 2
+  }
+}

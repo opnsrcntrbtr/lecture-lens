@@ -79,3 +79,13 @@ def test_log_round_trip_and_bad_lines_are_warned(tmp_path, capsys):
 
 def test_card_id_ignores_case_and_spacing():
     assert rv.card_id("Why is Mars  red?") == rv.card_id("why is mars red?")
+
+
+def test_reads_a_line_written_by_the_studio(tmp_path):
+    """Lecture Lens Studio appends lines like this (studio/src/core/review.js logLine:
+    ISO time without microseconds); ./lecture review must read and schedule them."""
+    (tmp_path / "cards.tsv").write_text("Why do bees visit flowers?\tFor nectar\t\n")
+    cid = rv.load_cards(tmp_path)[0]["id"]
+    (tmp_path / "reviews.jsonl").write_text('{"card":"%s","ts":"2030-03-01T09:00:00+00:00","pass":true}\n' % cid)
+    st = rv.replay(rv.load_log(tmp_path)[cid])
+    assert st["reps"] == 1 and st["stability"] == rv.W[2]

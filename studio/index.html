@@ -38,6 +38,7 @@
     <button role="tab" data-tab="ask">Ask</button>
     <button role="tab" data-tab="live">Live class</button>
     <button role="tab" data-tab="recap">Recap</button>
+    <button role="tab" data-tab="review">Review</button>
   </nav>
 
   <section class="card tab" id="tab-after">
@@ -61,6 +62,7 @@
     <textarea id="ask-q" rows="3" placeholder="Ask about this lecture…"></textarea>
     <div class="row"><button id="ask-go">Ask</button></div>
     <div id="ask-answer" class="answer"></div>
+    <ul id="ask-warnings" class="warnings"></ul>
     <ol id="ask-sources" class="sources"></ol>
   </section>
 
@@ -77,6 +79,19 @@
       <span id="live-status" class="muted">stopped</span>
     </div>
     <p class="muted">Keep this tab open during class. Every minute it reads the live folder; every 10 minutes it writes an outline and three questions for the app's Live tab, and it answers the app's <em>Sync now</em>.</p>
+  </section>
+
+  <section class="card tab" id="tab-review" hidden>
+    <p class="muted">Spaced review of every lecture's flashcards (FSRS-5, target recall 90%). Answer from memory, then mark it. Answers go to each lecture's <code>reviews.jsonl</code>, the same log <code>./lecture review</code> uses. No model needed.</p>
+    <div class="row"><button id="review-load">Start review</button></div>
+    <p id="review-stats" class="muted"></p>
+    <div id="review-card" hidden>
+      <p id="review-q" class="answer"></p>
+      <div class="row"><button id="review-show">Show answer</button></div>
+      <p id="review-a" class="answer" hidden></p>
+      <div class="row"><button id="review-pass" disabled>Pass</button><button id="review-fail" disabled>Fail</button></div>
+    </div>
+    <ul id="review-leeches" class="warnings"></ul>
   </section>
 
   <section class="card tab" id="tab-recap" hidden>

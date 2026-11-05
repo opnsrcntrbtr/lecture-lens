@@ -1,0 +1,204 @@
+{
+ "about": "Generated from review.py (FSRS-5); studio/src/core/review.js must reproduce it. Invented content.",
+ "logs": {
+  "one pass": {
+   "events": [
+    {
+     "card": "c1",
+     "ts": "2030-03-01T09:00:00+00:00",
+     "pass": true
+    }
+   ],
+   "stability": 3.173,
+   "difficulty": 5.282434422319005,
+   "reps": 1,
+   "lapses": 0,
+   "due": "2030-03-04T09:00:00+00:00",
+   "interval": 3
+  },
+  "one fail": {
+   "events": [
+    {
+     "card": "c1",
+     "ts": "2030-03-01T09:00:00+00:00",
+     "pass": false
+    }
+   ],
+   "stability": 0.40255,
+   "difficulty": 7.1949,
+   "reps": 1,
+   "lapses": 1,
+   "due": "2030-03-02T09:00:00+00:00",
+   "interval": 1
+  },
+  "passes at the scheduled gaps": {
+   "events": [
+    {
+     "card": "c1",
+     "ts": "2030-03-01T09:00:00+00:00",
+     "pass": true
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-04T09:00:00+00:00",
+     "pass": true
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-14T09:00:00+00:00",
+     "pass": true
+    },
+    {
+     "card": "c1",
+     "ts": "2030-04-20T09:00:00+00:00",
+     "pass": true
+    }
+   ],
+   "stability": 102.20261281147363,
+   "difficulty": 5.254165386489613,
+   "reps": 4,
+   "lapses": 0,
+   "due": "2030-07-31T09:00:00+00:00",
+   "interval": 102
+  },
+  "pass then lapse": {
+   "events": [
+    {
+     "card": "c1",
+     "ts": "2030-03-01T09:00:00+00:00",
+     "pass": true
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-04T09:00:00+00:00",
+     "pass": true
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-31T09:00:00+00:00",
+     "pass": false
+    }
+   ],
+   "stability": 2.77286635101239,
+   "difficulty": 6.790567694566929,
+   "reps": 3,
+   "lapses": 1,
+   "due": "2030-04-03T09:00:00+00:00",
+   "interval": 3
+  },
+  "same-day repeat": {
+   "events": [
+    {
+     "card": "c1",
+     "ts": "2030-03-01T09:00:00+00:00",
+     "pass": false
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-01T13:48:00+00:00",
+     "pass": true
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-02T21:00:00+00:00",
+     "pass": true
+    }
+   ],
+   "stability": 2.9404874621008887,
+   "difficulty": 7.158456348252584,
+   "reps": 3,
+   "lapses": 1,
+   "due": "2030-03-05T21:00:00+00:00",
+   "interval": 3
+  },
+  "many fails": {
+   "events": [
+    {
+     "card": "c1",
+     "ts": "2030-03-01T09:00:00+00:00",
+     "pass": false
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-02T09:00:00+00:00",
+     "pass": false
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-03T09:00:00+00:00",
+     "pass": false
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-04T09:00:00+00:00",
+     "pass": false
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-05T09:00:00+00:00",
+     "pass": false
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-06T09:00:00+00:00",
+     "pass": false
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-07T09:00:00+00:00",
+     "pass": false
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-08T09:00:00+00:00",
+     "pass": false
+    }
+   ],
+   "stability": 0.15173082561740653,
+   "difficulty": 9.73653790532218,
+   "reps": 8,
+   "lapses": 8,
+   "due": "2030-03-09T09:00:00+00:00",
+   "interval": 1
+  },
+  "out of order in the file": {
+   "events": [
+    {
+     "card": "c1",
+     "ts": "2030-03-11T09:00:00+00:00",
+     "pass": true
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-01T09:00:00+00:00",
+     "pass": true
+    },
+    {
+     "card": "c1",
+     "ts": "2030-03-05T09:00:00+00:00",
+     "pass": false
+    }
+   ],
+   "stability": 9.966656533609784,
+   "difficulty": 6.780499397376408,
+   "reps": 3,
+   "lapses": 1,
+   "due": "2030-03-21T09:00:00+00:00",
+   "interval": 10
+  }
+ },
+ "card_ids": {
+  "Why do bees visit flowers?": "025abd34916d",
+  "why  do BEES visit flowers?": "025abd34916d",
+  "What is a comet's ion tail?": "d9922dc34c95"
+ },
+ "intervals": {
+  "0.4": 1,
+  "1.0": 1,
+  "2.5": 2,
+  "3.173": 3,
+  "7.5": 7,
+  "50": 50,
+  "1000": 365
+ }
+}

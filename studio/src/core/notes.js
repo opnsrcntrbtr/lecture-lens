@@ -4,6 +4,25 @@ import { splitLines, cleanReply, sections } from "./text.js";
 import { SYS_TUTOR, VERSIONS, digestPrompt, reducePrompt, notesPromptA, notesPromptB, cardsPrompt, cardsSchema, slidePrompt } from "./prompts.js";
 import { parseCards, dedupeCards, cardCount, cardsTsv } from "./cards.js";
 import { slidesMarkdown, slideSource, cleanDescription } from "./slides.js";
+import { knownRefs, dropUnknownRefs } from "./citations.js";
+import { calibrateBudget, isOverflow } from "../engines/budget.js";
+import { recallFirst } from "./recall.js";
+
+/** Digest one transcript part; if it overflows the window, split it in two and digest each
+ *  half instead of failing the lecture (S3). Gives up below 10 lines. */
+export async function digestPart(engine, title, i, n, part, say = () => {}, depth = 0) {
+  try {
+    return cleanReply(await engine.prompt(SYS_TUTOR, digestPrompt(title, i, n, part), { maxTokens: 1200 }));
+  } catch (e) {
+    const lines = part.split("\n");
+    if (!isOverflow(e) || lines.length < 10 || depth >= 3) throw e;
+    say(`part ${i}/${n} is too long for the window; splitting it`);
+    const mid = Math.ceil(lines.length / 2);
+    const a = await digestPart(engine, title, i, n, lines.slice(0, mid).join("\n"), say, depth + 1);
+    const b = await digestPart(engine, title, i, n, lines.slice(mid).join("\n"), say, depth + 1);
+    return `${a}\n${b}`;
+  }
+}
 
 const NOTE_HEADINGS = ["TL;DR", "Key concepts", "Frameworks & models", "Worked examples and numbers",
   "How this applies to building AI products", "Action items for the learner", "Open questions"];
@@ -30,6 +49,7 @@ export function joinNoteHalves(a, b) {
 
 /** Notes, digests and cards for a lecture from transcript lines and the slide source. */
 export async function makeNotes(engine, { title, lines, slideSrc, cards = 20 }, say = () => {}) {
+  await calibrateBudget(engine, lines.join("\n"));   // characters per token, measured on this lecture
   const { partChars, sourceChars } = engine.budget;
   const transcript = lines.join("\n");
   const parts = transcript.length + slideSrc.length > sourceChars ? splitLines(lines, partChars) : [];
@@ -37,7 +57,7 @@ export async function makeNotes(engine, { title, lines, slideSrc, cards = 20 }, 
   if (parts.length) {
     for (const [i, part] of parts.entries()) {
       say(`digesting part ${i + 1}/${parts.length}…`);
-      digests.push(cleanReply(await engine.prompt(SYS_TUTOR, digestPrompt(title, i + 1, parts.length, part), { maxTokens: 1200 })));
+      digests.push(await digestPart(engine, title, i + 1, parts.length, part, say));
     }
   }
   // reduce: merge neighbouring digests until digests + slides fit one prompt
@@ -58,7 +78,11 @@ export async function makeNotes(engine, { title, lines, slideSrc, cards = 20 }, 
   const a = await engine.prompt(SYS_TUTOR, notesPromptA(title, source), { maxTokens: 1500, temperature: 0.3 });
   // the second call also quotes the first half, so it gets a shorter slice of the source
   const b = await engine.prompt(SYS_TUTOR, notesPromptB(title, source.slice(0, sourceChars - 1800), cleanReply(a)), { maxTokens: 1500, temperature: 0.3 });
-  const notes = joinNoteHalves(a, b);
+  // Citations to slides or deck pages that were never in the source are removed (S1, ALCE).
+  const refs = knownRefs(`${source}\n${slideSrc}`);
+  const kept = dropUnknownRefs(joinNoteHalves(a, b), refs);
+  const notes = kept.text;
+  let citationsRemoved = kept.removed;
 
   let cardRows = [];
   if (cards) {
@@ -74,9 +98,12 @@ export async function makeNotes(engine, { title, lines, slideSrc, cards = 20 }, 
         say(`cards ${i + 1}: ${e.message}`);
       }
     }
-    cardRows = dedupeCards(cardRows);
+    cardRows = dedupeCards(cardRows).map((c) => {
+      const r = dropUnknownRefs(c.a, refs); citationsRemoved += r.removed;
+      return { ...c, a: r.text.trim() };
+    });
   }
-  return { notes, digests, cards: cardRows };
+  return { notes, digests, cards: cardRows, citationsRemoved };
 }
 
 /** Describe the keyframes that have no description yet. Returns how many were described. */
@@ -108,10 +135,10 @@ export async function runLectureJob(engine, io, folder, { describe = true, say =
     await io.writeText(`${folder}/slides.md`, slidesMarkdown(job.title, slides));
   }
   const slideSrc = slideSource(slides, { deckSrc: job.deck_src || "", qaSrc: job.qa_src || "" });
-  const { notes, digests, cards } = await makeNotes(engine, { title: job.title, lines: job.transcript || [], slideSrc, cards: job.cards ?? 20 }, say);
+  const { notes, digests, cards, citationsRemoved } = await makeNotes(engine, { title: job.title, lines: job.transcript || [], slideSrc, cards: job.cards ?? 20 }, say);
   const when = job.when ? `${job.when} · ` : "";
   await io.writeText(`${folder}/notes.md`,
-    `# ${job.title}\n\n_${when}${job.minutes ?? "?"} min · notes by ${engine.name} in Chrome (Lecture Lens Studio) from this Mac's own capture_\n\n${notes}\n`);
+    `# ${job.title}\n\n_${when}${job.minutes ?? "?"} min · notes by ${engine.name} in Chrome (Lecture Lens Studio) from this Mac's own capture_\n\n${recallFirst(notes, cards)}\n`);
   if (digests.length) {
     await io.writeText(`${folder}/digest.md`, `# Part digests — ${job.title}\n\n` + digests.map((d, i) => `## Part ${i + 1}\n\n${d}`).join("\n\n") + "\n");
   }
@@ -119,7 +146,8 @@ export async function runLectureJob(engine, io, folder, { describe = true, say =
   const result = {
     status: "done", engine: engine.name, finished_at: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 1000),
     cards: cards.length, slides_described: described, digest_parts: digests.length,
-    prompt_versions: { digest: VERSIONS.digest, notes: VERSIONS.notes, cards: VERSIONS.cards, slide: VERSIONS.slide },
+    citations_removed: citationsRemoved,   // [slide n] / [deck n] the model cited but was never given
+    prompt_versions: { digest: VERSIONS.digest, notes: VERSIONS.notes, cards: VERSIONS.cards, slide: VERSIONS.slide, citations: VERSIONS.citations },
   };
   await io.writeText(`${folder}/studio_result.json`, JSON.stringify(result, null, 1));
   return result;

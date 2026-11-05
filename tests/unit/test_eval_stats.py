@@ -125,3 +125,52 @@ def test_judge_pairs_are_balanced_and_well_formed():
     assert len({p["claim"] for p in pairs}) == len(pairs)          # no duplicate claims
     kinds = collections.Counter(p["kind"] for p in pairs)
     assert kinds["partial"] >= 12 and kinds["derived"] >= 12       # D6: hard pairs present
+
+
+def test_sign_test_known_values():
+    r = stats.sign_test([1] * 9 + [-1] + [0] * 5)                     # 9 up, 1 down, 5 ties
+    assert (r["better"], r["worse"], r["ties"]) == (9, 1, 5)
+    assert r["p_value"] == pytest.approx(22 / 1024)                   # same binomial as McNemar 9 vs 1
+    assert stats.sign_test([0, 0])["p_value"] == 1.0
+    assert stats.sign_test([0.2, -0.1, 0.3, -0.4])["p_value"] == 1.0  # 2 vs 2
+
+
+# --- compare_outputs: model-free checks between two generators (S6) ---
+import compare_outputs as co  # noqa: E402
+
+NOTES_OK = "\n".join(f"## {h}\n- point" for h in co.NOTE_HEADINGS)
+
+
+def outputs(gen, recall_hit, notes_text, cards=4, slow=1.0):
+    ctx = ["Transcript [00:01:00]: Bees pollinate apple blossoms in spring orchards."]
+    return {"generator": gen,
+            "ask": [{"input": f"q{i}", "expected_output": "Bees pollinate apple blossoms",
+                     "actual_output": ("Bees pollinate apple blossoms [1]." if i < recall_hit else "Wind moves seeds around [1]."),
+                     "retrieval_context": ctx, "latency_s": slow} for i in range(12)],
+            "notes": [{"input": f"n{i}", "actual_output": notes_text, "retrieval_context": ctx, "latency_s": slow} for i in range(4)],
+            "cards": [{"input": f"c{i}", "n_cards": cards, "actual_output": ""} for i in range(4)]}
+
+
+def test_compare_outputs_pairs_cases_and_reports_uncertainty():
+    a = outputs("big", 12, NOTES_OK)
+    b = outputs("small", 3, NOTES_OK + "\n- see [slide 4]", cards=3, slow=4.0)
+    res = co.compare(a, b)
+    r = res["ask:recall"]
+    assert r["paired"] == 12 and r["a"]["mean"] == 1.0 and r["b"]["mean"] < 0.5
+    assert r["sign_test"]["worse"] == 9 and r["sign_test"]["p_value"] < 0.01
+    lo, hi = r["diff_ci95"]; assert lo <= r["diff_mean"] <= hi < 0
+    assert res["notes:refs_ok"]["a"]["pass"] == 4 and res["notes:refs_ok"]["b"]["pass"] == 0   # phantom [slide 4]
+    assert res["notes:sections"]["b"]["pass"] == 4
+    assert res["cards:four"]["b"]["pass"] == 0 and res["cards:four"]["p_value"] == round(2 / 16, 4)
+    assert res["ask:latency_s"]["diff_mean"] == 3.0
+    table = co.report(res, "big", "small")
+    assert "| ask:recall | 12 |" in table and "sign test" in table and "McNemar" in table
+
+
+def test_compare_outputs_checks():
+    assert co.refs_ok("water [slide 1] early", "[slide 1 @ 00:00:10] Raised beds")
+    assert not co.refs_ok("water [deck 2]", "[slide 1 @ 00:00:10] Raised beds")
+    assert co.has_sections(NOTES_OK) and not co.has_sections("## TL;DR\n- only one")
+    assert co.recall("", "anything") is None
+    only_a = {"ask": [{"input": "x", "actual_output": "a"}]}
+    assert co.compare(only_a, {"ask": [{"input": "y", "actual_output": "b"}]}) == {}    # no shared case

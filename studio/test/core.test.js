@@ -62,7 +62,7 @@ test("slides: markdown and the notes source match lecture_kit", () => {
 });
 
 test("budgets, array-schema wrapping, engine choice", () => {
-  assert.deepEqual(budgetFor(9216), { windowTokens: 9216, partChars: 12902, sourceChars: 22118 });
+  assert.deepEqual(budgetFor(9216), { windowTokens: 9216, charsPerToken: 3.5, partChars: 12902, sourceChars: 22118 });
   const s = { type: "array", items: { type: "string" } };
   assert.equal(wrapArraySchema(s).properties.items, s);
   assert.equal(unwrapArrayReply(s, '{"items":["a"]}'), '["a"]');

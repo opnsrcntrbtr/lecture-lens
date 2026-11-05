@@ -51,6 +51,12 @@ Then update the vault note:
 
 The notes have the same sections as the oMLX notes. The byline names the engine, and `manifest.json` records the engine and the prompt versions.
 
+## Review your cards
+
+The **Review** tab asks the flashcards that are due across all your lectures, oldest lecture first, then up to ten new ones. Answer from memory, click **Show answer**, then **Pass** or **Fail**. It needs no model, so it works even where Gemini Nano is unavailable.
+
+Each answer is appended to the lecture's `reviews.jsonl`, the same log `./lecture review` uses, and both schedule with the same FSRS-5 code (the Studio's port is tested against the Python on shared logs). A card failed three times is listed as one to rewrite.
+
 ## During a live class
 
 Start capture in live mode as usual. In browser mode the follower keeps transcribing and logging slides, and leaves the outline and questions to the Studio. It writes `studio_live_job.json` with the class title.
@@ -59,9 +65,11 @@ In the Studio's **Live class** tab, pick today and click **Start following**. Ke
 
 ## Limits
 
+- **Long parts are split, not dropped.** The Studio measures how many characters fit a token on each lecture with Gemini Nano's own counter, and sizes parts from that. If a part still overflows the window, it is split in two and each half is digested.
 - **Notes are less complete.** Gemini Nano is a small model with a 9,216-token window, so long classes go through digests, which lose detail. Check the notes against the transcript before you rely on them. The [evaluation guide](evaluation.md) shows how to score Studio output with the local judge.
 - **Slide descriptions** need an engine that reads images. With the WebGPU fallback, pick the Phi-3.5 vision model, or untick **Describe slides**: the notes then use the on-screen text.
 - **Live Q&A follow-ups and prospective answers** are not in the Studio yet. In browser mode they are skipped.
+- **Citations are checked, not trusted.** A small model sometimes cites a slide that was never in its source. The Studio removes `[slide n]` and `[deck n]` citations that point nowhere and records how many in `studio_result.json` (`citations_removed`). In **Ask**, a citation to a source that wasn't shown, or an answer with no citation, is listed under the answer.
 
 ## Evaluate the Studio
 
@@ -72,3 +80,12 @@ In the Studio's **Live class** tab, pick today and click **Start following**. Ke
 ```bash
 cd tests/evals && EVAL_OUTPUTS=.outputs.gemini-nano.json ./run.sh --judge-only
 ```
+
+
+4. Compare it with the oMLX generator's outputs, case by case and without a model:
+
+```bash
+cd tests/evals && python compare_outputs.py .outputs.json .outputs.gemini-nano.json
+```
+
+Each check is paired on the same inputs. Numbers come with a 95% interval for the difference and a sign test, and pass/fail checks with Wilson intervals and McNemar's test. On 12 notes or 36 answers, a difference whose interval includes zero has not been shown. The same table counts citations to slides that were never in the source (`notes:refs_ok`). For the judge's scores, compare the two `summary.json` files with `compare_runs.py`: cases are keyed by input, so the two generators pair up the same way.

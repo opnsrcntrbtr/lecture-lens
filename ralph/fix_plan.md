@@ -109,3 +109,49 @@ as the code that relies on it.
 
 - [x] **D1 Research basis page** listing every reference above with what it is used
   for, linked from the study-method, evaluation and testing pages.
+
+## Lecture Lens Studio (in-browser model, ADR-006)
+
+Tests run with `cd studio && node --test test/*.test.js` and the fake engine in
+`studio/test/helpers.js`; the real model is on the Mac (Chrome 148+).
+
+- [x] **S1 Check citations in Studio answers and notes.** The PR #29 read-through
+  found Nano citing `[slide 4]` with no slide source. Port `study.check_citations`
+  (ALCE, Gao et al. 2023): answers report `citation_warnings`; notes and cards drop
+  citations to slides that were never given and count them in `studio_result.json`,
+  since a citation that points nowhere misleads more than none.
+  Done when: node tests cover valid, out-of-range and uncited answers and a notes
+  page citing a missing slide; Python and JS agree on shared fixtures.
+- [~] **S2 Flag answer sentences the sources do not support. Rejected on evidence.**
+  Measured before shipping (`studio/scripts/support_bench.mjs`) on the judge benchmark's
+  96 labelled pairs: a content-word overlap screen has precision about 0.5 at every
+  threshold (0.3-0.8), i.e. chance. Wrong-number, swapped and half-true claims reuse the
+  context's words (mean support 0.67-0.76); correct paraphrases avoid them (0.57). Even
+  for unmentioned padding alone, catching 6 of 11 also flags 10 of 48 correct claims.
+  Overlap does not measure faithfulness (Honovich et al. 2022); the judge decides (S7).
+- [x] **S3 Fit the window by tokens, not a guess.** `BM25.top` stops at the first
+  passage that does not fit, leaving smaller later ones out (fix: skip it and keep
+  going). Budgets assume 3.5 characters per token; calibrate the ratio from the
+  engine's own `measureContextUsage` on a sample when it exists. On a window overflow
+  in a digest, split the part in two and retry instead of failing the lecture.
+  Best source first is kept (Liu et al. 2024).
+  Done when: tests for the packing bug, calibration and split-and-retry.
+- [x] **S4 Recall-first notes in the Studio.** The oMLX path opens notes with three
+  questions (L2; Roediger & Karpicke 2006; Richland et al. 2009); Studio notes do not.
+  Port `recall_first`, write notes after cards.
+  Done when: Python and JS give the same block on a shared fixture.
+- [x] **S5 Spaced review in the Studio.** A Review tab that needs no model: FSRS-5
+  (Ye, Su & Cao 2022) ported to JS, reading `cards.tsv` and appending to the same
+  `reviews.jsonl` as `./lecture review`, so the two share one schedule.
+  Done when: JS replay equals Python `review.replay` on golden logs; a headless
+  Chromium smoke test loads the tab.
+- [x] **S6 Nano vs Qwen with uncertainty.** The PR's model-free table has no
+  intervals (e.g. recall 0.734 vs 0.776 on 36 cases). `tests/evals/compare_outputs.py
+  A.json B.json` computes the same checks per case, pairs them, and reports a paired
+  bootstrap interval for the mean difference (Efron & Tibshirani 1993) and an exact
+  sign test (Dixon & Mood 1946), plus Wilson intervals for pass counts and the rate of
+  citations to sources that do not exist.
+  Done when: unit tests with known answers; docs show how to run it on the PR's outputs.
+- [m] **S7 Judge Nano's outputs.** `EVAL_OUTPUTS=.outputs.nano.json ./run.sh --judge-only`,
+  then `compare_runs.py` against the Qwen run: cases are keyed by input, so the two
+  generators pair case by case (McNemar).

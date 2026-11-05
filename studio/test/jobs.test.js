@@ -149,3 +149,40 @@ test("recap groups lectures by module and writes recaps/<module>.md", async () =
   assert.match(io.files.get(path), /^# Module recap — Module 1/);
   assert.ok(!eng.calls[0].user.includes("skip me"));
 });
+
+test("S1: notes and cards drop citations to slides that were never given, and count them", async () => {
+  const cite = [
+    [/first half of the study notes/, "## TL;DR\n- water early [slide 1]\n## Key concepts\n- **Mulch** holds moisture [slide 4]"],
+    [/second half/, "## Worked examples and numbers\n- 40% less water [00:02:00] [deck 3]"],
+    [/flashcards/, JSON.stringify([{ q: "Why mulch?", a: "It holds moisture [slide 9].", at: "", kind: "why" }])],
+    ...rules,
+  ];
+  const io = lectureFolder(), eng = new FakeEngine(cite);
+  const r = await runLectureJob(eng, io, F);
+  const notes = io.files.get(`${F}/notes.md`);
+  assert.match(notes, /water early \[slide 1\]/);                     // slide 1 exists: kept
+  assert.doesNotMatch(notes, /\[slide 4\]|\[deck 3\]/);                // never given: removed
+  assert.match(notes, /40% less water \[00:02:00\]/);                  // timecodes untouched
+  assert.doesNotMatch(io.files.get(`${F}/cards.tsv`), /slide 9/);
+  assert.equal(r.citations_removed, 3);
+  assert.equal(JSON.parse(io.files.get(`${F}/studio_result.json`)).prompt_versions.citations, "cite-v1");
+});
+
+test("S1: an Ask answer carries its citation check", async () => {
+  const io = lectureFolder();
+  const idx = new BM25(lecturePassages(lines.join("\n")));
+  const eng = new FakeEngine([[/Question:/, "Drip irrigation keeps raised beds moist through the season [99]."]]);
+  const r = await askLecture(eng, idx, "how does drip irrigation help raised beds?");
+  assert.ok(r.sources.length >= 1);
+  assert.deepEqual(r.warnings, [`cites source(s) 99 but only ${r.sources.length} were given`]);
+});
+
+test("S4: Studio notes open with recall questions; the answers follow the notes", async () => {
+  const io = lectureFolder(), eng = new FakeEngine(rules);
+  await runLectureJob(eng, io, F);
+  const md = io.files.get(`${F}/notes.md`);
+  assert.match(md, /_\n\n## Before you read\n/);
+  const [head, , tail] = md.split("\n\n---\n\n");
+  assert.doesNotMatch(head, /Holds moisture/);                 // no answer before the notes
+  assert.match(tail, /^## Answers to the opening questions/);
+});

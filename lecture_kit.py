@@ -608,6 +608,15 @@ def recall_first(notes, cards, k=3):
             f"{qs}\n\n---\n\n{notes}\n\n---\n\n## Answers to the opening questions\n\n{ans}")
 
 
+def strip_recall_first(md):
+    """The notes without recall_first's opening questions and closing answers (for the vault
+    note, which links the full notes.md). Text without the block is returned unchanged."""
+    head = "## Before you read\n"
+    if md.startswith(head) and "\n\n---\n\n" in md:
+        md = md.split("\n\n---\n\n", 1)[1]
+    return md.split("\n\n---\n\n## Answers to the opening questions\n", 1)[0]
+
+
 def _split_lines(lines, budget):
     """Pack transcript lines into consecutive parts of at most `budget` characters."""
     parts, cur, size = [], [], 0
@@ -831,9 +840,9 @@ def finish(folder):
     n_cards = sum(1 for l in cards_f.read_text().splitlines() if l.strip()) if cards_f.exists() else 0
     slides_f = folder / "slides.json"
     described = sum(1 for s in json.loads(slides_f.read_text()) if s.get("description")) if slides_f.exists() else 0
-    note = write_vault_note(folder, {**man, "source": man.get("source")}, body.strip(), n_cards)
+    note = write_vault_note(folder, {**man, "source": man.get("source")}, strip_recall_first(body.strip()), n_cards)
     man.update({"llm": f"{res.get('engine', 'browser')} (Lecture Lens Studio)", "cards": n_cards,
-                "slides_described": described, "studio": {k: res.get(k) for k in ("engine", "finished_at", "seconds", "prompt_versions")},
+                "slides_described": described, "studio": {k: res.get(k) for k in ("engine", "finished_at", "seconds", "prompt_versions", "citations_removed")},
                 "finished_at": dt.datetime.now(dt.timezone.utc).isoformat()})
     (folder / "manifest.json").write_text(json.dumps(man, indent=2))
     return note, man
