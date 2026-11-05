@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Lecture Lens Studio",
+  "description": "Notes, flashcards, answers and live-class questions from your own lecture captures, with a model running inside Chrome.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "138",
+  "action": { "default_title": "Open Lecture Lens Studio" },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": [],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
+}

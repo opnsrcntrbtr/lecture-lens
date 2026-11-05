@@ -36,6 +36,14 @@ load_dotenv()
 OMLX = os.environ.get("OMLX_BASE_URL", "http://127.0.0.1:8001/v1").rstrip("/")
 MODEL = os.environ.get("OMLX_MODEL", "Swift-Qwen3.8-27b-oQ4e-mtp")
 KEY = os.environ.get("OMLX_API_KEY", "")
+# "omlx" (default): the model server above. "browser": Lecture Lens Studio runs the model inside
+# Chrome (Gemini Nano or WebGPU); the Python side then does only the deterministic work and leaves
+# job files for it (see website/docs/guides/studio.md).
+PROVIDER = os.environ.get("STUDY_LLM_PROVIDER", "omlx").strip().lower() or "omlx"
+
+
+def browser_mode() -> bool:
+    return PROVIDER == "browser"
 SP = os.environ.get("SCREENPIPE_URL", "http://localhost:3030").rstrip("/")
 NOTES = Path(os.path.expanduser(os.environ.get("STUDY_NOTES_DIR", str(HERE / "notes"))))
 CTX = int(os.environ.get("STUDY_CTX_CHARS", "60000"))
@@ -270,6 +278,9 @@ def cmd_check(a):
         h = _get(f"{SP}/health", timeout=5); print(f"screenpipe  ✓ {SP}  status={h.get('status')}  vision={h.get('frame_status')}  audio={h.get('audio_status')}")
         _get(f"{SP}/search?limit=1", auth=True); print("            ✓ search API authorised")
     except Exception as e: ok = False; print(f"screenpipe  ✗ {SP}  ({e}) — is `sp-start` running?")
+    if browser_mode():
+        print("model       ~ STUDY_LLM_PROVIDER=browser: notes, cards and answers run in Lecture Lens Studio (Chrome)")
+        sys.exit(0 if ok else 1)
     try:
         ids = [m["id"] for m in _get(f"{OMLX}/models", timeout=5)["data"]]
         print(f"oMLX        ✓ {OMLX}  model={MODEL} {'(loaded)' if MODEL in ids else '(NOT in /models!)'}")

@@ -2,7 +2,14 @@
 """Compare a session transcript with a reference transcript (Zoom's own export)
 and merge the two. No model calls.
 
-    transcript_ref.py <lecture folder> <zoom transcript.txt> [--start HH:MM:SS]
+    transcript_ref.py <lecture folder> <zoom transcript.txt|.md>
+
+Two reference formats are read:
+  - Zoom's caption export (.txt/.vtt): "HH:MM:SS --> HH:MM:SS" then "Speaker: text"
+  - Zoom's AI summary export (.md): per recording part, "## Summary" then "## Transcript"
+    with "[MMM:SS] Speaker N: text" lines whose clock restarts at 0 in each part.
+    Each part is placed on the clock by matching its word 4-grams against our
+    transcript (a vote over time offsets), so no start time has to be typed in.
 
 Writes into the lecture folder:
   transcript_merged.md   reference text (with speakers) while it lasts, then ours
@@ -50,6 +57,76 @@ def parse_zoom(path):
     return [(sec(a), sec(b), s.strip(), x.strip()) for a, b, s, x in
             re.findall(r"(\d\d:\d\d:\d\d) --> (\d\d:\d\d:\d\d)\n([^:\n]+): (.*)", t)]
 
+def _msec(stamp):
+    parts = list(map(int, stamp.split(":")))
+    return parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def parse_zoom_md(text):
+    """Zoom AI summary markdown -> (parts, summaries). A part is a list of (rel_s, speaker, text);
+    a new part starts at each "## Transcript" heading. summaries: [(part heading, summary markdown)]."""
+    parts, summaries, cur, heading, buf, mode = [], [], None, "", [], None
+    for line in text.splitlines():
+        if line.startswith("# ") and not line.startswith("## "):
+            heading = line[2:].strip()
+        if line.strip() == "## Summary":
+            mode, buf = "summary", []
+            continue
+        if line.strip() == "## Transcript":
+            if mode == "summary":
+                summaries.append((heading, "\n".join(buf).strip()))
+            mode, cur = "transcript", []
+            parts.append(cur)
+            continue
+        m = re.match(r"\[(\d{1,3}:\d{2}(?::\d{2})?)\]\s*([^:]{1,40}):\s*(.*)", line)
+        if mode == "transcript" and m:
+            cur.append((_msec(m.group(1)), m.group(2).strip(), m.group(3).strip()))
+        elif mode == "summary":
+            buf.append(line)
+    return [p for p in parts if p], summaries
+
+
+def _grams(text, n=4):
+    w = words(text)
+    return {" ".join(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
+def align_offset(part, ours, bucket=10):
+    """Clock offset (s) that best maps a reference part onto our (t, text) lines: every shared
+    word 4-gram votes for (our time - reference time), rounded to `bucket` s; the mode wins.
+    Returns (offset, votes); votes == 0 means no overlap was found."""
+    index = {}
+    for t, x in ours:
+        for g in _grams(x):
+            index.setdefault(g, []).append(t)
+    votes = {}
+    for r, _, x in part:
+        for g in _grams(x):
+            ts = index.get(g, ())
+            if 0 < len(ts) <= 3:                       # common phrases vote everywhere; skip them
+                for t in ts:
+                    k = round((t - r) / bucket)
+                    votes[k] = votes.get(k, 0) + 1
+    if not votes:
+        return 0, 0
+    k = max(votes, key=lambda k: votes[k] + 0.5 * (votes.get(k - 1, 0) + votes.get(k + 1, 0)))
+    return k * bucket, votes[k]
+
+
+def zoom_md_entries(text, ours):
+    """Place every part on our clock and return (start, end, speaker, text) like parse_zoom."""
+    parts, _ = parse_zoom_md(text)
+    out = []
+    for part in parts:
+        off, n = align_offset(part, ours)
+        if n == 0:
+            continue
+        for i, (r, who, x) in enumerate(part):
+            end = part[i + 1][0] if i + 1 < len(part) else r + 10
+            out.append((r + off, end + off, who, x))
+    return sorted(out)
+
+
 def parse_ours(path):
     out = []
     for l in Path(path).read_text().splitlines():
@@ -63,7 +140,15 @@ def main():
     import datetime as dt
     t0 = dt.datetime.fromisoformat(man["start"]).astimezone()
     T0 = t0.hour * 3600 + t0.minute * 60 + t0.second      # session start, local clock seconds
-    z, ours = parse_zoom(zoom), parse_ours(folder / "transcript.md")
+    ours = parse_ours(folder / "transcript.md")
+    raw = Path(zoom).read_text()
+    if re.search(r"^\[\d{1,3}:\d{2}\]", raw, re.M):
+        z = zoom_md_entries(raw, [(t + T0, x) for t, x in ours])
+        _, summaries = parse_zoom_md(raw)
+        if summaries:                       # the meeting app's own summary, kept beside our notes
+            (folder / "zoom_summary.md").write_text("\n\n".join(f"## {h}\n\n{b}" for h, b in summaries) + "\n")
+    else:
+        z = parse_zoom(zoom)
     z_end = z[-1][1]
     # overlap: from our first segment to the end of the reference, minus capture gaps > 75 s
     gaps = [(ours[i][0] + T0, ours[i + 1][0] + T0) for i in range(len(ours) - 1) if ours[i + 1][0] - ours[i][0] > 75]

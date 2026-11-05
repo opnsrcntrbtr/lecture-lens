@@ -107,3 +107,17 @@ def test_without_a_marker_any_non_chrome_text_is_slide_text(monkeypatch):
     monkeypatch.setattr(lc, "SLIDE_MARKER", None)
     assert lc.slide_body("Settings\nVideo & effects\nAudio") is None
     assert lc.slide_body("Crop rotation keeps soil nitrogen up across seasons").startswith("Crop rotation")
+
+
+def test_mic_backup_files_only_where_system_audio_is_missing():
+    import datetime as dt
+    import live_class as lc
+    t0 = dt.datetime(2026, 1, 5, 4, 30, tzinfo=dt.timezone.utc)      # file names carry UTC times
+    name = lambda dev, s: f"{dev}_{(t0 + dt.timedelta(seconds=s)).strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
+    names = [name("System Audio (output)", s) for s in range(0, 600, 30) if not 300 <= s < 420]
+    names += [name("MacBook Pro Microphone (input)", s) for s in range(0, 600, 30)]
+    got = lc.backup_files(names, t0, t0 + dt.timedelta(seconds=900), set())
+    assert [t for t, _ in got] == [t0 + dt.timedelta(seconds=s) for s in (300, 330, 360, 390)]
+    lc.MIC_DEVICE = "off"
+    assert lc.backup_files(names, t0, t0 + dt.timedelta(seconds=900), set()) == []
+    lc.MIC_DEVICE = ""

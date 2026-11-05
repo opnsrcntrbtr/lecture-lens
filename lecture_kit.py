@@ -19,12 +19,14 @@ Design notes
   * Every artefact records where it came from, so a claim in notes.md can be
     traced to a timestamp in the transcript or a keyframe image.
 """
-import argparse, datetime as dt, json, os, re, sqlite3, sys, urllib.error, urllib.request, urllib.parse
+from __future__ import annotations
+import argparse, datetime as dt, json, os, re, shutil, sqlite3, subprocess, sys, urllib.error, urllib.request, urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import study  # shared config + llm() + oMLX plumbing
+import course_calendar  # programme calendar (data in lectures/calendar.json, gitignored)
 sys.path.insert(0, str(HERE / "eval"))
 import vlm_client as vc  # the evaluated vision client
 from player_crop import player_box  # crops page chrome away (eval: 9/20 -> 0/20 leaking answers)
@@ -197,7 +199,25 @@ def audio_between(con, start, end, device_filter=None):
             for r in rows:
                 chars[r["device"]] = chars.get(r["device"], 0) + len(r["transcription"])
         best = max(chars, key=chars.get) if chars else None
-        rows = [r for r in rows if r["device"] == best]
+        chosen = [r for r in rows if r["device"] == best]
+        # microphone backup: where the chosen output recorded nothing for 60 s+, use the mic, marked (mic)
+        mic = [r for r in rows if r["is_input_device"] and r["device"] != best]
+        if mic and chosen and not any(r["is_input_device"] for r in chosen):
+            import transcript_clean
+            # coverage = every chunk the output device recorded, silent ones included (a quiet break is
+            # not missing audio), from audio_chunks; transcribed rows alone would miss silences
+            try:
+                recorded = con.execute(
+                    "SELECT timestamp FROM audio_chunks WHERE datetime(timestamp) >= datetime(?) AND datetime(timestamp) <= datetime(?) "
+                    "AND file_path LIKE ?", (start.strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ"), f"%{best}%")).fetchall()
+            except Exception:
+                recorded = []
+            primary = sorted({t for t in [_ts(x[0]) for x in recorded] + [_ts(r["timestamp"]) for r in chosen] if t})
+            fill = transcript_clean.gap_fill(primary, [(t, r) for r in mic if (t := _ts(r["timestamp"]))])
+            fill_rows = [dict(r, transcription="(mic) " + r["transcription"]) for _, r in fill]
+            rows = sorted(chosen + fill_rows, key=lambda r: (r["timestamp"], r["start_time"] or 0, r["id"]))
+        else:
+            rows = chosen
     else:
         rows = [r for r in rows if want in (r["device"] or "").lower()]
     out = []
@@ -510,7 +530,7 @@ def lecture_title(session, transcript):
     """A portal player's page title is often generic ('<Portal> - Learning Experience
     Platform', so name the lecture from what was said (one short model call)."""
     t = session["title"]
-    if not GENERIC_TITLE.match(t.strip()) or not transcript.strip():
+    if not GENERIC_TITLE.match(t.strip()) or not transcript.strip() or study.browser_mode():
         return t
     try:
         name = study.llm("You name lecture recordings.", "Give a 3-8 word title for this lecture, "
@@ -590,6 +610,17 @@ def live_qa_source(session, folder, budget=9000):
             if l.strip():
                 x = json.loads(l); fus.setdefault(x["thread"], []).append(x)
     fus = live_qa.curate_followups(threads, fus) if hasattr(live_qa, "curate_followups") else fus
+    # Post-class judge scores (tests/evals/score_live.py): follow-ups failing relevance or
+    # answerability move to qa_pruned.md; drafts failing faithfulness are tagged.
+    scores = json.loads((d / "live_scores.json").read_text()).get("items", {}) if (d / "live_scores.json").exists() else {}
+    pruned = {}
+    if scores:
+        for tid in list(fus):
+            keep = []
+            for f in fus[tid]:
+                sc = scores.get(f["q"])
+                (pruned.setdefault(tid, []) if sc and sc["pruned"] else keep).append(f)
+            fus[tid] = keep
     # The meeting app's own Q&A export, anonymised by qa_export.py, is complete where the
     # live capture may have missed a thread: use its threads, keep the live follow-ups.
     ref = folder / "qa_threads_export.json"
@@ -601,8 +632,12 @@ def live_qa_source(session, folder, budget=9000):
             k = qa_export.norm(t["q"])
             tid = by_norm.get(k) or next((v for c, v in by_norm.items() if min(len(c), len(k)) >= 12 and (c.startswith(k) or k.startswith(c))), None)
             exp.append(dict(t, id=tid or live_qa.thread_id({"time": t["time"], "text": t["q"]})))
-        threads = [t for t in exp if live_qa.thread_kind(t) != "trivial"]
-        say_src = "the meeting app's Q&A export"
+        # An attendee's export may hold only their own questions ("My questions"): the export
+        # wins where it has the thread, the live capture keeps every thread it lacks.
+        have = {t["id"] for t in exp}
+        rest = [t for t in threads if t["id"] not in have]
+        threads = sorted([t for t in exp if live_qa.thread_kind(t) != "trivial"] + rest, key=lambda t: live_qa._minutes(t["time"]))
+        say_src = "the meeting app's Q&A export" + (" and the live capture" if rest else "")
     else:
         say_src = "the live capture"
     md = [f"# Class Q&A — {session['title']}", "",
@@ -611,17 +646,91 @@ def live_qa_source(session, folder, budget=9000):
         md += [f"## {t['time']} · {t['by']} · {live_qa.thread_kind(t)}", "", t["q"], ""]
         md += [f"> **{a['by']}** ({a['time']}): {a['text']}".replace("\n", "\n> ") for a in t["answers"]] + [""]
         for f in fus.get(t["id"], []):
-            md += [f"- Follow-up ({f['type']}): {f['q']}", f"  - Draft: {f['answer']}"]
+            tag = " _(unsupported by the class context)_" if (scores.get(f["q"]) or {}).get("unsupported") else ""
+            md += [f"- Follow-up ({f['type']}): {f['q']}", f"  - Draft: {f['answer']}{tag}"]
         md += [""]
+    if scores:
+        n_p = sum(len(v) for v in pruned.values())
+        md.insert(3, f"_Judged after class ({len(scores)} drafted items, rules {json.loads((d / 'live_scores.json').read_text()).get('rubric', '?')}): "
+                     f"{n_p} follow-ups that failed relevance or answerability are in qa_pruned.md._\n")
+        pm = [f"# Pruned follow-ups — {session['title']}", "",
+              "_Failed Question relevance or Answerability in the post-class judge run (majority of up to 3 calls)._", ""]
+        by_id = {t["id"]: t for t in threads}
+        for tid, fl in pruned.items():
+            pm += [f"## Thread: {(by_id.get(tid) or {}).get('q', tid)[:200]}", ""]
+            for f in fl:
+                sc = scores[f["q"]]
+                why = ", ".join(m for m in ("relevance", "answerability") if not sc[m]["pass"])
+                pm += [f"- {f['q']}", f"  - failed: {why} ({sc['relevance']['votes']} / {sc['answerability']['votes']} pass votes)",
+                       f"  - Draft: {f['answer']}"]
+            pm += [""]
+        (folder / "qa_pruned.md").write_text("\n".join(pm) + "\n")
     (folder / "qa.md").write_text("\n".join(md) + "\n")
     lines = [f"Q ({t['time']}): {t['q'][:300]} | A: " + " / ".join(a["text"][:500] for a in t["answers"])
              for t in threads if live_qa.thread_kind(t) == "content" and t["answers"]]
     return ("CLASS Q&A (quoted; attendee questions with staff replies, not the lecturer's words):\n" + "\n".join(lines))[:budget]
 
 
+def studio_job(session, transcript_lines, deck_src, qa_src, cards):
+    """The job file Lecture Lens Studio runs in browser mode (STUDY_LLM_PROVIDER=browser):
+    everything the model steps need, so the Studio never reads the capture database."""
+    start = session["start"].astimezone()
+    return {"version": 1, "id": session["id"], "title": session["title"], "start": session["start"].isoformat(),
+            "when": f"{start:%a %d %b %Y %H:%M}", "minutes": session["minutes"], "cards": cards,
+            "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "transcript": list(transcript_lines),
+            "deck_src": deck_src or "", "qa_src": qa_src or ""}
+
+
+def write_vault_note(folder, info, notes, n_cards):
+    """The Obsidian note for a lecture: links to the artefacts, not copies. `info` holds id,
+    title, start (ISO), minutes and source; shared by `build` and `finish`."""
+    vault_dir = VAULT / VAULT_SUB
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    start = dt.datetime.fromisoformat(info["start"]).astimezone()
+    concepts = re.findall(r"^\s*[-*]\s+\*\*(.+?)\*\*", notes, re.M)[:12]
+    links = " ".join(f"[[{c.strip()}]]" for c in dict.fromkeys(concepts))
+    path = vault_dir / f"{info['id']} {info['title']}.md".replace("/", "-")
+    path.write_text(
+        "---\n"
+        f"date: {start:%Y-%m-%d}\n"
+        f"duration_min: {info['minutes']}\ncourse: {COURSE}\n"
+        f"source: {info.get('source') or 'live class (Zoom)'}\n"
+        f"artefacts: {folder}\ntags: [lecture, ai-product-management]\n---\n\n"
+        f"# {info['title']}\n\n{notes}\n\n"
+        f"## Concepts\n{links or '_none extracted_'}\n\n"
+        f"## Artefacts\n- Transcript: `{folder/'transcript.md'}`\n- Slides: `{folder/'slides.md'}`"
+        f"\n- Flashcards: `{folder/'cards.tsv'}` ({n_cards} cards)"
+        + (f"\n- Class Q&A: `{folder/'qa.md'}`" if (folder / "qa.md").exists() else "") + "\n")
+    return path
+
+
+def finish(folder):
+    """After Lecture Lens Studio ran a lecture: vault note and manifest from its outputs."""
+    res_f = folder / "studio_result.json"
+    if not res_f.exists():
+        raise FileNotFoundError(f"{folder.name}: no studio_result.json yet (run the lecture in Lecture Lens Studio)")
+    res = json.loads(res_f.read_text())
+    man = json.loads((folder / "manifest.json").read_text())
+    md = (folder / "notes.md").read_text()
+    body = md.split("\n", 3)[3] if md.count("\n") >= 3 else md     # drop the "# title" and the byline
+    cards_f = folder / "cards.tsv"
+    n_cards = sum(1 for l in cards_f.read_text().splitlines() if l.strip()) if cards_f.exists() else 0
+    slides_f = folder / "slides.json"
+    described = sum(1 for s in json.loads(slides_f.read_text()) if s.get("description")) if slides_f.exists() else 0
+    note = write_vault_note(folder, {**man, "source": man.get("source")}, body.strip(), n_cards)
+    man.update({"llm": f"{res.get('engine', 'browser')} (Lecture Lens Studio)", "cards": n_cards,
+                "slides_described": described, "studio": {k: res.get(k) for k in ("engine", "finished_at", "seconds", "prompt_versions")},
+                "finished_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+    (folder / "manifest.json").write_text(json.dumps(man, indent=2))
+    return note, man
+
+
 def build(session, con, describe=True, cards=20, quiet=False):
     def say(*a):
         if not quiet: print(*a, file=sys.stderr)
+    browser = study.browser_mode()   # the model runs in Lecture Lens Studio; leave it a job file
+    if browser:
+        describe = False
     folder = LECTURES / f"{session['id']}_{slugify(session['title'])}"
     (folder / "slides").mkdir(parents=True, exist_ok=True)
 
@@ -690,6 +799,9 @@ def build(session, con, describe=True, cards=20, quiet=False):
             + (f"> On-screen text: {s['screen_text']}\n" if s['screen_text'] else "")
             for s in slides) or "_no keyframes captured_") + "\n")
 
+    if browser:   # the Studio describes the keyframes and rewrites slides.md from this
+        (folder / "slides.json").write_text(json.dumps(slides, indent=1))
+
     # 3. notes + cards (model, grounded in the two files above)
     slide_src = "SLIDES:\n" + "\n".join(f"[slide {s['n']} @ {s['at']}] {s['description'] or s['screen_text']}"
                                          for s in slides)
@@ -709,8 +821,17 @@ def build(session, con, describe=True, cards=20, quiet=False):
         src_lines = [l for l in merged.read_text().splitlines()[3:] if l.strip()]
         say(f"  using merged reference transcript ({len(src_lines)} lines)")
     transcript_src = "\n".join(src_lines)
-    parts = _split_lines(src_lines, PART_CHARS) if len(transcript_src) + len(slide_src) > study.CTX else []
-    if parts:
+    parts = [] if browser else _split_lines(src_lines, PART_CHARS) if len(transcript_src) + len(slide_src) > study.CTX else []
+    if browser:
+        job = studio_job(session, src_lines, deck_src, qa_src, cards)
+        (folder / "studio_job.json").write_text(json.dumps(job, indent=1))
+        (folder / "studio_result.json").unlink(missing_ok=True)
+        notes = (f"_Notes pending: open Lecture Lens Studio in Chrome, run this lecture, then `./lecture finish "
+                 f"{session['id']}`._")
+        if not (folder / "notes.md").exists():
+            (folder / "notes.md").write_text(f"# {session['title']}\n\n{notes}\n")
+        say("  browser mode: studio_job.json written; run it in Lecture Lens Studio, then `lecture finish`")
+    elif parts:
         digests = digest_parts(session["title"], parts, say)
         (folder / "digest.md").write_text(f"# Part digests — {session['title']}\n\n" + "\n\n".join(
             f"## Part {i}\n\n{d}" for i, d in enumerate(digests, 1)) + "\n")
@@ -718,12 +839,15 @@ def build(session, con, describe=True, cards=20, quiet=False):
                   + "\n\n" + slide_src)[: study.CTX]
     else:
         source = (f"TRANSCRIPT (timecoded):\n{transcript_src}\n\n" + slide_src)[: study.CTX]
-    notes = make_notes(session["title"], source)
-    (folder / "notes.md").write_text(
-        f"# {session['title']}\n\n_{session['start'].astimezone():%a %d %b %Y %H:%M} · {session['minutes']} min · "
-        f"notes by {study.MODEL} from this Mac's own capture_\n\n{notes}\n")
+    if not browser:
+        notes = make_notes(session["title"], source)
+        (folder / "notes.md").write_text(
+            f"# {session['title']}\n\n_{session['start'].astimezone():%a %d %b %Y %H:%M} · {session['minutes']} min · "
+            f"notes by {study.MODEL} from this Mac's own capture_\n\n{notes}\n")
 
-    if cards and parts:   # cards from the words themselves, part by part, not from the digest
+    if browser:
+        card_rows = []
+    elif cards and parts:   # cards from the words themselves, part by part, not from the digest
         card_rows, per = [], max(3, -(-cards // len(parts)))
         for i, part in enumerate(parts, 1):
             say(f"  cards from part {i}/{len(parts)}…")
@@ -738,24 +862,14 @@ def build(session, con, describe=True, cards=20, quiet=False):
             f"{c['q'].replace(chr(9),' ')}\t{c['a'].replace(chr(9),' ')}\t{session['title']} {c.get('at','')}"
             for c in card_rows) + "\n")
 
+    cal_s = course_calendar.session_at(session["start"])   # programme calendar (gitignored)
+    module = course_calendar.module_label(cal_s) if cal_s else ""
     # 4. Obsidian note (links, not copies — the vault points at the artefacts)
-    vault_dir = VAULT / VAULT_SUB
-    vault_dir.mkdir(parents=True, exist_ok=True)
-    concepts = re.findall(r"^\s*[-*]\s+\*\*(.+?)\*\*", notes, re.M)[:12]
-    links = " ".join(f"[[{c.strip()}]]" for c in dict.fromkeys(concepts))
-    (vault_dir / f"{session['id']} {session['title']}.md".replace("/", "-")).write_text(
-        "---\n"
-        f"date: {session['start'].astimezone():%Y-%m-%d}\n"
-        f"duration_min: {session['minutes']}\ncourse: {COURSE}\n"
-        f"source: {((session['frames'][0].get('browser_url') if session['frames'] else '') or 'live class (Zoom)')}\n"
-        f"artefacts: {folder}\ntags: [lecture, ai-product-management]\n---\n\n"
-        f"# {session['title']}\n\n{notes}\n\n"
-        f"## Concepts\n{links or '_none extracted_'}\n\n"
-        f"## Artefacts\n- Transcript: `{folder/'transcript.md'}`\n- Slides: `{folder/'slides.md'}`"
-        f"\n- Flashcards: `{folder/'cards.tsv'}` ({len(card_rows)} cards)"
-        + (f"\n- Class Q&A: `{folder/'qa.md'}`" if (folder / "qa.md").exists() else "") + "\n")
+    source_url = (session['frames'][0].get('browser_url') if session['frames'] else '') or 'live class (Zoom)'
+    write_vault_note(folder, {"id": session["id"], "title": session["title"], "start": session["start"].isoformat(),
+                              "minutes": session["minutes"], "source": source_url}, notes, len(card_rows))
 
-    manifest = {"id": session["id"], "title": session["title"],
+    manifest = {"id": session["id"], "title": session["title"], "module": module or None,
                 "start": session["start"].isoformat(), "end": session["end"].isoformat(),
                 "minutes": session["minutes"], "frames": len(session["frames"]),
                 "frames_with_image": sum(1 for f in session["frames"] if f.get("snapshot_path") or f.get("video_chunk_id")),
@@ -764,9 +878,16 @@ def build(session, con, describe=True, cards=20, quiet=False):
                 "deck_slides": len(deck),
                 "transcript_segments": len(audio), "transcript_parts": len(parts) or 1, "slides": len(slides),
                 "slides_described": sum(1 for s in slides if s["description"]),
-                "cards": len(card_rows), "vl_model": VL_MODEL or None, "llm": study.MODEL,
+                "cards": len(card_rows), "vl_model": None if browser else VL_MODEL or None,
+                "llm": "Lecture Lens Studio (pending)" if browser else study.MODEL,
+                "source": source_url,
                 "player_box": list(box) if box else None,
                 "built_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if cal_s:
+        manifest["calendar"] = {"week": cal_s["week"], "title": cal_s["title"], "date": cal_s["date"],
+                                "module": cal_s.get("module") or "", "module_title": cal_s.get("module_title") or ""}
+        if module:
+            manifest["module_source"] = "programme calendar"
     try:   # a module set by hand (or by an earlier build) survives a rebuild
         old = json.loads((folder / "manifest.json").read_text())
         for k in ("module", "module_source"):
@@ -900,7 +1021,9 @@ def run_checks(vision_probe=True):
         chk("pillow", True, "Pillow available")
     except ImportError:
         chk("pillow", False, "Pillow missing", "pip install pillow", level="warn")
-    if not VL_MODEL:
+    if study.browser_mode():
+        chk("vision", True, "browser mode: Lecture Lens Studio describes slides in Chrome")
+    elif not VL_MODEL:
         chk("vision", False, "OMLX_VL_MODEL not set — slides keep OCR text only", "set OMLX_VL_MODEL in .env", level="warn")
     elif vision_probe:
         try:
@@ -938,6 +1061,178 @@ def cmd_doctor(a):
         print(f"{'artefacts':<13}  {LECTURES}")
     sys.exit(0 if ok else 1)
 
+def find_folder(ident):
+    """A built lecture folder by session id, 'last', or folder name."""
+    folders = sorted((d for d in LECTURES.iterdir() if (d / "manifest.json").exists()),
+                     key=lambda d: json.loads((d / "manifest.json").read_text()).get("built_at", ""))
+    if not folders:
+        sys.exit("no built lectures yet (lecture build first)")
+    if ident in (None, "last"):
+        return folders[-1]
+    for d in folders:
+        if d.name == ident or d.name.startswith(f"{ident}_"):
+            return d
+    sys.exit(f"no built lecture {ident} (see: lecture list)")
+
+
+def cmd_qa_import(a):
+    """Use the meeting app's own Q&A export for a built lecture: score the live capture
+    against it and save an anonymised copy that the next build uses for qa.md."""
+    import qa_export
+    folder = find_folder(a.id)
+    man = json.loads((folder / "manifest.json").read_text())
+    staff = {x.strip() for x in os.environ.get("LIVE_QA_STAFF", "").split(",") if x.strip()}
+    if not staff:
+        sys.exit("set LIVE_QA_STAFF (comma-separated staff names) first: everyone else is anonymised by it")
+    ref = qa_export.export_threads(qa_export.parse_export(Path(a.export).read_text(encoding="utf-8-sig")), staff)
+    (folder / "qa_threads_export.json").write_text(json.dumps(qa_export.anonymise(ref, staff), indent=1))
+    live = LECTURES / "live" / dt.datetime.fromisoformat(man["start"]).astimezone().strftime("%Y%m%d") / "qa_threads.json"
+    msg = f"✓ {len(ref)} threads from the export, anonymised: {folder / 'qa_threads_export.json'}"
+    if live.exists():
+        r = qa_export.capture_recall(ref, json.loads(live.read_text()))
+        (folder / "qa_capture_eval.json").write_text(json.dumps(r, indent=1))
+        msg += (f"\n  live capture found {r['questions_found']}/{r['questions']} questions and "
+                f"{r['replies_found']}/{r['replies']} staff replies")
+    print(msg + "\n  rebuild the lecture to use it for qa.md; keep the raw export out of git (it names attendees)")
+
+
+BRIEF_PROMPT_VERSION = "brief-v1"
+
+def brief_prompt(title, agenda, prior, preread):
+    return (f"NEXT CLASS: {title}\nAGENDA (quoted):\n{agenda}\n\nPRE-READ / HOMEWORK (quoted):\n{preread or '(none given)'}\n\n"
+            f"NOTES FROM EARLIER CLASSES (quoted, newest last):\n{prior}\n\n"
+            "Write a pre-class brief in markdown: (1) '## What to recall' - 5 bullets from the earlier notes that the agenda "
+            "builds on, each naming the framework or example; (2) '## Questions to ask' - 10 questions grouped under the agenda "
+            "items, each short enough for a Q&A box, one question mark each, each followed by '  - Draft:' with a 1-2 sentence "
+            "answer from the earlier notes, or 'not covered yet'; (3) '## To verify' - claims or numbers a learner should check "
+            "against a primary source before class. Never invent sources or numbers; quote the notes' own terms.")
+
+
+def cmd_next(a):
+    """The next scheduled class from the programme calendar."""
+    s = course_calendar.next_session()
+    if a.json:
+        print(json.dumps(s or {}, ensure_ascii=False)); return
+    print(course_calendar.describe(s) if s else "no upcoming class in the calendar (lectures/calendar.json)")
+
+
+def cmd_brief(a):
+    """Before class: a brief from the agenda, pre-read and the notes of earlier classes, with
+    the local model. Sources are not added here; the evidence bank is verified separately."""
+    agenda = Path(a.agenda).read_text() if a.agenda else ""
+    preread = Path(a.preread).read_text()[:6000] if a.preread else ""
+    built = []
+    for d in sorted(LECTURES.iterdir()):
+        if (d / "notes.md").exists() and (d / "manifest.json").exists():
+            built.append((json.loads((d / "manifest.json").read_text()).get("start", ""), d))
+    prior = "\n\n".join(f"### {d.name}\n{(d / 'notes.md').read_text()[:a.budget // max(1, min(3, len(built)))]}"
+                         for _, d in sorted(built)[-3:])
+    md = study.llm(study.SYS_TUTOR, brief_prompt(a.title, agenda, prior, preread), max_tokens=2500, temperature=0.3)
+    day = a.date or dt.datetime.now().astimezone().strftime("%Y%m%d")
+    out = LECTURES / "live" / day
+    out.mkdir(parents=True, exist_ok=True)
+    head = f"---\ndate: {day}\ntype: class-brief\nlecture: {a.title}\nprompt: {BRIEF_PROMPT_VERSION}\n---\n\n# Brief: {a.title}\n\n"
+    (out / "brief.md").write_text(head + md.strip() + "\n")
+    (VAULT / VAULT_SUB).mkdir(parents=True, exist_ok=True)
+    (VAULT / VAULT_SUB / f"{day} Brief - {slugify(a.title)}.md").write_text(head + md.strip() + "\n")
+    print(f"✓ {out / 'brief.md'}")
+
+
+def classify_drop(path: Path) -> str | None:
+    """What a file dropped beside a class is: zoom_transcript, qa_export, deck or None.
+    Decided by content, not name, so Zoom's own file names work as saved."""
+    if path.suffix.lower() == ".pptx":
+        return "deck"
+    if path.suffix.lower() not in (".txt", ".md", ".vtt") or path.stat().st_size > 5_000_000:
+        return None
+    head = path.read_text(encoding="utf-8-sig", errors="ignore")[:20000]
+    if re.search(r"^\[\d{1,3}:\d{2}\]\s*[^:\n]{1,40}:", head, re.M) or re.search(r"\d\d:\d\d:\d\d(\.\d+)? --> ", head):
+        return "zoom_transcript"
+    if len(re.findall(r"^.+?\s{2,}\d{1,2}:\d{2}\s?[AP]M\s*$", head, re.M)) >= 2:
+        return "qa_export"
+    return None
+
+
+def cmd_qa(a):
+    """Rewrite qa.md (and qa_pruned.md) for a built lecture from the live folder; no model."""
+    folder = find_folder(a.id)
+    man = json.loads((folder / "manifest.json").read_text())
+    session = {"title": man["title"], "start": dt.datetime.fromisoformat(man["start"])}
+    live_qa_source(session, folder)
+    print(f"✓ {folder / 'qa.md'}" + (f" · pruned: {folder / 'qa_pruned.md'}" if (folder / "qa_pruned.md").exists() else ""))
+
+
+def cmd_ingest(a):
+    """After class: find the meeting app's files beside the class (live folder or the built
+    lecture folder), then clean the live transcript, import the Q&A export, merge and score
+    the reference transcript and score prospective answers. Idempotent; prints a report."""
+    import qa_export, transcript_clean, live_qa
+    folder = find_folder(a.id)
+    man = json.loads((folder / "manifest.json").read_text())
+    day = dt.datetime.fromisoformat(man["start"]).astimezone().strftime("%Y%m%d")
+    live = LECTURES / "live" / day
+    report = {"lecture": folder.name, "found": {}}
+    for d in (live, folder):
+        for f in sorted(d.glob("*")) if d.exists() else []:
+            k = classify_drop(f) if f.is_file() else None
+            if k and k not in report["found"]:
+                report["found"][k] = str(f)
+    seg = live / "whisper_segments.jsonl"
+    if seg.exists() and not seg.with_suffix(".jsonl.raw").exists():
+        rows = [json.loads(l) for l in seg.read_text().splitlines() if l.strip()]
+        kept, dropped = transcript_clean.clean_segments(rows, os.environ.get("STUDY_LIVE_PROMPT", ""))
+        transcript_clean._rewrite(seg, kept)
+        report["whisper_clean"] = {"in": len(rows), "kept": len(kept), "dropped": dict(dropped)}
+    if "deck" in report["found"] and not (folder / Path(report["found"]["deck"]).name).exists():
+        shutil.copy2(report["found"]["deck"], folder)
+        report["deck"] = "copied into the lecture folder; rebuild to use it"
+    if "qa_export" in report["found"]:
+        cmd_qa_import(argparse.Namespace(id=folder.name, export=report["found"]["qa_export"]))
+        staff = {x.strip() for x in os.environ.get("LIVE_QA_STAFF", "").split(",") if x.strip()}
+        ref = qa_export.export_threads(qa_export.parse_export(Path(report["found"]["qa_export"]).read_text(encoding="utf-8-sig")), staff)
+        pro = live / "qa_prospective.jsonl"
+        if pro.exists():                          # prospective drafts vs the authoritative replies
+            drafts = [json.loads(l) for l in pro.read_text().splitlines() if l.strip()]
+            rows = []
+            for d in drafts:
+                t = next((t for t in ref if qa_export.norm(t["q"]) == qa_export.norm(d["q"])), None)
+                if t and t["answers"]:
+                    rows.append({"time": t["time"], "confidence": d.get("confidence"),
+                                 **live_qa.agreement(d["answer"], " ".join(x["text"] for x in t["answers"]))})
+            if rows:
+                report["prospective"] = {"n": len(rows), "mean_recall": round(sum(r["recall"] for r in rows) / len(rows), 3)}
+                (folder / "qa_prospective_eval.json").write_text(json.dumps({"rows": rows, **report["prospective"]}, indent=1))
+        for name in ("qa_capture_eval.json",):
+            if (folder / name).exists():
+                report["qa_capture"] = json.loads((folder / name).read_text())
+    if "zoom_transcript" in report["found"] and (folder / "transcript.md").exists():
+        r = subprocess.run([sys.executable, str(HERE / "transcript_ref.py"), str(folder), report["found"]["zoom_transcript"]],
+                           capture_output=True, text=True, timeout=600)
+        report["transcript_ref"] = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else {"error": r.stderr[-400:]}
+    # judge calibration: 15 fresh rows from this class for blind labelling (Evals > Holdout check);
+    # scoring them needs the judge model and runs separately (tests/evals/run_holdout_check.sh)
+    cal = HERE / "tests" / "evals" / "calibration.py"
+    if cal.exists() and (live / "questions.jsonl").exists():
+        r = subprocess.run([sys.executable, str(cal), "holdout", "--day", day, "--n", "15"],
+                           capture_output=True, text=True, timeout=120, cwd=cal.parent)
+        try:
+            report["holdout"] = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            report["holdout"] = {"error": (r.stderr or r.stdout)[-300:]}
+    (folder / "ingest_report.json").write_text(json.dumps(report, indent=1))
+    print(json.dumps(report, indent=1))
+
+
+def cmd_finish(a):
+    folders = [d for d in sorted(LECTURES.iterdir()) if (d / "studio_result.json").exists()] if a.id == "all" else [find_folder(a.id)]
+    for folder in folders:
+        try:
+            note, man = finish(folder)
+            print(f"✓ {folder.name}: {man['cards']} cards, {man['slides_described']} slides described · vault: {note}")
+        except FileNotFoundError as e:
+            print(f"~ {e}")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="lecture", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -959,6 +1254,19 @@ def main():
     p = sub.add_parser("doctor"); p.add_argument("--json", action="store_true")
     p.add_argument("--quick", action="store_true", help="skip the vision-model image probe")
     p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("qa-import", help="use the meeting app's Q&A export: score the live capture, anonymise, feed the build")
+    p.add_argument("id"); p.add_argument("export"); p.set_defaults(fn=cmd_qa_import)
+    p = sub.add_parser("next", help="the next class from the programme calendar"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_next)
+    p = sub.add_parser("brief", help="before class: recall points and questions from the agenda and earlier notes")
+    p.add_argument("--title", required=True); p.add_argument("--agenda", help="text file with the agenda")
+    p.add_argument("--preread", help="text file: pre-read or homework instructions"); p.add_argument("--date", help="YYYYMMDD (default today)")
+    p.add_argument("--budget", type=int, default=24000); p.set_defaults(fn=cmd_brief)
+    p = sub.add_parser("qa", help="rewrite qa.md from the live folder (uses post-class judge scores when present)")
+    p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_qa)
+    p = sub.add_parser("finish", help="after Lecture Lens Studio ran a lecture (browser mode): vault note and manifest")
+    p.add_argument("id", nargs="?", default="last", help="session id, 'last' or 'all'"); p.set_defaults(fn=cmd_finish)
+    p = sub.add_parser("ingest", help="after class: use the meeting app's transcript/Q&A export/deck found beside the class")
+    p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_ingest)
     a = ap.parse_args(); a.fn(a)
 
 if __name__ == "__main__":

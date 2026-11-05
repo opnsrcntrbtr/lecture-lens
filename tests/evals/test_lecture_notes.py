@@ -20,6 +20,7 @@ from deepeval.metrics import FaithfulnessMetric, GEval
 from deepeval.test_case import LLMTestCase, SingleTurnParams as P
 
 from judge import JUDGE
+import rubric   # versioned judge instructions (JUDGE_RUBRIC)
 
 CORE = ("TL;DR", "Key concepts", "Worked examples", "How this applies")
 
@@ -67,17 +68,21 @@ for spec in json.loads(os.environ.get("NOTES_EVAL", "[]")):
                   "case": LLMTestCase(input="Lecture notes for the class", actual_output=md[:12000],
                                       expected_output=_key_points(folder))})
 
-FAITHFUL = FaithfulnessMetric(threshold=0.8, model=JUDGE, async_mode=False)
-COVERAGE = GEval(
-    name="Coverage",
-    evaluation_steps=[
-        "The expected output lists the deck's key points (part recaps and frameworks).",
-        "For each key point, check whether the notes state it or its substance.",
-        "Score the share of key points covered; do not reward points not in the expected output.",
-    ],
-    evaluation_params=[P.ACTUAL_OUTPUT, P.EXPECTED_OUTPUT], threshold=0.7, model=JUDGE, async_mode=False)
+FAITHFUL = rubric.faithfulness(0.8)   # v2: DeepEval Faithfulness + claim support
+COVERAGE = rubric.geval("coverage")
 
 
 @pytest.mark.parametrize("c", CASES, ids=lambda c: c["id"])
 def test_notes(c):
-    assert_test(c["case"], metrics=[FAITHFUL] if c["kind"] == "faithful" else [COVERAGE])
+    assert_test(c["case"], metrics=FAITHFUL if c["kind"] == "faithful" else [COVERAGE])
+
+
+CLAIMS = rubric.claim_warning()   # v2.1: reported, never gating
+
+
+@pytest.mark.xfail(strict=False, reason="warning only: claim-support check (rubric v2.1)")
+@pytest.mark.parametrize("c", [c for c in CASES if c["kind"] == "faithful"], ids=lambda c: "claims:" + c["id"])
+def test_claims_warning(c):
+    if not CLAIMS:
+        pytest.skip("this rubric has no claim warning")
+    assert_test(c["case"], metrics=CLAIMS)

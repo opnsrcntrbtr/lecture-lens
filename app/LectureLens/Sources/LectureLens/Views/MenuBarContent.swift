@@ -7,7 +7,7 @@ struct MenuBarContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Lecture Lens").font(.headline)
+                Text("Lecture Lens").font(.scaled(.headline))
                 Spacer()
                 Circle().fill(model.overall.color).frame(width: 10, height: 10)
             }
@@ -30,10 +30,10 @@ struct MenuBarContent: View {
             }
             .disabled(model.busyCapture)
             if let err = model.lastError {
-                Text(err).font(.caption).foregroundStyle(.red).lineLimit(3)
+                Text(err).font(.scaled(.caption)).foregroundStyle(.red).lineLimit(3)
             }
             if model.jobs.busy, let j = model.jobs.jobs.first(where: { $0.running }) {
-                HStack { ProgressView().controlSize(.small); Text(j.title).font(.caption) }
+                HStack { ProgressView().controlSize(.small); Text(j.title).font(.scaled(.caption)) }
             }
             Divider()
             HStack {

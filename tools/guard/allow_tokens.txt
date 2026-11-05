@@ -6,3 +6,4 @@ upgrades
 upgrading
 upgradable
 upgradeable
+onupgradeneeded
