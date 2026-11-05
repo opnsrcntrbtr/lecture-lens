@@ -278,7 +278,7 @@ def check_citations(answer, n_sources):
     sentences = [x for x in re.split(r"(?<=[.!?])\s+|\n+", body) if len(re.findall(r"\w+", _CITE.sub("", x))) >= 6]
     with_cite = sum(1 for x in sentences if _CITE.search(x))
     coverage = round(with_cite / len(sentences), 3) if sentences else None
-    refusal = re.search(r"(sources|captures|lecture)s? (do not|don't|does not|doesn't) (contain|say|cover|mention)", body, re.I)
+    refusal = re.search(r"(sources|captures|lecture|material)s? (do not|don't|does not|doesn't) (contain|say|cover|mention)", body, re.I)
     if sentences and not with_cite and not refusal:
         warnings.append("the answer cites no source")
     return warnings, coverage

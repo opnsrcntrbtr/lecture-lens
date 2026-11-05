@@ -42,3 +42,9 @@ Each entry gives the claim we rely on and how far we rely on it. Most of these s
 | --- | --- | --- |
 | Normalise reference and hypothesis the same way before word error rate: case, punctuation, contractions, spelled-out numbers, and only true disfluencies (`uh`, `um`, `hmm`) removed | `transcript_ref.normalize` (`normalized` in `transcript_eval.json`) | Radford, A., Kim, J. W., Xu, T., Brockman, G., McLeavey, C. and Sutskever, I. (2023). Robust speech recognition via large-scale weak supervision. *Proceedings of ICML 2023*, PMLR 202, 28492–28518 (text normaliser, appendix). arXiv:2212.04356 |
 | Confirm a keyframe repeat with local structural similarity, pooled by counting changed grid cells, not by the mean | `lecture_kit.is_repeat`, `changed_cells`; [ADR-005](../decisions/ADR-005-keyframe-ssim.md); `eval/keyframe_bench.py` | Wang, Z., Bovik, A. C., Sheikh, H. R. and Simoncelli, E. P. (2004). Image quality assessment: from error visibility to structural similarity. *IEEE Transactions on Image Processing* 13(4), 600–612. doi:10.1109/TIP.2003.819861 |
+
+## Lecture Lens Studio (in-browser model)
+
+| Decision | Where | Reference |
+| --- | --- | --- |
+| Check Studio answers' `[n]` citations the same way as `study ask` (shared fixtures pin Python and JS together), and remove `[slide n]` / `[deck n]` citations to sources the model was never given, counting them as `citations_removed` | `studio/src/core/citations.js`, `notes.js`, `ask.js` (`cite-v1`) | Gao, T., Yen, H., Yu, J. and Chen, D. (2023). Enabling large language models to generate text with citations. *Proceedings of EMNLP 2023*, 6465–6488. doi:10.18653/v1/2023.emnlp-main.398 |

@@ -4,6 +4,7 @@ import { splitLines, cleanReply, sections } from "./text.js";
 import { SYS_TUTOR, VERSIONS, digestPrompt, reducePrompt, notesPromptA, notesPromptB, cardsPrompt, cardsSchema, slidePrompt } from "./prompts.js";
 import { parseCards, dedupeCards, cardCount, cardsTsv } from "./cards.js";
 import { slidesMarkdown, slideSource, cleanDescription } from "./slides.js";
+import { knownRefs, dropUnknownRefs } from "./citations.js";
 
 const NOTE_HEADINGS = ["TL;DR", "Key concepts", "Frameworks & models", "Worked examples and numbers",
   "How this applies to building AI products", "Action items for the learner", "Open questions"];
@@ -58,7 +59,11 @@ export async function makeNotes(engine, { title, lines, slideSrc, cards = 20 }, 
   const a = await engine.prompt(SYS_TUTOR, notesPromptA(title, source), { maxTokens: 1500, temperature: 0.3 });
   // the second call also quotes the first half, so it gets a shorter slice of the source
   const b = await engine.prompt(SYS_TUTOR, notesPromptB(title, source.slice(0, sourceChars - 1800), cleanReply(a)), { maxTokens: 1500, temperature: 0.3 });
-  const notes = joinNoteHalves(a, b);
+  // Citations to slides or deck pages that were never in the source are removed (S1, ALCE).
+  const refs = knownRefs(`${source}\n${slideSrc}`);
+  const kept = dropUnknownRefs(joinNoteHalves(a, b), refs);
+  const notes = kept.text;
+  let citationsRemoved = kept.removed;
 
   let cardRows = [];
   if (cards) {
@@ -74,9 +79,12 @@ export async function makeNotes(engine, { title, lines, slideSrc, cards = 20 }, 
         say(`cards ${i + 1}: ${e.message}`);
       }
     }
-    cardRows = dedupeCards(cardRows);
+    cardRows = dedupeCards(cardRows).map((c) => {
+      const r = dropUnknownRefs(c.a, refs); citationsRemoved += r.removed;
+      return { ...c, a: r.text.trim() };
+    });
   }
-  return { notes, digests, cards: cardRows };
+  return { notes, digests, cards: cardRows, citationsRemoved };
 }
 
 /** Describe the keyframes that have no description yet. Returns how many were described. */
@@ -108,7 +116,7 @@ export async function runLectureJob(engine, io, folder, { describe = true, say =
     await io.writeText(`${folder}/slides.md`, slidesMarkdown(job.title, slides));
   }
   const slideSrc = slideSource(slides, { deckSrc: job.deck_src || "", qaSrc: job.qa_src || "" });
-  const { notes, digests, cards } = await makeNotes(engine, { title: job.title, lines: job.transcript || [], slideSrc, cards: job.cards ?? 20 }, say);
+  const { notes, digests, cards, citationsRemoved } = await makeNotes(engine, { title: job.title, lines: job.transcript || [], slideSrc, cards: job.cards ?? 20 }, say);
   const when = job.when ? `${job.when} · ` : "";
   await io.writeText(`${folder}/notes.md`,
     `# ${job.title}\n\n_${when}${job.minutes ?? "?"} min · notes by ${engine.name} in Chrome (Lecture Lens Studio) from this Mac's own capture_\n\n${notes}\n`);
@@ -119,7 +127,8 @@ export async function runLectureJob(engine, io, folder, { describe = true, say =
   const result = {
     status: "done", engine: engine.name, finished_at: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 1000),
     cards: cards.length, slides_described: described, digest_parts: digests.length,
-    prompt_versions: { digest: VERSIONS.digest, notes: VERSIONS.notes, cards: VERSIONS.cards, slide: VERSIONS.slide },
+    citations_removed: citationsRemoved,   // [slide n] / [deck n] the model cited but was never given
+    prompt_versions: { digest: VERSIONS.digest, notes: VERSIONS.notes, cards: VERSIONS.cards, slide: VERSIONS.slide, citations: VERSIONS.citations },
   };
   await io.writeText(`${folder}/studio_result.json`, JSON.stringify(result, null, 1));
   return result;

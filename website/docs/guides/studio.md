@@ -62,6 +62,7 @@ In the Studio's **Live class** tab, pick today and click **Start following**. Ke
 - **Notes are less complete.** Gemini Nano is a small model with a 9,216-token window, so long classes go through digests, which lose detail. Check the notes against the transcript before you rely on them. The [evaluation guide](evaluation.md) shows how to score Studio output with the local judge.
 - **Slide descriptions** need an engine that reads images. With the WebGPU fallback, pick the Phi-3.5 vision model, or untick **Describe slides**: the notes then use the on-screen text.
 - **Live Q&A follow-ups and prospective answers** are not in the Studio yet. In browser mode they are skipped.
+- **Citations are checked, not trusted.** A small model sometimes cites a slide that was never in its source. The Studio removes `[slide n]` and `[deck n]` citations that point nowhere and records how many in `studio_result.json` (`citations_removed`). In **Ask**, a citation to a source that wasn't shown, or an answer with no citation, is listed under the answer.
 
 ## Evaluate the Studio
 

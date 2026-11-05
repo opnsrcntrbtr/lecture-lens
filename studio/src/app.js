@@ -129,12 +129,13 @@ const ask = guard(async () => {
   const e = await needEngine(); await needFolder();
   const q = $("ask-q").value.trim(), folder = $("ask-lecture").value;
   if (!q || !folder) return;
-  $("ask-answer").textContent = "thinking…"; $("ask-sources").replaceChildren();
-  const { answer, sources } = await askLecture(e, await lectureIndex(folder), q);
+  $("ask-answer").textContent = "thinking…"; $("ask-sources").replaceChildren(); $("ask-warnings").replaceChildren();
+  const { answer, sources, warnings = [], coverage = null } = await askLecture(e, await lectureIndex(folder), q);
   $("ask-answer").textContent = answer;
+  $("ask-warnings").replaceChildren(...warnings.map((w) => el("li", { textContent: `Citation check: ${w}` })));
   $("ask-sources").replaceChildren(...sources.map((s) => el("li", { textContent: `${s.label}: ${s.text.slice(0, 240)}` })));
   await io.appendText(`${folder}/studio_ask.jsonl`, JSON.stringify({ t: new Date().toISOString(), q, answer, engine: e.name,
-    sources: sources.map((s) => s.label) }) + "\n");
+    sources: sources.map((s) => s.label), citation_warnings: warnings, citation_coverage: coverage }) + "\n");
 });
 
 // ---------------------------------------------------------------- live

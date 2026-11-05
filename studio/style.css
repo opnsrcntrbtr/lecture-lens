@@ -29,6 +29,8 @@ table { width: 100%; border-collapse: collapse; }
 td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
 td.state-pending { color: var(--warn); } td.state-done { color: var(--ok); }
 .answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+.warnings { color: var(--warn, #9a5b00); padding-left: 1.2em; }
+.warnings:empty { display: none; }
 .sources { font-size: 13px; color: var(--muted); }
 #log { max-height: 220px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin: 0; }
 code { font-size: 13px; }

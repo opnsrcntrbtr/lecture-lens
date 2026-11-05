@@ -115,7 +115,7 @@ as the code that relies on it.
 Tests run with `cd studio && node --test test/*.test.js` and the fake engine in
 `studio/test/helpers.js`; the real model is on the Mac (Chrome 148+).
 
-- [ ] **S1 Check citations in Studio answers and notes.** The PR #29 read-through
+- [x] **S1 Check citations in Studio answers and notes.** The PR #29 read-through
   found Nano citing `[slide 4]` with no slide source. Port `study.check_citations`
   (ALCE, Gao et al. 2023): answers report `citation_warnings`; notes and cards drop
   citations to slides that were never given and count them in `studio_result.json`,

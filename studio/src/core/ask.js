@@ -1,6 +1,7 @@
 // Ask your lectures: BM25 over transcript windows and slides, then a cited answer.
 import { SYS_TUTOR, askPrompt } from "./prompts.js";
 import { cleanReply } from "./text.js";
+import { checkCitations } from "./citations.js";
 
 const WORD = /[a-z0-9][a-z0-9-]*/g;
 const STOP = new Set("the a an and or of to in on for is are was were be it this that with as at by from what how why which who when does do did can could should would about into than then there their they them its your you we our".split(" "));
@@ -65,6 +66,8 @@ export async function askFromSources(engine, question, sources) {
 
 export async function askLecture(engine, index, question) {
   const sources = index.top(question, Math.floor(engine.budget.sourceChars * 0.8));
-  if (!sources.length) return { answer: "Nothing in this lecture matches the question's words. Try other words, or another lecture.", sources };
-  return { answer: await askFromSources(engine, question, sources), sources };
+  if (!sources.length) return { answer: "Nothing in this lecture matches the question's words. Try other words, or another lecture.", sources, warnings: [] };
+  const answer = await askFromSources(engine, question, sources);
+  const { warnings, coverage } = checkCitations(answer, sources.length);
+  return { answer, sources, warnings, coverage };
 }
