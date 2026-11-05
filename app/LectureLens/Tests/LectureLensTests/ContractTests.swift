@@ -30,6 +30,13 @@ import Testing
     #expect(r.prompt_version == "ask-v1")
 }
 
+@Test func decodesAskCitationChecks() throws {
+    let json = #"{"ok":true,"answer":"a [7]","sources":[],"citation_warnings":["cites source(s) 7 but only 1 were given"],"citation_coverage":0.5}"#
+    let r = try JSONDecoder().decode(AskResult.self, from: Data(json.utf8))
+    #expect(r.citation_warnings?.count == 1)
+    #expect(r.citation_coverage == 0.5)
+}
+
 @Test func decodesSessionsWithMissingFields() throws {
     let json = #"{"sessions":[{"id":"a1","title":"Week 3","built":true,"folder":"/x/a1_Week-3"},{"built":false,"folder":"/x/b"}]}"#
     let l = try JSONDecoder().decode(SessionList.self, from: Data(json.utf8))
@@ -41,6 +48,9 @@ import Testing
     let deep = #"{"suite":"deepeval-study","generator":"g","judge":"j","metrics":{"ask:Faithfulness":{"mean":0.91,"pass":30,"n":36,"threshold":0.8}}}"#
     let s1 = try JSONDecoder().decode(EvalSummary.self, from: Data(deep.utf8))
     #expect(s1.metrics?["ask:Faithfulness"]?.pass == 30)
+    #expect(s1.metrics?["ask:Faithfulness"]?.ci95 == nil)
+    let withCI = #"{"metrics":{"ask:Faithfulness":{"mean":0.91,"pass":5,"n":6,"ci95":[0.436,0.97]}}}"#
+    #expect(try JSONDecoder().decode(EvalSummary.self, from: Data(withCI.utf8)).metrics?["ask:Faithfulness"]?.ci95?.first == 0.436)
     let vision = #"{"model":"m","by_config":{"think_off":{"title_exact":{"pass":30,"n":36},"latency_p50":4.2,"note":"x"}}}"#
     let s2 = try JSONDecoder().decode(EvalSummary.self, from: Data(vision.utf8))
     guard case .agg(let p, let n, _) = s2.by_config?["think_off"]?["title_exact"] else { Issue.record("not agg"); return }

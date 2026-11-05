@@ -15,10 +15,12 @@ The second study is on school mathematics; applying it to adult professional lea
 
 ## The loop
 
+The full references for this page are on [Research basis](../project/research-basis.md).
+
 1. **Before class.** Read the pre-read and write three questions you expect the class to answer.
 2. **During class.** Capture runs. Write only your doubts.
 3. **Same day, before opening the notes.** From memory: the three main ideas, and what you are expected to produce. Then read the notes and correct yourself.
-4. **Days 1, 3, 7, 14, 30.** Review the cards; mark each pass or fail. The evidence supports spacing in general, not these exact gaps; a spaced-repetition app will adapt them.
+4. **Spaced review.** Run `./lecture review` daily; answer each card from memory, then mark it pass or fail. The gaps are not fixed: each card is scheduled with the FSRS-5 memory model so that it comes back when its predicted recall falls to 90% (`STUDY_REVIEW_RETENTION`). The evidence supports spacing in general; FSRS's particular model is fitted to other people's review logs. A card that fails three times is listed by `./lecture review --stats` as one to rewrite or split.
 5. **Weekly.** One question that applies the week's ideas to your own project.
 
 ## What this means for the product

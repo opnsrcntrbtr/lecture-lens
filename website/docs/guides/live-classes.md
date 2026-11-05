@@ -86,7 +86,7 @@ If the meeting app gives you its own transcript, put it in the lecture folder an
 ./lecture build --from 10:00 --to 11:30 --title "Week 3 live class"   # rebuild: notes now use the merged transcript
 ```
 
-This also writes `transcript_eval.json` with the word error rate of the local transcript against the reference.
+This also writes `transcript_eval.json` with the word error rate of the local transcript against the reference. Read `normalized`: both texts are normalised the same way first (case, punctuation, contractions, numbers, `uh`/`um`), so it counts word errors rather than formatting. `all_words` is the raw comparison. Files written before this change have `content_words` instead, which also dropped real words such as "so" and "right"; the two are not comparable.
 
 When the live follower ran, the build uses its whisper transcript instead of the recorder's own speech-to-text (if it covers at least 60% of the class; `STUDY_TRANSCRIPT_SOURCE=screenpipe` turns this off), adds `qa.md` with the curated Q&A, and gives the notes the Q&A as an extra source.
 

@@ -1,4 +1,4 @@
-# ADR-005: run the language model inside Chrome (Lecture Lens Studio)
+# ADR-006: run the language model inside Chrome (Lecture Lens Studio)
 
 **Status:** Accepted (MVP) · **Date:** 2026-11-05 · **Deciders:** project maintainer
 

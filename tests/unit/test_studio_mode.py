@@ -67,3 +67,32 @@ def test_finish_writes_vault_note_and_manifest(tmp_path, monkeypatch):
     saved = json.loads((folder / "manifest.json").read_text())
     assert saved["llm"] == "gemini-nano (Lecture Lens Studio)" and saved["cards"] == 2 and saved["slides_described"] == 1
     assert saved["studio"]["prompt_versions"] == {"notes": "notes-nano-v1"}
+
+
+def test_browser_build_keeps_studio_notes_and_calls_no_model(tmp_path, monkeypatch):
+    """Merging main's recall-first notes (notes.md written after the cards) into the
+    browser path must not call the model nor overwrite notes the Studio already wrote."""
+    import datetime as dt
+    monkeypatch.setattr(study, "PROVIDER", "browser")
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("no model call in browser mode"))
+    monkeypatch.setattr(study, "llm", boom)
+    monkeypatch.setattr(lk, "make_notes", boom)
+    monkeypatch.setattr(lk, "make_cards", boom)
+    monkeypatch.setattr(lk, "LECTURES", tmp_path / "lectures")
+    monkeypatch.setattr(lk, "VAULT", tmp_path / "vault")
+    t0 = dt.datetime(2030, 4, 1, 9, 0, tzinfo=dt.timezone.utc)
+    monkeypatch.setattr(lk, "audio_between", lambda *a, **k: [{"ts": t0 + dt.timedelta(minutes=1),
+                                                              "text": "Water the garden early in the morning."}])
+    monkeypatch.setattr(lk, "live_transcript", lambda *a, **k: None)
+    monkeypatch.setattr(lk, "keyframes", lambda *a, **k: [])
+    monkeypatch.setattr(lk, "live_qa_source", lambda *a, **k: "")
+    monkeypatch.setattr(lk.course_calendar, "session_at", lambda *a, **k: None)
+    session = {"id": "s1", "title": "Watering the garden", "start": t0, "end": t0 + dt.timedelta(minutes=30),
+               "minutes": 30, "frames": []}
+    folder = tmp_path / "lectures" / f"s1_{lk.slugify(session['title'])}"
+    folder.mkdir(parents=True)
+    studio_notes = "# Watering the garden\n\n_notes by gemini-nano in Chrome_\n\n## TL;DR\n- water early\n"
+    (folder / "notes.md").write_text(studio_notes)
+    lk.build(session, con=None, describe=False, cards=20, quiet=True)
+    assert (folder / "notes.md").read_text() == studio_notes
+    assert (folder / "studio_job.json").exists()

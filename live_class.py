@@ -40,6 +40,8 @@ HERE = Path(__file__).resolve().parent
 DATA = Path(os.path.expanduser(os.environ.get("SCREENPIPE_DATA", "~/.screenpipe/data")))
 LECTURES = Path(os.path.expanduser(os.environ.get("STUDY_LECTURE_DIR", str(HERE / "lectures"))))
 VAULT = Path(os.path.expanduser(os.environ.get("STUDY_VAULT", "~/vaults/ai-product-course")))
+STATE = Path(os.path.expanduser("~/.screenpipe"))
+STOP_REQUEST = STATE / "live_class.stop"   # sp-stop writes it: drain the last audio, then exit
 AUDIO_DEVICE = os.environ.get("LIVE_AUDIO_DEVICE", "System Audio (output)")
 # Backup: the microphone fills stretches of 60 s or more with no system audio, marked "(mic)".
 # "" = the first input device found; "off" = never.
@@ -715,6 +717,7 @@ def qa_round(a, side_f, seg_f, slide_f, ev_f, qa_f, fu_f, qa_done, ok, now, log)
 
 # ------------------------------------------------------------------ loop
 def run(a):
+    STOP_REQUEST.unlink(missing_ok=True)
     today = dt.datetime.now(LOCAL).date()
     hh, mm = map(int, a.start.split(":"))
     start = dt.datetime.combine(today, dt.time(hh, mm), LOCAL).astimezone(dt.timezone.utc)
@@ -750,7 +753,88 @@ def run(a):
             "until": until.isoformat(), "idea": os.environ.get("LIVE_CAPSTONE_IDEA", "").strip()}))
         log("browser mode: outline, questions and Q&A follow-ups are left to Lecture Lens Studio")
 
-    while dt.datetime.now(dt.timezone.utc) < until:
+    def whisper_pass(now, final=False):
+        """Transcribe finished audio not yet done, through the hallucination filter, then the
+        microphone backup. The loop calls it every whisper interval; run() calls it once more
+        on exit (final=True), so the last batches of a class are not lost (PR #28)."""
+        names = os.listdir(DATA)
+        files = [f for f in finished_files(names, AUDIO_DEVICE, start, now) if f[1] not in done]
+        titles = [s["title"] for s in load(slide_f) if s.get("kind", "slide") == "slide"][-3:]
+        prompt = (a.prompt + " " + " ".join(titles)).strip()[:600]
+        for b in batches(files):
+            prev = [f for f in finished_files(names, AUDIO_DEVICE, start, now)
+                    if f[0] < b[0][0] and (b[0][0] - f[0]).total_seconds() <= CHUNK_S + 15][-1:]
+            t0 = time.time()
+            segs = transcribe(prev + b, b[0][0], prompt, a.threads)
+            recent = load(seg_f)[-40:]
+            kept, dropped = transcript_clean.clean_segments(recent + segs, prompt)
+            new_keys = {(s["t"], s["text"]) for s in segs}
+            segs = [s for s in kept if (s["t"], s["text"]) in new_keys]
+            if dropped:
+                log("whisper filter dropped", dict(dropped))
+            with seg_f.open("a") as f:
+                f.writelines(json.dumps(s) + "\n" for s in segs)
+            done.update(n for _, n in b)
+            log(f"whisper {len(b)} files -> {len(segs)} segments in {time.time() - t0:.0f}s")
+            if not final and not audio_ok(health()):
+                log("audio health dipped; pausing whisper this round")
+                break
+        # microphone backup for stretches with no system audio
+        mics = backup_files(os.listdir(DATA), start, now, done)
+        for b in batches(mics):
+            segs = [dict(s, text="(mic) " + s["text"]) for s in transcribe(b, b[0][0], prompt, a.threads)]
+            kept, _ = transcript_clean.clean_segments(load(seg_f)[-40:] + segs, prompt)
+            new_keys = {(s["t"], s["text"]) for s in segs}
+            segs = [s for s in kept if (s["t"], s["text"]) in new_keys]
+            with seg_f.open("a") as f:
+                f.writelines(json.dumps(s) + "\n" for s in segs)
+            done.update(n for _, n in b)
+            log(f"mic backup {len(b)} files -> {len(segs)} segments (no system audio there)")
+
+    def write_snapshot(now):
+        words = sum(len(s["text"].split()) for s in load(seg_f))
+        try:
+            note.parent.mkdir(parents=True, exist_ok=True)
+            ev = {e["id"]: e for e in json.loads(ev_f.read_text())} if ev_f.exists() else {}
+            md = render(a.title, start, load(slide_f), load(outl_f), status, words, load(q_f), ev)
+            an_f = out / "ask_now.json"
+            if an_f.exists():
+                top = json.loads(an_f.read_text()).get("top", [])
+                if top:
+                    an = ["## Ask now (top 3, refreshed every 5 min)", ""]
+                    for i, c in enumerate(top, 1):
+                        refs = "; ".join(ev[x]["title"] for x in c.get("sources", []) if x in ev)
+                        an += [f"{i}. **{c['q']}**", f"   - _Draft:_ {c['answer']}" + (f" ({refs})" if refs else "")]
+                    j = md.find("\n## ")
+                    md = md[:j + 1] + "\n".join(an) + "\n\n" + md[j + 1:] if j >= 0 else md
+            if qa_f.exists():
+                fus: dict = {}
+                for f in load(fu_f):
+                    fus.setdefault(f["thread"], []).append(f)
+                threads = json.loads(qa_f.read_text())
+                fus = live_qa.curate_followups(threads, fus)
+                pro_f = out / "qa_prospective.jsonl"
+                pros = {d["thread"]: d for d in load(pro_f)}
+                ev_f2 = out / "qa_prospective_eval.json"
+                for r in (json.loads(ev_f2.read_text())["rows"] if ev_f2.exists() else []):
+                    if r["thread"] in pros:
+                        pros[r["thread"]]["agreement"] = r["recall"]
+                (out / "qa_view.json").write_text(json.dumps(  # what the app's Live tab shows
+                    {"threads": [t["id"] for t in threads if live_qa.thread_kind(t) != "trivial"], "followups": fus,
+                     "prospective": pros}))
+                qa_md = "\n".join(live_qa.render_section(threads, fus, ev))
+                if qa_md:
+                    i = md.find("\n## ")
+                    md = md[:i + 1] + qa_md + "\n" + md[i + 1:] if i >= 0 else md + qa_md
+            note.write_text(md)
+        except Exception as e:
+            log("render error", e)
+        state_f.write_text(json.dumps({"done_files": sorted(done), "last_slide_t": last_slide_t, "qa_done": qa_done,
+                                       "last_tokens": sorted(last_tokens or []), "last_outline": last_outline.isoformat(),
+                                       "status": status, "words": words, "updated": now.isoformat()}))
+
+    status = "stopped"
+    while dt.datetime.now(dt.timezone.utc) < until and not STOP_REQUEST.exists():
         h = health()
         ok = healthy(h)
         status = "ok" if ok else f"CHECK ({h.get('frame_status')}/{h.get('audio_status')})"
@@ -821,39 +905,7 @@ def run(a):
             next_whisper = time.time() + a.whisper_every
             if audio_ok(h):
                 try:
-                    names = os.listdir(DATA)
-                    files = [f for f in finished_files(names, AUDIO_DEVICE, start, now) if f[1] not in done]
-                    titles = [s["title"] for s in load(slide_f) if s.get("kind", "slide") == "slide"][-3:]
-                    prompt = (a.prompt + " " + " ".join(titles)).strip()[:600]
-                    for b in batches(files):
-                        prev = [f for f in finished_files(names, AUDIO_DEVICE, start, now)
-                                if f[0] < b[0][0] and (b[0][0] - f[0]).total_seconds() <= CHUNK_S + 15][-1:]
-                        t0 = time.time()
-                        segs = transcribe(prev + b, b[0][0], prompt, a.threads)
-                        recent = load(seg_f)[-40:]
-                        kept, dropped = transcript_clean.clean_segments(recent + segs, prompt)
-                        new_keys = {(s["t"], s["text"]) for s in segs}
-                        segs = [s for s in kept if (s["t"], s["text"]) in new_keys]
-                        if dropped:
-                            log("whisper filter dropped", dict(dropped))
-                        with seg_f.open("a") as f:
-                            f.writelines(json.dumps(s) + "\n" for s in segs)
-                        done.update(n for _, n in b)
-                        log(f"whisper {len(b)} files -> {len(segs)} segments in {time.time() - t0:.0f}s")
-                        if not audio_ok(health()):
-                            log("audio health dipped; pausing whisper this round")
-                            break
-                    # microphone backup for stretches with no system audio
-                    mics = backup_files(os.listdir(DATA), start, now, done)
-                    for b in batches(mics):
-                        segs = [dict(s, text="(mic) " + s["text"]) for s in transcribe(b, b[0][0], prompt, a.threads)]
-                        kept, _ = transcript_clean.clean_segments(load(seg_f)[-40:] + segs, prompt)
-                        new_keys = {(s["t"], s["text"]) for s in segs}
-                        segs = [s for s in kept if (s["t"], s["text"]) in new_keys]
-                        with seg_f.open("a") as f:
-                            f.writelines(json.dumps(s) + "\n" for s in segs)
-                        done.update(n for _, n in b)
-                        log(f"mic backup {len(b)} files -> {len(segs)} segments (no system audio there)")
+                    whisper_pass(now)
                 except Exception as e:
                     log("whisper error", e)
             else:
@@ -918,54 +970,23 @@ def run(a):
             else:
                 last_outline = to if (now - to).total_seconds() < 1800 else now - dt.timedelta(minutes=10)
 
-        words = sum(len(s["text"].split()) for s in load(seg_f))
-        try:
-            note.parent.mkdir(parents=True, exist_ok=True)
-            ev = {e["id"]: e for e in json.loads(ev_f.read_text())} if ev_f.exists() else {}
-            md = render(a.title, start, load(slide_f), load(outl_f), status, words, load(q_f), ev)
-            an_f = out / "ask_now.json"
-            if an_f.exists():
-                top = json.loads(an_f.read_text()).get("top", [])
-                if top:
-                    an = ["## Ask now (top 3, refreshed every 5 min)", ""]
-                    for i, c in enumerate(top, 1):
-                        refs = "; ".join(ev[x]["title"] for x in c.get("sources", []) if x in ev)
-                        an += [f"{i}. **{c['q']}**", f"   - _Draft:_ {c['answer']}" + (f" ({refs})" if refs else "")]
-                    j = md.find("\n## ")
-                    md = md[:j + 1] + "\n".join(an) + "\n\n" + md[j + 1:] if j >= 0 else md
-            if qa_f.exists():
-                fus: dict = {}
-                for f in load(fu_f):
-                    fus.setdefault(f["thread"], []).append(f)
-                threads = json.loads(qa_f.read_text())
-                fus = live_qa.curate_followups(threads, fus)
-                pro_f = out / "qa_prospective.jsonl"
-                pros = {d["thread"]: d for d in load(pro_f)}
-                ev_f2 = out / "qa_prospective_eval.json"
-                for r in (json.loads(ev_f2.read_text())["rows"] if ev_f2.exists() else []):
-                    if r["thread"] in pros:
-                        pros[r["thread"]]["agreement"] = r["recall"]
-                (out / "qa_view.json").write_text(json.dumps(  # what the app's Live tab shows
-                    {"threads": [t["id"] for t in threads if live_qa.thread_kind(t) != "trivial"], "followups": fus,
-                     "prospective": pros}))
-                qa_md = "\n".join(live_qa.render_section(threads, fus, ev))
-                if qa_md:
-                    i = md.find("\n## ")
-                    md = md[:i + 1] + qa_md + "\n" + md[i + 1:] if i >= 0 else md + qa_md
-            note.write_text(md)
-        except Exception as e:
-            log("render error", e)
-        state_f.write_text(json.dumps({"done_files": sorted(done), "last_slide_t": last_slide_t, "qa_done": qa_done,
-                                       "last_tokens": sorted(last_tokens or []), "last_outline": last_outline.isoformat(),
-                                       "status": status, "words": words, "updated": now.isoformat()}))
+        write_snapshot(now)
         if sync:
             sync_result.update({"what": sorted(sync), "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                                 "slides": len(load(slide_f)), "outline": len(load(outl_f))})
             (out / "sync_done.json").write_text(json.dumps(sync_result))
         t_end = time.time() + a.every       # sleep, but wake within 2 s for an on-demand sync
-        while time.time() < t_end and not (out / "sync_request.json").exists():
+        while time.time() < t_end and not (out / "sync_request.json").exists() and not STOP_REQUEST.exists():
             time.sleep(2)
-    log("until reached; stopping")
+    log(("stop requested" if STOP_REQUEST.exists() else "until reached") + "; draining pending whisper batches before exit")
+    if not a.no_whisper:
+        try:
+            whisper_pass(dt.datetime.now(dt.timezone.utc), final=True)
+        except Exception as e:
+            log("final whisper error", e)
+    write_snapshot(dt.datetime.now(dt.timezone.utc))
+    STOP_REQUEST.unlink(missing_ok=True)
+    log("stopped")
 
 
 def replay(a):

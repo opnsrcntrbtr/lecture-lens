@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import stats
+
 HERE = Path(__file__).parent
 
 
@@ -23,12 +25,12 @@ def g(d, *keys, default=None):
     return default
 
 
-def main(res_dir):
-    res = Path(res_dir)
-    runs = sorted(glob.glob(str(res / "test_run_*.json"))) or [str(HERE / ".deepeval" / ".latest_run_full.json")]
-    run = json.loads(Path(runs[-1]).read_text())
+def aggregate(run):
+    """Per-metric and per-suite pass rates, failures and per-case outcomes of one
+    DeepEval run. Every pass rate carries a 95% Wilson interval (stats.wilson):
+    with a handful of cases a point estimate alone overstates what we know."""
     cases = g(run, "testCases", "test_cases", default=[]) or []
-    per_metric, per_suite, failures = {}, {}, []
+    per_metric, per_suite, failures, per_case = {}, {}, [], []
     for c in cases:
         name = g(c, "name", default="")
         suite = "ask" if "test_ask" in name else "notes" if "test_notes" in name else "cards" if "test_cards" in name else "other"
@@ -46,15 +48,30 @@ def main(res_dir):
             b["pass"] += success
             if score is not None:
                 b["scores"].append(score)
+            # identity of a case across runs, for compare_runs.py (McNemar on paired outcomes)
+            per_case.append({"metric": key, "case": f"{name}|{g(c, 'input', default='')[:200]}", "success": success,
+                             "score": score})
             if not success:
                 failures.append({"suite": suite, "metric": mname, "input": g(c, "input", default="")[:160],
                                  "score": score, "reason": (g(m, "reason") or "")[:400]})
         s = per_suite.setdefault(suite, {"pass": 0, "n": 0})
         s["n"] += 1
         s["pass"] += ok_all
+    ci = lambda k, n: [round(x, 3) for x in stats.wilson(k, n)] if n else None
     metrics = {k: {"mean": round(statistics.mean(v["scores"]), 3) if v["scores"] else None,
-                   "pass": v["pass"], "n": v["n"], "errored": v["errored"], "threshold": v["threshold"]} for k, v in sorted(per_metric.items())}
-    out_f = HERE / os.environ.get("EVAL_OUTPUTS", ".outputs.json")
+                   "pass": v["pass"], "n": v["n"], "ci95": ci(v["pass"], v["n"]),
+                   "errored": v["errored"], "threshold": v["threshold"]} for k, v in sorted(per_metric.items())}
+    for v in per_suite.values():
+        v["ci95"] = ci(v["pass"], v["n"])
+    return metrics, per_suite, failures, per_case
+
+
+def main(res_dir):
+    res = Path(res_dir)
+    runs = sorted(glob.glob(str(res / "test_run_*.json"))) or [str(HERE / ".deepeval" / ".latest_run_full.json")]
+    run = json.loads(Path(runs[-1]).read_text())
+    metrics, per_suite, failures, per_case = aggregate(run)
+    out_f = HERE / os.environ.get("EVAL_OUTPUTS", ".outputs.json")   # Studio outputs: EVAL_OUTPUTS=<file>
     outputs = json.loads(out_f.read_text()) if out_f.exists() else {}
     lat = [r.get("latency_s") for r in outputs.get("ask", []) if r.get("latency_s")]
     try:
@@ -66,7 +83,7 @@ def main(res_dir):
                "judge": os.environ.get("OMLX_JUDGE_MODEL"), "judge_rubric": os.environ.get("JUDGE_RUBRIC", "v2"), "prompt_versions": outputs.get("prompt_versions"),
                "cases": per_suite, "metrics": metrics,
                "latency": {"ask_p50": round(statistics.median(lat), 2) if lat else None},
-               "failures": failures[:50], "source": runs[-1], "git": git}
+               "failures": failures[:50], "per_case": per_case, "source": runs[-1], "git": git}
     (res / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps({"cases": per_suite, "metrics": metrics}, indent=1))
 

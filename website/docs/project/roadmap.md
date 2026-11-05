@@ -20,14 +20,12 @@ The job to be done: *when I attend a class, I want it captured and turned into m
 
 | Item | Why | Done when |
 | --- | --- | --- |
-| [Lecture Lens Studio](../guides/studio.md): the model inside Chrome | No model server: Gemini Nano (or WebGPU) does notes, cards, answers and live questions in the browser ([ADR-005](../decisions/ADR-005-in-browser-llm.md)) | The local judge scores Studio notes and answers within an agreed margin of the oMLX generator on the synthetic suite |
+| [Lecture Lens Studio](../guides/studio.md): the model inside Chrome | No model server: Gemini Nano (or WebGPU) does notes, cards, answers and live questions in the browser ([ADR-006](../decisions/ADR-006-in-browser-llm.md)) | The local judge scores Studio notes and answers within an agreed margin of the oMLX generator on the synthetic suite |
 
 ## Next
 
 | Item | Why |
 | --- | --- |
-| Recall-first notes | Show three questions before revealing the notes; see [study method](../guides/study-method.md) |
-| Card review with a pass/fail log | Spacing and testing are the two best-supported techniques; a failed card is also feedback on the card |
 | Class schedule | Remind, run preflight and start in the right mode before a class |
 | Import the course's slide deck | A deck settles what speech-to-text garbles: names, numbers, tables |
 | Build from a time range in the app | Today it needs the command line |
@@ -39,6 +37,17 @@ The job to be done: *when I attend a class, I want it captured and turned into m
 - A per-claim checker for notes using a small, fast judge, once it is accurate enough on derived claims.
 - Speaker labels.
 - Nightly full evaluation when no capture is active.
+
+## Done
+
+| Item | Where |
+| --- | --- |
+| Recall-first notes | `notes.md` opens with three questions; answers follow the notes |
+| Card review with a pass/fail log | `./lecture review`, FSRS-5 schedule, `reviews.jsonl` |
+| Context ranked by relevance for `study ask` | BM25, `bm25-v1` |
+| Citation checks on answers | `citation_warnings` in `study ask --json` |
+
+References for each are on [Research basis](research-basis.md).
 
 ## Considered and dropped
 

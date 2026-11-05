@@ -94,8 +94,28 @@ def test_wer_counts_deletions_separately():
     assert (s, d, i) == (1, 1, 0)
 
 
-def test_fillers_are_dropped_from_content_words():
-    assert tr.words("Uh, so, the model, right, is non-deterministic") == ["the", "model", "is", "non", "deterministic"]
+def test_only_disfluencies_are_dropped():
+    # "so" and "right" are often real words; dropping them hid real deletions.
+    assert tr.words("Uh, so, the model, right, is non-deterministic") == \
+        ["so", "the", "model", "right", "is", "non", "deterministic"]
+    assert tr.normalize("You know, all of it") == ["you", "know", "all", "of", "it"]
+
+
+def test_normaliser_makes_formatting_differences_free():
+    assert tr.normalize("twenty five planets") == tr.normalize("25 planets") == ["25", "planets"]
+    assert tr.normalize("one hundred and twenty stars") == ["120", "stars"]
+    assert tr.normalize("two thousand and six") == ["2006"]
+    assert tr.normalize("We don't know; it's 0.82.") == ["we", "do", "not", "know", "it", "is", "0.82"]
+    assert tr.normalize("10,000 cells (inaudible) grew 5%") == ["10000", "cells", "grew", "5", "percent"]
+    assert tr.normalize("one and two") == ["1", "and", "2"]
+    assert tr.normalize("nine eleven") == ["9", "11"]
+    assert tr.normalize("seventy two thousand four hundred") == ["72400"]
+
+
+def test_normalised_wer_ignores_formatting_only_differences():
+    ref = tr.normalize("The probe reached twenty-five kilometres, didn't it?")
+    hyp = tr.normalize("the probe reached 25 kilometres did not it")
+    assert tr.align(ref, hyp) == (0, 0, 0)
 
 
 def test_zoom_export_is_parsed_with_speakers(tmp_path):
@@ -141,3 +161,59 @@ def test_audio_between_mic_fills_only_unrecorded_stretches():
     out = k.audio_between(con, t0, t0 + dt.timedelta(seconds=600))
     mic = [o["text"] for o in out if o["text"].startswith("(mic)")]
     assert mic == ["(mic) room 300", "(mic) room 330", "(mic) room 360", "(mic) room 390"]   # silence 120-300 is not a gap
+
+
+# --- recall-first notes (retrieval before rereading) ---
+def test_recall_first_prefers_reasoning_cards_and_keeps_notes():
+    notes = "## TL;DR\n- Stars fuse hydrogen."
+    cards = [{"q": "What is a light year?", "a": "A distance", "kind": "recall"},
+             {"q": "Why do stars shine?", "a": "Fusion releases energy", "kind": "why", "at": "00:04:00"},
+             {"q": "Red dwarf or giant: which lives longer?", "a": "Red dwarf", "kind": "compare"},
+             {"q": "A star runs out of hydrogen: what next?", "a": "It expands", "kind": "apply"}]
+    out = k.recall_first(notes, cards)
+    assert out.startswith("## Before you read")
+    head, body, tail = out.split("\n\n---\n\n")
+    assert body == notes                                   # notes untouched, in the middle
+    assert "light year" not in head and "Fusion" not in head   # no answers before the notes
+    assert tail.splitlines()[2:] == ["1. Fusion releases energy [00:04:00]", "2. Red dwarf", "3. It expands"]
+    assert head.count("\n1. ") + head.count("\n2. ") + head.count("\n3. ") == 3
+
+
+def test_recall_first_without_cards_returns_notes_unchanged():
+    assert k.recall_first("notes", []) == "notes"
+    assert "1. Only recall?" in k.recall_first("notes", [{"q": "Only recall?", "a": "Yes", "kind": "recall"}])
+
+
+# --- keyframes-v2: structural similarity confirms a hash repeat (ADR-005) ---
+def _bench():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+    import keyframe_bench as kb
+    return kb
+
+
+def test_changed_cells_separate_template_slides_but_not_capture_noise():
+    import random
+    kb = _bench(); rng = random.Random(1)
+    a, _ = kb.slide("astronomy", 0, rng); b, _ = kb.slide("astronomy", 5, rng)
+    ta, tb = k.grey_thumb(a), k.grey_thumb(b)
+    assert k.ssim(ta, ta) == 1.0 and k.changed_cells(ta, ta) == 0
+    assert k.hamming(k.dhash_image(a), k.dhash_image(b)) < 12           # the hash alone calls them the same
+    assert k.changed_cells(ta, tb) > k.MAX_CHANGED_CELLS                 # a new slide changes many cells
+    seen = k.grey_thumb(kb.as_seen(a, rng, big_cam=True))                # cursor + big webcam + JPEG
+    assert k.changed_cells(ta, seen) <= k.MAX_CHANGED_CELLS
+
+
+def test_is_repeat_v1_vs_v2():
+    import random
+    kb = _bench(); rng = random.Random(2)
+    a, _ = kb.slide("biology", 0, rng); b, _ = kb.slide("biology", 3, rng)
+    ha, hb = k.dhash_image(a), k.dhash_image(b)
+    assert k.is_repeat(hb, set(), [ha], [])                         # v1: merged
+    assert not k.is_repeat(hb, set(), [ha], [], 12, k.grey_thumb(b), [k.grey_thumb(a)])   # v2: kept
+    assert not k.is_repeat(hb, set(), [], [])                       # nothing kept yet
+
+
+def test_keyframe_bench_v2_recovers_every_slide():
+    kb = _bench()
+    frames = kb.deck("astronomy", n_slides=4, views=2, seed=3)
+    assert kb.score(kb.run_rule(frames, kb.production), 4) == {"kept": 4, "recall": 1.0, "precision": 1.0}

@@ -21,7 +21,68 @@ so read it as "how far we are from Zoom", mostly a measure of dropped words.
 import json, re, sys
 from pathlib import Path
 
-FILLERS = {"uh", "um", "you", "know", "right", "so", "like", "okay", "yeah", "alright", "all"}
+# Only true disfluencies. "so", "right", "you know" are often real words, and
+# dropping them hid real deletions (the earlier list removed "you" and "all").
+DISFLUENCIES = {"uh", "um", "uhm", "umm", "hmm", "hm", "mm", "mhm", "er", "erm", "ah", "eh"}
+
+_CONTRACTIONS = [(r"\bwon't\b", "will not"), (r"\bcan't\b", "can not"), (r"\blet's\b", "let us"),
+                 (r"n't\b", " not"), (r"'re\b", " are"), (r"'ve\b", " have"), (r"'ll\b", " will"),
+                 (r"'m\b", " am"), (r"'d\b", " would"),
+                 (r"\b(it|that|there|what|here|he|she|who|where)'s\b", r"\1 is")]
+_ONES = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve "
+                                     "thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+_TENS = {w: 10 * i for i, w in enumerate("_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()) if w != "_"}
+_SCALES = {"hundred": 100, "thousand": 1000, "million": 10 ** 6, "billion": 10 ** 9}
+
+
+def _numbers(tokens):
+    """Spelled-out cardinals to digits: 'twenty five' -> '25',
+    'one hundred and twenty' -> '120', 'two thousand' -> '2000'."""
+    out, i = [], 0
+    while i < len(tokens):
+        if tokens[i] not in _ONES and tokens[i] not in _TENS:
+            out.append(tokens[i]); i += 1; continue
+        total, cur, j, prev = 0, 0, i, None
+        while j < len(tokens):
+            t = tokens[j]
+            # "twenty five" joins; "nine eleven" or "eight two" are two numbers
+            if t in _ONES and prev in ("ones", "teen"): break
+            if t in _TENS and prev in ("ones", "teen", "tens"): break
+            if t in _ONES:
+                cur += _ONES[t]; prev = "teen" if _ONES[t] >= 10 else "ones"
+            elif t in _TENS:
+                cur += _TENS[t]; prev = "tens"
+            elif t == "hundred" and prev != "hundred":
+                cur = max(1, cur) * 100; prev = "hundred"
+            elif t in _SCALES and t != "hundred":
+                total += max(1, cur) * _SCALES[t]; cur = 0; prev = "scale"
+            elif (t == "and" and tokens[j - 1] in _SCALES and j + 1 < len(tokens)
+                  and (tokens[j + 1] in _ONES or tokens[j + 1] in _TENS)):
+                pass    # "one hundred and twenty"; but "one and two" stays two numbers
+            else:
+                break
+            j += 1
+        out.append(str(total + cur)); i = j
+    return out
+
+
+def normalize(text):
+    """Text normalisation for word error rate, after the English normaliser
+    published with Whisper (Radford et al. 2023): lower case, drop bracketed
+    annotations, expand contractions, spelled-out numbers to digits, strip
+    punctuation (keeping decimals such as 0.82), drop disfluencies. Reference
+    and hypothesis go through the same function, so WER counts words, not
+    formatting differences."""
+    t = text.lower().replace("’", "'")
+    t = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", t)
+    for pat, rep in _CONTRACTIONS:
+        t = re.sub(pat, rep, t)
+    t = t.replace("%", " percent ").replace("-", " ")
+    t = re.sub(r"(?<!\d)[.,](?!\d)|[^a-z0-9., ]", " ", t)          # keep 0.82 and 10,000
+    toks = [w.replace(",", "") for w in t.split() if w.strip(".,")]
+    toks = [w.strip(".") for w in toks]
+    return [w for w in _numbers(toks) if w and w not in DISFLUENCIES]
+
 
 def sec(h):
     a, b, c = map(int, h.split(":")); return a * 3600 + b * 60 + c
@@ -30,8 +91,11 @@ def hms(s):
     return "%02d:%02d:%02d" % (s // 3600, s % 3600 // 60, s % 60)
 
 def words(text, drop_fillers=True):
-    w = re.sub(r"[^a-z0-9' ]", " ", text.lower().replace("-", " ")).split()
-    return [x for x in w if not drop_fillers or x not in FILLERS]
+    """Tokens for WER: normalised (normalize) or, with drop_fillers=False, only
+    lower-cased with punctuation removed (the raw view, kept for comparison)."""
+    if drop_fillers:
+        return normalize(text)
+    return re.sub(r"[^a-z0-9' ]", " ", text.lower().replace("-", " ")).split()
 
 def align(ref, hyp):
     """Levenshtein alignment -> (substitutions, deletions, insertions)."""
@@ -158,7 +222,9 @@ def main():
     hyp_txt = " ".join(x for t, x in ours if lo - 15 <= t + T0 < z_end - 30 and not in_gap(t + T0))
     res = {"reference": Path(zoom).name, "overlap": [hms(lo), hms(z_end)],
            "capture_gaps": [[hms(a), hms(b)] for a, b in gaps]}
-    for name, drop in (("all_words", False), ("content_words", True)):
+    # "normalized" is the headline number (Whisper-style normaliser); "all_words" is the
+    # raw view. Files written before this change had "content_words" instead.
+    for name, drop in (("normalized", True), ("all_words", False)):
         r, h = words(ref_txt, drop), words(hyp_txt, drop)
         s, d, i = align(r, h)
         res[name] = {"ref_words": len(r), "hyp_words": len(h), "substitutions": s, "deletions": d,

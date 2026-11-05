@@ -86,6 +86,16 @@ This is a public repository about a private activity. Three layers keep them apa
 
 A hook can be bypassed by someone determined to, and a hash list can be guessed against. The guard prevents accidents; it is not a legal review.
 
+## Research basis and the improvement loop
+
+Design choices that rest on published research (BM25 retrieval, citation checks, FSRS spaced review, retrieval practice, Wilson intervals, McNemar comparisons, judge agreement, Whisper-style WER normalisation, SSIM keyframes) are listed with full references in [`website/docs/project/research-basis.md`](website/docs/project/research-basis.md).
+
+`ralph/` holds a loop that works through [`ralph/fix_plan.md`](ralph/fix_plan.md) one item per iteration, each tied to a citation, tested before it is committed. On the Mac it can also run the model-dependent items:
+
+```sh
+RALPH_HOST=mac RALPH_MAX=5 ralph/loop.sh
+```
+
 ## Documentation
 
 The docs site is built with Docusaurus from `website/`: getting started, capture guides, evaluation, architecture, decisions, the roadmap, the design review and the tech-debt register.

@@ -1,7 +1,9 @@
 import pytest
 import datetime as dt
 import sys
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import live_class as lc
@@ -121,3 +123,52 @@ def test_mic_backup_files_only_where_system_audio_is_missing():
     lc.MIC_DEVICE = "off"
     assert lc.backup_files(names, t0, t0 + dt.timedelta(seconds=900), set()) == []
     lc.MIC_DEVICE = ""
+
+
+def test_run_drains_finished_audio_on_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(lc, "LECTURES", tmp_path / "lectures")
+    monkeypatch.setattr(lc, "VAULT", tmp_path / "vault")
+    monkeypatch.setattr(lc, "STOP_REQUEST", tmp_path / "live_class.stop")
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(lc, "DATA", data)
+
+    now = dt.datetime.now(dt.timezone.utc)
+    n1 = f"System Audio (output)_{(now - dt.timedelta(minutes=2)).strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
+    n2 = f"System Audio (output)_{(now - dt.timedelta(seconds=90)).strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
+    (data / n1).write_text("")
+    (data / n2).write_text("")
+
+    calls = []
+
+    def fake_transcribe(batch, keep_from, prompt, threads):
+        calls.append([n for _, n in batch])
+        return [{"t": now.isoformat(), "text": "final batch words"}]
+
+    monkeypatch.setattr(lc, "transcribe", fake_transcribe)
+
+    local_now = dt.datetime.now(lc.LOCAL)
+    args = SimpleNamespace(
+        start=(local_now - dt.timedelta(hours=1)).strftime("%H:%M"),
+        until=(local_now - dt.timedelta(minutes=30)).strftime("%H:%M"),
+        title="Live class",
+        every=1,
+        whisper_every=300,
+        threads=1,
+        prompt="",
+        no_whisper=False,
+        no_ocr_fallback=True,   # options added on the after-class branch; parser defaults otherwise
+        save_reminder=30,
+        no_outline=True,
+        no_questions=True,
+        no_qa=True,
+        qa_per_round=2,
+    )
+
+    lc.run(args)
+
+    day = local_now.strftime("%Y%m%d")
+    out = (tmp_path / "lectures" / "live" / day)
+    state = json.loads((out / "state.json").read_text())
+    assert set(state["done_files"]) == {n1, n2}
+    assert calls and set(calls[0]) == {n1, n2}

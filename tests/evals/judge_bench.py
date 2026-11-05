@@ -3,8 +3,8 @@ the oMLX 27B LLM judge?
 
     python judge_bench.py OUT_DIR [--skip-llm] [--skip-metric]
 
-Part 1 — claim support. 72 hand-labelled claim/context pairs (judge_pairs.json,
-36 supported / 36 not). Each judge says P(supported). We report accuracy and
+Part 1 — claim support. 96 hand-labelled claim/context pairs (judge_pairs.json,
+48 supported / 48 not). Each judge says P(supported). We report accuracy and
 F1 for catching unsupported claims at 0.5, AUROC, ECE, per-kind accuracy and
 latency.
 
@@ -22,6 +22,8 @@ import statistics
 import sys
 import time
 from pathlib import Path
+
+import stats
 
 HERE = Path(__file__).parent
 
@@ -47,7 +49,12 @@ def load():
 
 # ---------------------------------------------------------------- metrics
 def scores(labels, probs, threshold=0.5):
-    """Positive class = UNSUPPORTED (the judge's job is to catch hallucinations)."""
+    """Positive class = UNSUPPORTED (the judge's job is to catch hallucinations).
+
+    Accuracy comes with a Wilson interval and AUROC with a seeded bootstrap
+    interval (stats.py), and agreement with the labels is Cohen's kappa: with ~100
+    pairs, "perfect" is an interval, not a fact (Zheng et al. 2023 on why an LLM
+    judge must itself be validated against human labels)."""
     pred_unsup = [p < threshold for p in probs]
     true_unsup = [lab == 0 for lab in labels]
     tp = sum(a and b for a, b in zip(pred_unsup, true_unsup))
@@ -57,8 +64,14 @@ def scores(labels, probs, threshold=0.5):
     prec = tp / (tp + fp) if tp + fp else 0.0
     rec = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
-    return {"accuracy": acc, "precision_unsupported": prec, "recall_unsupported": rec, "f1_unsupported": f1,
-            "auroc": auroc(labels, probs), "ece": ece(labels, probs), "brier": brier(labels, probs)}
+    correct = sum((p >= threshold) == (lab == 1) for p, lab in zip(probs, labels))
+    pairs = list(zip(labels, probs))
+    auroc_ci = stats.bootstrap_ci(lambda xs: auroc([l for l, _ in xs], [p for _, p in xs]), pairs)
+    return {"accuracy": acc, "accuracy_ci95": stats.wilson(correct, len(labels)),
+            "kappa": stats.cohen_kappa([int(p >= threshold) for p in probs], list(labels)),
+            "precision_unsupported": prec, "recall_unsupported": rec, "f1_unsupported": f1,
+            "auroc": auroc(labels, probs), "auroc_ci95": auroc_ci,
+            "ece": ece(labels, probs), "brier": brier(labels, probs)}
 
 
 def auroc(labels, probs):
@@ -215,7 +228,7 @@ def main():
     # summary.json in the shape the app's Evals screen reads
     metrics = {}
     for name, j in res["judges"].items():
-        for k in ("accuracy", "f1_unsupported", "auroc", "ece"):
+        for k in ("accuracy", "kappa", "f1_unsupported", "auroc", "ece"):
             if j.get(k) is not None:
                 metrics[f"{name}:{k}"] = {"mean": round(j[k], 4)}
         metrics[f"{name}:latency_ms"] = {"mean": round(j["latency"]["mean_ms"], 1)}
@@ -234,10 +247,13 @@ def report(r):
     L = ["# Judge benchmark — Laya vs oMLX", "",
          f"{r['pairs']} labelled claim/context pairs ({r['supported']} supported). "
          "Positive class for precision/recall/F1 = *unsupported* (a hallucination the judge should catch).", "",
-         "| | accuracy | F1 (unsupported) | AUROC | ECE | Brier | mean latency |", "|---|---|---|---|---|---|---|"]
+         "| | accuracy (95% CI) | kappa | F1 (unsupported) | AUROC (95% CI) | ECE | Brier | mean latency |",
+         "|---|---|---|---|---|---|---|---|"]
+    ci = lambda c: f" ({c[0]:.2f}–{c[1]:.2f})" if c else ""
     for name, j in r["judges"].items():
-        L.append(f"| {j['model']} | {j['accuracy']:.3f} | {j['f1_unsupported']:.3f} | "
-                 f"{(j['auroc'] or 0):.3f} | {j['ece']:.3f} | {j['brier']:.3f} | {j['latency']['mean_ms']:.0f} ms |")
+        kappa = "n/a" if j.get("kappa") is None else f"{j['kappa']:.2f}"
+        L.append(f"| {j['model']} | {j['accuracy']:.3f}{ci(j.get('accuracy_ci95'))} | {kappa} | {j['f1_unsupported']:.3f} | "
+                 f"{(j['auroc'] or 0):.3f}{ci(j.get('auroc_ci95'))} | {j['ece']:.3f} | {j['brier']:.3f} | {j['latency']['mean_ms']:.0f} ms |")
     L += ["", "## Accuracy by claim kind", "", "| kind | n | " + " | ".join(r["judges"]) + " |",
           "|---|---|" + "---|" * len(r["judges"])]
     kinds = r["judges"]["laya"]["by_kind"]

@@ -4,7 +4,7 @@ sidebar_position: 6
 
 # Use the model inside Chrome (Lecture Lens Studio)
 
-Lecture Lens Studio runs the language model in Google Chrome instead of on a model server. It uses **Gemini Nano**, the model built into Chrome, through the Prompt API. When Nano is not available, it uses an **open model on WebGPU** (WebLLM, default Qwen3 4B). There is no server: the page reads and writes your `lectures` folder directly, and nothing leaves the browser. The decision record is [ADR-005](../decisions/ADR-005-in-browser-llm.md).
+Lecture Lens Studio runs the language model in Google Chrome instead of on a model server. It uses **Gemini Nano**, the model built into Chrome, through the Prompt API. When Nano is not available, it uses an **open model on WebGPU** (WebLLM, default Qwen3 4B). There is no server: the page reads and writes your `lectures` folder directly, and nothing leaves the browser. The decision record is [ADR-006](../decisions/ADR-006-in-browser-llm.md).
 
 Capture, transcripts, keyframes, the slide log and Q&A threads still come from the Python toolkit. The Studio does the model steps:
 

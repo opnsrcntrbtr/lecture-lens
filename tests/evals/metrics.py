@@ -42,13 +42,19 @@ NOTES_METRICS = [
 ]
 
 # ---- Flashcards (lecture_kit.make_cards) -------------------------------------
+# D13: the card prompt allows up to a third recall cards, and retrieving a fact
+# is itself what makes it stick (Roediger & Karpicke 2006), so the criterion
+# judges the mix instead of failing every recall card.
 CARDS_METRICS = [
     FaithfulnessMetric(threshold=0.85, model=JUDGE, async_mode=False),
     GEval(
         name="Card quality",
         criteria=(
-            "Each card tests understanding (a why, when, trade-off or application), not trivia; its "
-            "answer is correct according to the retrieval context; questions are not duplicates."
+            "The set of cards is good study material. Each answer is correct according to the retrieval "
+            "context; no two cards ask for the same thing. Most cards test understanding (a why, when, "
+            "trade-off or application), and recall cards (a definition, name or number that matters) are "
+            "fine as long as they are no more than about a third of the set. Penalise trivia: details "
+            "that do not matter for using the ideas, or that only test the lecture's exact wording."
         ),
         evaluation_params=[P.ACTUAL_OUTPUT, P.RETRIEVAL_CONTEXT],
         threshold=0.7, model=JUDGE, async_mode=False,

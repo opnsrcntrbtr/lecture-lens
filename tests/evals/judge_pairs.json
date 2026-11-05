@@ -1,5 +1,5 @@
 {
-  "about": "Hand-labelled claim/context pairs for the judge benchmark. ctx indexes contexts.json. label 1 = the context supports the claim, 0 = it does not. kind says how the claim was made: paraphrase/derived (supported); number, entity, negation, swap, unmentioned (not supported). Paraphrases avoid copying context wording so lexical overlap alone can't solve them.",
+  "about": "Hand-labelled claim/context pairs for the judge benchmark. ctx indexes contexts.json. label 1 = the context supports the claim, 0 = it does not. kind says how the claim was made: paraphrase/derived (supported); number, entity, negation, swap, unmentioned, partial (not supported). Paraphrases avoid copying context wording so lexical overlap alone can't solve them. partial (not supported): one true and one false atomic fact joined in one claim, after FActScore (Min et al. 2023): a judge that checks only the first fact passes it. derived pairs need arithmetic or a step of inference over the context.",
   "pairs": [
     {"ctx": 0, "label": 1, "kind": "paraphrase", "claim": "An AI-native product gets better as it gathers more data."},
     {"ctx": 0, "label": 1, "kind": "paraphrase", "claim": "AI-native products keep a person involved when the stakes are high."},
@@ -83,6 +83,32 @@
     {"ctx": 11, "label": 1, "kind": "derived", "claim": "The Product Manager reports to the Head of AI."},
     {"ctx": 11, "label": 0, "kind": "swap", "claim": "Experimentation is part of ML Engineering."},
     {"ctx": 11, "label": 0, "kind": "number", "claim": "General availability is planned for July 2027."},
-    {"ctx": 11, "label": 0, "kind": "unmentioned", "claim": "The team plans to hire five more data scientists in 2027."}
+    {"ctx": 11, "label": 0, "kind": "unmentioned", "claim": "The team plans to hire five more data scientists in 2027."},
+
+    {"ctx": 1, "label": 1, "kind": "derived", "claim": "Augmenting decision making can take up to twice as long as the longest estimate for automating existing workflows."},
+    {"ctx": 2, "label": 1, "kind": "derived", "claim": "On this model the gap between precision and recall is 0.18."},
+    {"ctx": 3, "label": 1, "kind": "derived", "claim": "The medium tier costs roughly five times as much per thousand requests as the small tier."},
+    {"ctx": 3, "label": 1, "kind": "derived", "claim": "Moving from the small tier to the medium tier adds eight points of accuracy."},
+    {"ctx": 4, "label": 1, "kind": "derived", "claim": "Customer satisfaction on the dashboard is above 90% of the maximum possible score."},
+    {"ctx": 5, "label": 1, "kind": "derived", "claim": "A new model gets at least two weeks in shadow mode before any traffic is moved to it."},
+    {"ctx": 6, "label": 1, "kind": "derived", "claim": "Before cost is subtracted, the feature's probability-weighted value is $420K a year."},
+    {"ctx": 7, "label": 1, "kind": "derived", "claim": "Model training happens after data collection and before evaluation."},
+    {"ctx": 8, "label": 1, "kind": "derived", "claim": "Every Big Bet on the matrix needs high effort."},
+    {"ctx": 9, "label": 1, "kind": "derived", "claim": "Fewer than half of the people who signed up went on to activate."},
+    {"ctx": 10, "label": 1, "kind": "derived", "claim": "In the review cycle, mitigation comes before monitoring."},
+    {"ctx": 11, "label": 1, "kind": "derived", "claim": "MLOps sits two levels below the Head of AI."},
+
+    {"ctx": 0, "label": 0, "kind": "partial", "claim": "AI-native products learn from every interaction and take humans out of high-stakes calls."},
+    {"ctx": 1, "label": 0, "kind": "partial", "claim": "Horizon one automates existing workflows and typically takes twenty-four to thirty-six months."},
+    {"ctx": 2, "label": 0, "kind": "partial", "claim": "Recall is the lowest of the three scores, and a spam filter should prioritise recall."},
+    {"ctx": 3, "label": 0, "kind": "partial", "claim": "The large tier is the most accurate and the cheapest per thousand requests."},
+    {"ctx": 4, "label": 0, "kind": "partial", "claim": "Task success rate is 91.4%, and model accuracy is the recommended north-star metric."},
+    {"ctx": 5, "label": 0, "kind": "partial", "claim": "Retraining is triggered when PSI exceeds 0.2, and rollback has to be done by hand."},
+    {"ctx": 6, "label": 0, "kind": "partial", "claim": "P(success) is 0.35 and the expected value of the feature is negative."},
+    {"ctx": 7, "label": 0, "kind": "partial", "claim": "Problem framing is the first stage, and skipping it is a cheap mistake to fix later."},
+    {"ctx": 8, "label": 0, "kind": "partial", "claim": "Smart autocomplete is a Quick Win and the FAQ chatbot is a Money Pit."},
+    {"ctx": 9, "label": 0, "kind": "partial", "claim": "10,000 people visited and 1,150 of them paid."},
+    {"ctx": 10, "label": 0, "kind": "partial", "claim": "Monitoring feeds back into identifying risks, so the process is a one-time checklist."},
+    {"ctx": 11, "label": 0, "kind": "partial", "claim": "Data Science contains Experimentation, and the MVP launches in January."}
   ]
 }

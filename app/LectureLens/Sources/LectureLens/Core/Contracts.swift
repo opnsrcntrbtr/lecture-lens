@@ -78,6 +78,9 @@ struct AskResult: Decodable, Sendable {
     let answer: String?
     let error: String?
     let sources: [Source]?
+    /// Deterministic citation checks (study.check_citations); absent in older outputs.
+    let citation_warnings: [String]?
+    let citation_coverage: Double?
     let model: String?
     let prompt_version: String?
     let latency_s: Double?
@@ -110,6 +113,8 @@ struct EvalSummary: Decodable, Sendable {
         let pass: Int?
         let n: Int?
         let threshold: Double?
+        /// 95% Wilson interval [low, high] for pass/n; absent in older summaries.
+        let ci95: [Double]?
     }
 }
 
