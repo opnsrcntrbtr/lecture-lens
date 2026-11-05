@@ -144,3 +144,19 @@ def test_agreement_scores_overlap_with_the_reply():
                           "Weekly watering; daily watering rots the roots of seedlings.")
     assert a["recall"] > 0.5 and "watering" in a["shared"]
     assert q.agreement("Completely different", "Seedlings need sun")["recall"] == 0.0
+
+
+def test_shared_fixture_with_the_studio():
+    """studio/test/liveqa.test.js reads the same file: Python and JS live Q&A rules agree."""
+    import json
+    from pathlib import Path
+    fx = json.loads((Path(__file__).resolve().parents[2] / "studio/test/fixtures/liveqa.json").read_text())
+    assert [q.thread_kind(t) for t in fx["threads"]] == fx["kind"]
+    assert [q.needs_followup(t, fx["done"]) for t in fx["threads"]] == fx["needs_followup"]
+    assert [q.needs_prospective(t, {}) for t in fx["threads"]] == fx["needs_prospective"]
+    for p in fx["prospective"]:
+        assert q.parse_prospective(p["raw"], {"S1", "S2"}) == p["parsed"]
+    for c in fx["clean"]:
+        assert q.clean_answer(c["text"]) == c["out"]
+    for r in fx["relevant"]:
+        assert q.relevant_sources(r["ids"], r["text"], fx["bank"]) == r["out"]

@@ -43,7 +43,19 @@ To check your Chrome, open the Studio and look at the first card. It shows the s
 
 In the Studio's **After class** tab the lecture shows as *pending*. Click **Run**, or **Run all pending**. With **Describe slides** ticked, the Studio first describes each keyframe with Nano's image input, then writes the notes and cards from those descriptions. A 3-hour class takes several minutes.
 
-Then update the vault note:
+Options in the **After class** tab:
+
+- **Fast digests:** long lectures are digested part by part with Chrome's Summarizer API instead of the Prompt API. It is faster, but it takes no instructions beyond a short context. Measured on three parts: 11 s against 18 s per part, but it kept 0.37 of each part's content words against 0.60. Leave it off unless time matters more than detail. In both modes, each digest bullet gets the timecode of the transcript line it came from.
+- **Transcribe in the browser:** builds made with `STUDY_STUDIO_TRANSCRIBE=1` also save the lecture's audio (`audio/` and `audio.json`; hard links, so no extra disk on the same drive). The Studio then transcribes it with Whisper on WebGPU before writing the notes.
+  - It writes `transcript_studio.md` and uses it instead of the capture transcript.
+  - It never replaces a merged reference transcript (such as a meeting app's export).
+  - Pick the model next to the option:
+    - *base* is about 150 MB and fast;
+    - *large-v3 turbo* is about 1 GB and needs WebGPU.
+  
+  The weights download once.
+
+Then update the vault note, either with **Finish** on the lecture in the app or from a terminal:
 
 ```bash
 ./lecture finish last        # or a session id, or: ./lecture finish all
@@ -61,14 +73,21 @@ Each answer is appended to the lecture's `reviews.jsonl`, the same log `./lectur
 
 Start capture in live mode as usual. In browser mode the follower keeps transcribing and logging slides, and leaves the outline and questions to the Studio. It writes `studio_live_job.json` with the class title.
 
-In the Studio's **Live class** tab, pick today and click **Start following**. Keep the tab open: Chrome slows background tabs to about one timer a minute, which is what the follower needs. The app's Live tab shows the outline and questions as before, and **Sync now** is answered by the Studio.
+In the Studio's **Live class** tab, pick today and click **Start following**. Keep the tab open: Chrome slows background tabs to about one timer a minute, which is what the follower needs. The app's Live tab shows the outline and questions as before, says *Studio drafting with …* while the Studio is following, and **Sync now** is answered by the Studio.
+
+With **Draft Q&A follow-ups and answers** ticked, each round also covers the Q&A panel:
+
+- **Follow-ups:** it drafts follow-ups for threads that got a staff reply. Logistics threads get one, content threads get two, and only follow-ups grounded in the thread or the transcript are kept.
+- **Your own question:** for your newest unanswered question, it drafts the answer you are likely to get, with a confidence and the point to listen for.
+
+These go to the same files the Python follower used, and the follower still scores each drafted answer against the staff reply.
 
 ## Limits
 
 - **Long parts are split, not dropped.** The Studio measures how many characters fit a token on each lecture with Gemini Nano's own counter, and sizes parts from that. If a part still overflows the window, it is split in two and each half is digested.
 - **Notes are less complete.** Gemini Nano is a small model with a 9,216-token window, so long classes go through digests, which lose detail. Check the notes against the transcript before you rely on them. The [evaluation guide](evaluation.md) shows how to score Studio output with the local judge.
 - **Slide descriptions** need an engine that reads images. With the WebGPU fallback, pick the Phi-3.5 vision model, or untick **Describe slides**: the notes then use the on-screen text.
-- **Live Q&A follow-ups and prospective answers** are not in the Studio yet. In browser mode they are skipped.
+- **Live transcription** still runs in whisper.cpp; browser transcription is for after class.
 - **Citations are checked, not trusted.** A small model sometimes cites a slide that was never in its source. The Studio removes `[slide n]` and `[deck n]` citations that point nowhere and records how many in `studio_result.json` (`citations_removed`). In **Ask**, a citation to a source that wasn't shown, or an answer with no citation, is listed under the answer.
 
 ## Evaluate the Studio
@@ -82,7 +101,8 @@ cd tests/evals && EVAL_OUTPUTS=.outputs.gemini-nano.json ./run.sh --judge-only
 ```
 
 
-4. Compare it with the oMLX generator's outputs, case by case and without a model:
+4. **Speech bench.** The second card of `eval.html` takes an audio file and the text spoken in it. It runs Whisper base, Whisper small.en and, if available, Gemini Nano's audio input on the same audio, and reports word error rate and time for each.
+5. Compare it with the oMLX generator's outputs, case by case and without a model:
 
 ```bash
 cd tests/evals && python compare_outputs.py .outputs.json .outputs.gemini-nano.json

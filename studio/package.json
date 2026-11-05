@@ -10,6 +10,7 @@
     "test": "node --test test/*.test.js"
   },
   "devDependencies": {
+    "@huggingface/transformers": "4.3.2",
     "@mlc-ai/web-llm": "0.2.87",
     "esbuild": "0.28.2"
   }

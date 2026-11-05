@@ -3,6 +3,8 @@
 import { probe, pick, WEBLLM_MODELS } from "./engines/index.js";
 import { supported as fsSupported, pickFolder, savedFolder } from "./io/folder.js";
 import { runLectureJob, jobState } from "./core/notes.js";
+import { WHISPER_MODELS, WhisperASR } from "./asr/whisper.js";
+import { decodeTo16k } from "./asr/audio.js";
 import { lecturePassages, BM25, askLecture } from "./core/ask.js";
 import { liveRound } from "./core/live.js";
 import { lecturesByModule, makeRecap } from "./core/recap.js";
@@ -103,7 +105,11 @@ async function refreshLectures() {
 async function runOne(folder) {
   const e = await needEngine();
   log(`${folder}: started with ${e.name}`);
-  const r = await runLectureJob(e, io, folder, { describe: $("describe").checked, say: (m) => log(`${folder}: ${m}`) });
+  e.fastDigests = $("fast-digests").checked;
+  let asr = null;
+  if ($("transcribe").checked && (await io.exists(`${folder}/audio.json`))) asr = await speechModel();
+  const r = await runLectureJob(e, io, folder, { describe: $("describe").checked, asr, decode: decodeTo16k, say: (m) => log(`${folder}: ${m}`) });
+  if (r.transcript?.engine) log(`${folder}: transcribed ${r.transcript.lines} lines with ${r.transcript.engine}`);
   log(`${folder}: done in ${r.seconds} s (${r.cards} cards, ${r.slides_described} slides described). Run ./lecture finish ${folder.slice(0, 13)} to update the vault note.`);
   await refreshLectures();
 }
@@ -162,7 +168,7 @@ function startLive() {
     try {
       let idea = "";
       try { idea = JSON.parse(await io.readText(`live/${day}/studio_live_job.json`)).idea || ""; } catch { /* optional */ }
-      await liveRound(engine, io, `live/${day}`, liveState, { title: $("live-title").value || "Live class", idea, say: (m) => log(`live: ${m}`) });
+      await liveRound(engine, io, `live/${day}`, liveState, { title: $("live-title").value || "Live class", idea, qa: $("live-qa").checked, say: (m) => log(`live: ${m}`) });
       $("live-status").textContent = `following ${day} · next window from ${new Date(liveState.lastOutline).toLocaleTimeString()}`;
     } catch (e) { log(`live error: ${e.message}`); } finally { busy = false; }
   };
@@ -237,6 +243,19 @@ for (const b of document.querySelectorAll(".tabs button")) {
     for (const x of document.querySelectorAll(".tabs button")) x.setAttribute("aria-selected", String(x === b));
     for (const t of document.querySelectorAll(".tab")) t.hidden = t.id !== `tab-${b.dataset.tab}`;
   };
+}
+// speech model for browser transcription, loaded on first use
+let asrModel = null;
+$("asr-model").replaceChildren(...WHISPER_MODELS.map((m) => el("option", { value: m.id, textContent: m.label })));
+async function speechModel() {
+  const id = $("asr-model").value;
+  if (asrModel?.model === id) return asrModel;
+  const bar = $("engine-progress"); bar.hidden = false;
+  log(`loading ${id}…`);
+  asrModel = await new WhisperASR(id).init({ onProgress: (p) => { bar.value = p; } });
+  bar.hidden = true;
+  log(`${asrModel.name} ready on ${asrModel.device}`);
+  return asrModel;
 }
 $("engine-init").onclick = initEngine;
 $("folder-pick").onclick = guard(async () => { io = await pickFolder(); $("folder-regrant").hidden = true; await folderReady(); });

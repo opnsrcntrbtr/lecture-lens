@@ -44,6 +44,14 @@
   <section class="card tab" id="tab-after">
     <div class="row">
       <label><input type="checkbox" id="describe" checked> Describe slides (needs an engine that reads images)</label>
+      <label><input type="checkbox" id="fast-digests"> Fast digests (Chrome's Summarizer API)</label>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="transcribe"> Transcribe in the browser</label>
+      <select id="asr-model" aria-label="Speech model"></select>
+      <span class="muted">needs <code>STUDY_STUDIO_TRANSCRIBE=1</code> at build time (it saves the lecture's audio)</span>
+    </div>
+    <div class="row">
       <button id="run-pending">Run all pending</button>
       <button id="refresh">Refresh</button>
     </div>
@@ -74,11 +82,12 @@
       <input id="live-title" placeholder="Live class">
     </div>
     <div class="row">
+      <label><input type="checkbox" id="live-qa" checked> Draft Q&amp;A follow-ups and answers</label>
       <button id="live-start">Start following</button>
       <button id="live-stop" disabled>Stop</button>
       <span id="live-status" class="muted">stopped</span>
     </div>
-    <p class="muted">Keep this tab open during class. Every minute it reads the live folder; every 10 minutes it writes an outline and three questions for the app's Live tab, and it answers the app's <em>Sync now</em>.</p>
+    <p class="muted">Keep this tab open during class. Every minute it reads the live folder; every 10 minutes it writes an outline and three questions for the app's Live tab, drafts follow-ups for answered Q&amp;A threads and an answer to your own unanswered question, and it answers the app's <em>Sync now</em>.</p>
   </section>
 
   <section class="card tab" id="tab-review" hidden>

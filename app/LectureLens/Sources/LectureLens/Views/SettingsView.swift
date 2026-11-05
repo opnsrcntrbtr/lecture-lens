@@ -16,7 +16,7 @@ struct SettingsView: View {
         enum Kind { case text, model, toggle, number(ClosedRange<Double>, Double), choice([(value: String, label: String)]) }
     }
 
-    static let studioDefault = "https://opnsrcntrbtr.github.io/lecture-lens/studio/"
+    static let studioDefault = Studio.defaultURL
 
     private let groups: [(String, [Field])] = [
         ("Language model", [
@@ -172,15 +172,7 @@ struct SettingsView: View {
 
     /// The Studio in Google Chrome when installed (the Prompt API is Chrome-only), else the default browser.
     private func openStudio() {
-        let raw = (values["STUDY_STUDIO_URL"] ?? "").trimmingCharacters(in: .whitespaces)
-        guard let url = URL(string: raw.isEmpty ? Self.studioDefault : raw), ["https", "http"].contains(url.scheme ?? "") else {
-            status = "Studio page must be an https address"; return
-        }
-        if let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
-            NSWorkspace.shared.open([url], withApplicationAt: chrome, configuration: NSWorkspace.OpenConfiguration())
-        } else {
-            NSWorkspace.shared.open(url)
-        }
+        if let err = Studio.open(values["STUDY_STUDIO_URL"]) { status = err }
     }
 
     static func fmt(_ v: Double, _ step: Double) -> String {

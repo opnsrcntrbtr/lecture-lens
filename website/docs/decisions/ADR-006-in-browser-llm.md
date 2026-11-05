@@ -55,6 +55,29 @@ Facts this decision relies on (Chrome for Developers docs, read 5 Nov 2026):
 
 ## Phases
 
-1. **MVP (this ADR):** provider switch, Studio (both packagings), the five jobs, JS + Python unit tests, an eval of Nano against the Qwen generator on the synthetic suite.
-2. Live follow-ups and prospective answers for Q&A threads in the Studio. The Swift app opens the Studio and shows engine status.
-3. Summarizer API for part digests once its quota is measured. Nano audio input as a whisper alternative for short clips.
+1. **MVP (PR #29):** provider switch, Studio (both packagings), the five jobs, JS + Python unit tests, a model-free comparison of Nano and the Qwen generator on the synthetic suite.
+2. **Checks (PR #30):** citation checks, token-measured window fitting, recall-first notes, FSRS review, paired eval statistics.
+3. **Parity and transcription (this round):**
+   - **Live Q&A in the Studio.** Follow-ups for answered threads, and a prospective answer for the learner's own unanswered question. This is a port of `live_qa.py` and `qa_round`, with a shared fixture so the Python and JS rules cannot drift. The output goes to the same `qa_followups.jsonl` / `qa_prospective.jsonl` files. The Python follower still builds the threads (attendee names removed there) and scores prospective answers against staff replies.
+   - **Transcription in the browser.** With `STUDY_STUDIO_TRANSCRIBE=1`, `lecture build` hard-links the lecture's system-audio chunks into `audio/` and lists them in `audio.json` with their offsets. The Studio decodes them with the browser's own decoder and resamples them to 16 kHz. It skips silent chunks, transcribes the rest with Whisper (transformers.js, WebGPU, falling back to WASM), drops whisper's usual silence hallucinations, writes `transcript_studio.md`, and uses those lines for the notes. A merged reference transcript is never replaced. transformers.js and the ONNX runtime files are vendored by the build. Gemini Nano's audio input is benchmarked against Whisper on the same audio (`eval.html`, speech bench), not used by default.
+   - **Fast digests:** Chrome's Summarizer API (`key-points`, long) for transcript parts, as an option measured against the Prompt API digests.
+   - **App:**
+     - Lectures show where a lecture is in the browser path: waiting for the Studio, done there, or finished. They offer **Open Studio** and **Finish**, which runs `lecture finish`.
+     - The Live tab shows when the Studio is drafting, from its `studio_live.json` heartbeat.
+   - **Measured on the maintainer's Mac** (Chrome 156, 5 Nov 2026). The local judge was running on the same GPU during the speech and digest runs, so the times are upper bounds.
+     - **Speech, word error rate on 45 s of synthetic speech** (invented text, macOS text-to-speech, AAC):
+
+       | Engine | Word error rate | Time |
+       |---|---|---|
+       | Whisper base (WebGPU) | 0.074 | 7.3 s |
+       | Whisper small.en (WebGPU) | 0.020 | 9.8 s |
+       | Gemini Nano audio input | 0.034 | 11.6 s |
+       | whisper.cpp large-v3-turbo q8 (native) | 0.034 | 13.3 s |
+
+       Whisper large-v3 turbo in the browser failed to download through the network here. Synthetic speech is easier than a lecture hall, so these numbers rank engines; they do not predict lecture accuracy.
+     - **Digests, 3 transcript parts from the synthetic suite:**
+       - The Summarizer API took 11.3 s per part against 17.7 s for a Prompt API digest.
+       - It kept fewer of the part's content words: 0.37 against 0.60.
+       - Neither kept a single timecode. That is now repaired deterministically: each bullet gets the timecode of the line it shares most words with.
+       - Fast digests stay off by default.
+4. **Later:** live transcription in the browser (whisper.cpp keeps that job); Writer and Rewriter once they leave trial; publishing the extension to the Chrome Web Store.

@@ -18,5 +18,13 @@
     </div>
     <pre id="log"></pre>
   </section>
+  <section class="card">
+    <h2>Speech-to-text bench</h2>
+    <p class="muted">Pick an audio file and paste what is said in it. Each engine transcribes the same audio; the page reports word error rate and time.</p>
+    <div class="row"><input type="file" id="asr-audio" accept="audio/*,video/mp4"></div>
+    <textarea id="asr-ref" rows="4" placeholder="Reference text"></textarea>
+    <div class="row"><label><input type="checkbox" id="asr-nano" checked> also Gemini Nano audio input</label><button id="asr-go">Run speech bench</button></div>
+    <pre id="asr-out"></pre>
+  </section>
 </body>
 </html>

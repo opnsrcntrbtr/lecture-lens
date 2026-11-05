@@ -794,14 +794,51 @@ def live_qa_source(session, folder, budget=9000):
     return ("CLASS Q&A (quoted; attendee questions with staff replies, not the lecturer's words):\n" + "\n".join(lines))[:budget]
 
 
-def studio_job(session, transcript_lines, deck_src, qa_src, cards):
+def studio_job(session, transcript_lines, deck_src, qa_src, cards, transcript_source="capture"):
     """The job file Lecture Lens Studio runs in browser mode (STUDY_LLM_PROVIDER=browser):
-    everything the model steps need, so the Studio never reads the capture database."""
+    everything the model steps need, so the Studio never reads the capture database.
+    transcript_source "merged" tells the Studio not to replace it with its own transcription."""
     start = session["start"].astimezone()
     return {"version": 1, "id": session["id"], "title": session["title"], "start": session["start"].isoformat(),
             "when": f"{start:%a %d %b %Y %H:%M}", "minutes": session["minutes"], "cards": cards,
-            "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "transcript": list(transcript_lines),
-            "deck_src": deck_src or "", "qa_src": qa_src or ""}
+            "created_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "transcript": list(transcript_lines),
+            "transcript_source": transcript_source, "deck_src": deck_src or "", "qa_src": qa_src or ""}
+
+
+def audio_chunk_files(con, start, end):
+    """The system-audio chunk files saved for a window, oldest first: [(start_utc, path)]."""
+    rows = con.execute("SELECT timestamp, file_path FROM audio_chunks WHERE file_path LIKE '%System Audio%' "
+                       "AND timestamp >= ? AND timestamp < ? ORDER BY timestamp",
+                       (start.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+                        end.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))).fetchall()
+    out = []
+    for ts, fp in rows:
+        t = dt.datetime.fromisoformat(str(ts)[:19]).replace(tzinfo=dt.timezone.utc)
+        out.append((t, Path(fp)))
+    return out
+
+
+def export_audio(folder, chunks, t0):
+    """Give Lecture Lens Studio the lecture's audio (STUDY_STUDIO_TRANSCRIBE=1): each chunk is
+    hard-linked into <folder>/audio/ (no extra disk on the same volume; copied otherwise) and
+    listed in audio.json with its offset from the lecture start."""
+    import shutil
+    dest = folder / "audio"
+    dest.mkdir(exist_ok=True)
+    listing = []
+    for t, src in chunks:
+        if not src.exists():
+            continue
+        name = src.name.replace(" ", "_")
+        target = dest / name
+        if not target.exists():
+            try:
+                os.link(src, target)
+            except OSError:
+                shutil.copy2(src, target)
+        listing.append({"file": name, "start": t.isoformat(), "offset_s": round(max(0.0, (t - t0).total_seconds()), 1)})
+    (folder / "audio.json").write_text(json.dumps(listing, indent=1))
+    return listing
 
 
 def write_vault_note(folder, info, notes, n_cards):
@@ -843,7 +880,7 @@ def finish(folder):
     note = write_vault_note(folder, {**man, "source": man.get("source")}, strip_recall_first(body.strip()), n_cards)
     man.update({"llm": f"{res.get('engine', 'browser')} (Lecture Lens Studio)", "cards": n_cards,
                 "slides_described": described, "studio": {k: res.get(k) for k in ("engine", "finished_at", "seconds", "prompt_versions", "citations_removed")},
-                "finished_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+                "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")})
     (folder / "manifest.json").write_text(json.dumps(man, indent=2))
     return note, man
 
@@ -946,7 +983,12 @@ def build(session, con, describe=True, cards=20, quiet=False):
     transcript_src = "\n".join(src_lines)
     parts = [] if browser else _split_lines(src_lines, PART_CHARS) if len(transcript_src) + len(slide_src) > study.CTX else []
     if browser:
-        job = studio_job(session, src_lines, deck_src, qa_src, cards)
+        job = studio_job(session, src_lines, deck_src, qa_src, cards,
+                         "merged" if merged.exists() else transcript_source)
+        if os.environ.get("STUDY_STUDIO_TRANSCRIBE", "0") == "1":   # the Studio re-transcribes in Chrome
+            listing = export_audio(folder, audio_chunk_files(con, session["start"] - dt.timedelta(seconds=45),
+                                                             session["end"] + dt.timedelta(minutes=2)), t0)
+            say(f"  audio for the Studio: {len(listing)} chunk(s) in audio/")
         (folder / "studio_job.json").write_text(json.dumps(job, indent=1))
         (folder / "studio_result.json").unlink(missing_ok=True)
         notes = (f"_Notes pending: open Lecture Lens Studio in Chrome, run this lecture, then `./lecture finish "
