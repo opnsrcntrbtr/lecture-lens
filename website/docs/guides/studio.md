@@ -33,7 +33,7 @@ To check your Chrome, open the Studio and look at the first card. It shows the s
 1. In `.env`, set `STUDY_LLM_PROVIDER=browser`, or pick **Settings → Language model → In Chrome** in the app. Evals and the judge keep using oMLX.
 2. Open the Studio in one of two ways:
    - **Hosted page:** [the Studio](https://opnsrcntrbtr.github.io/lecture-lens/studio/) on this docs site, or **Settings → Open Lecture Lens Studio** in the app.
-   - **Extension (works offline):** run `cd studio && npm ci && npm run build`. In `chrome://extensions`, turn on Developer mode, click **Load unpacked** and choose `studio/dist`. The toolbar button opens the Studio.
+   - **Extension (works offline):** run `cd studio && npm ci --ignore-scripts && npm run build` (the install scripts only fetch native runtimes the browser build does not use). In `chrome://extensions`, turn on Developer mode, click **Load unpacked** and choose `studio/dist`. The toolbar button opens the Studio.
 3. Click **Prepare model**. The first time, Chrome downloads Gemini Nano; the progress bar shows it.
 4. Click **Choose lectures folder** and pick the `lectures` folder of your install. After Chrome restarts, one click on **Reconnect** grants access again.
 

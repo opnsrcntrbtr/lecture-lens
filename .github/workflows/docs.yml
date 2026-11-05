@@ -32,7 +32,7 @@ jobs:
       - run: npm ci
         working-directory: website
       - name: Lecture Lens Studio (served at /lecture-lens/studio/)
-        run: npm ci && npm run build -- --out ../website/static/studio
+        run: npm ci --ignore-scripts && npm run build -- --out ../website/static/studio
         working-directory: studio
       - run: npm run build
         working-directory: website
