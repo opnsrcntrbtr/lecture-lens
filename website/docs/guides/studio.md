@@ -51,6 +51,12 @@ Then update the vault note:
 
 The notes have the same sections as the oMLX notes. The byline names the engine, and `manifest.json` records the engine and the prompt versions.
 
+## Review your cards
+
+The **Review** tab asks the flashcards that are due across all your lectures, oldest lecture first, then up to ten new ones. Answer from memory, click **Show answer**, then **Pass** or **Fail**. It needs no model, so it works even where Gemini Nano is unavailable.
+
+Each answer is appended to the lecture's `reviews.jsonl`, the same log `./lecture review` uses, and both schedule with the same FSRS-5 code (the Studio's port is tested against the Python on shared logs). A card failed three times is listed as one to rewrite.
+
 ## During a live class
 
 Start capture in live mode as usual. In browser mode the follower keeps transcribing and logging slides, and leaves the outline and questions to the Studio. It writes `studio_live_job.json` with the class title.

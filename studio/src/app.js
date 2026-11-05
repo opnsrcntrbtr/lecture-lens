@@ -6,6 +6,7 @@ import { runLectureJob, jobState } from "./core/notes.js";
 import { lecturePassages, BM25, askLecture } from "./core/ask.js";
 import { liveRound } from "./core/live.js";
 import { lecturesByModule, makeRecap } from "./core/recap.js";
+import { queue as reviewQueue, logLine, logByCard, replay, intervalDays } from "./core/review.js";
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
@@ -188,6 +189,48 @@ const recap = guard(async () => {
   log(`recap written to ${path}`);
 });
 
+// ---------------------------------------------------------------- review (no model)
+const review = { cards: [], i: 0, passed: 0 };
+
+async function loadReview() {
+  await needFolder();
+  const lectures = [];
+  for (const folder of (await lectureFolders()).reverse()) {   // oldest lecture first, as `lecture review`
+    if (!(await io.exists(`${folder}/cards.tsv`))) continue;
+    const logF = `${folder}/reviews.jsonl`;
+    lectures.push({ folder, cardsTsv: await io.readText(`${folder}/cards.tsv`), log: (await io.exists(logF)) ? await io.readText(logF) : "" });
+  }
+  const { due, fresh, leeches } = await reviewQueue(lectures, Date.now());
+  Object.assign(review, { cards: [...due, ...fresh].slice(0, 30), i: 0, passed: 0 });
+  $("review-stats").textContent = `${due.length} due, ${fresh.length} new across ${lectures.length} lecture(s).`;
+  $("review-leeches").replaceChildren(...leeches.map((c) => el("li", { textContent: `Keeps failing (${c.lapses}×): ${c.q} — rewrite or split this card` })));
+  showReviewCard();
+}
+
+function showReviewCard() {
+  const c = review.cards[review.i];
+  $("review-card").hidden = !c;
+  if (!c) {
+    if (review.cards.length) $("review-stats").textContent = `${review.passed} passed of ${review.cards.length}. Come back when more are due.`;
+    else $("review-stats").textContent += " Nothing due.";
+    return;
+  }
+  $("review-q").textContent = `[${review.i + 1}/${review.cards.length}] ${c.q}`;
+  $("review-a").textContent = c.a + (c.ref ? `   (${c.ref})` : "");
+  $("review-a").hidden = true; $("review-pass").disabled = $("review-fail").disabled = true;
+}
+
+async function answerReview(passed) {
+  const c = review.cards[review.i];
+  if (!c) return;
+  const logF = `${c.folder}/reviews.jsonl`;
+  await io.appendText(logF, logLine(c.id, passed));
+  const st = replay(logByCard(await io.readText(logF)).get(c.id) ?? []);
+  log(`review: ${passed ? "pass" : "fail"}; next in ${intervalDays(st.stability)} day(s)`);
+  review.passed += passed ? 1 : 0; review.i += 1;
+  showReviewCard();
+}
+
 // ---------------------------------------------------------------- wiring
 for (const b of document.querySelectorAll(".tabs button")) {
   b.onclick = () => {
@@ -204,6 +247,10 @@ $("live-day").onchange = () => io && loadLiveTitle();
 $("live-start").onclick = startLive;
 $("live-stop").onclick = stopLive;
 $("recap-go").onclick = recap;
+$("review-load").onclick = guard(loadReview);
+$("review-show").onclick = () => { $("review-a").hidden = false; $("review-pass").disabled = $("review-fail").disabled = false; };
+$("review-pass").onclick = guard(() => answerReview(true));
+$("review-fail").onclick = guard(() => answerReview(false));
 
 await setupEngine();
 await setupFolder();

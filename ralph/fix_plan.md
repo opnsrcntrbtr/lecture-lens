@@ -140,7 +140,7 @@ Tests run with `cd studio && node --test test/*.test.js` and the fake engine in
   questions (L2; Roediger & Karpicke 2006; Richland et al. 2009); Studio notes do not.
   Port `recall_first`, write notes after cards.
   Done when: Python and JS give the same block on a shared fixture.
-- [ ] **S5 Spaced review in the Studio.** A Review tab that needs no model: FSRS-5
+- [x] **S5 Spaced review in the Studio.** A Review tab that needs no model: FSRS-5
   (Ye, Su & Cao 2022) ported to JS, reading `cards.tsv` and appending to the same
   `reviews.jsonl` as `./lecture review`, so the two share one schedule.
   Done when: JS replay equals Python `review.replay` on golden logs; a headless
