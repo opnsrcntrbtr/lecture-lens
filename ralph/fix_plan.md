@@ -145,7 +145,7 @@ Tests run with `cd studio && node --test test/*.test.js` and the fake engine in
   `reviews.jsonl` as `./lecture review`, so the two share one schedule.
   Done when: JS replay equals Python `review.replay` on golden logs; a headless
   Chromium smoke test loads the tab.
-- [ ] **S6 Nano vs Qwen with uncertainty.** The PR's model-free table has no
+- [x] **S6 Nano vs Qwen with uncertainty.** The PR's model-free table has no
   intervals (e.g. recall 0.734 vs 0.776 on 36 cases). `tests/evals/compare_outputs.py
   A.json B.json` computes the same checks per case, pairs them, and reports a paired
   bootstrap interval for the mean difference (Efron & Tibshirani 1993) and an exact

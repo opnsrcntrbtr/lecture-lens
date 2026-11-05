@@ -80,3 +80,12 @@ In the Studio's **Live class** tab, pick today and click **Start following**. Ke
 ```bash
 cd tests/evals && EVAL_OUTPUTS=.outputs.gemini-nano.json ./run.sh --judge-only
 ```
+
+
+4. Compare it with the oMLX generator's outputs, case by case and without a model:
+
+```bash
+cd tests/evals && python compare_outputs.py .outputs.json .outputs.gemini-nano.json
+```
+
+Each check is paired on the same inputs. Numbers come with a 95% interval for the difference and a sign test, and pass/fail checks with Wilson intervals and McNemar's test. On 12 notes or 36 answers, a difference whose interval includes zero has not been shown. The same table counts citations to slides that were never in the source (`notes:refs_ok`). For the judge's scores, compare the two `summary.json` files with `compare_runs.py`: cases are keyed by input, so the two generators pair up the same way.
