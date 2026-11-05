@@ -33,6 +33,7 @@ final class AppModel {
     var permissionBlock = false
     // lectures
     var sessions: [Session] = []
+    var nextClass: NextClass?
     var loadingSessions = false
     // jobs / evals
     let jobs = JobQueue()
@@ -241,6 +242,7 @@ final class AppModel {
         if let l = try? await ToolRunner.json(SessionList.self, "lecture", ["list", "--json", "--since", "90d"], timeout: 60) {
             sessions = l.sessions
         }
+        nextClass = try? await ToolRunner.json(NextClass.self, "lecture", ["next", "--json"], timeout: 30)
     }
 
     func build(_ s: Session) {

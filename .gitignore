@@ -51,3 +51,6 @@ website/.docusaurus/
 tests/evals/.live_questions.json
 tests/evals/calibration/
 tests/evals/.prospective.json
+
+# --- built locally --------------------------------------------------------------
+tools/vision_ocr

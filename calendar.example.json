@@ -1,0 +1,34 @@
+{
+ "sessions": [
+  {
+   "week": 0,
+   "title": "Kick-off",
+   "date": "2030-01-05",
+   "start": "10:00",
+   "end": "11:30",
+   "tz": "Asia/Kolkata",
+   "module": "",
+   "module_title": ""
+  },
+  {
+   "week": 1,
+   "title": "Topic A",
+   "date": "2030-01-12",
+   "start": "10:00",
+   "end": "13:00",
+   "tz": "Asia/Kolkata",
+   "module": "Module 1",
+   "module_title": "Alpha"
+  },
+  {
+   "week": 2,
+   "title": "Topic B",
+   "date": "2030-01-26",
+   "start": "10:00",
+   "end": "13:00",
+   "tz": "Asia/Kolkata",
+   "module": "Module 1",
+   "module_title": "Alpha"
+  }
+ ]
+}
