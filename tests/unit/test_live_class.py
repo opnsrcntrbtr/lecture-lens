@@ -2,6 +2,7 @@ import pytest
 import datetime as dt
 import sys
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -172,3 +173,34 @@ def test_run_drains_finished_audio_on_exit(tmp_path, monkeypatch):
     state = json.loads((out / "state.json").read_text())
     assert set(state["done_files"]) == {n1, n2}
     assert calls and set(calls[0]) == {n1, n2}
+
+
+def test_mean_volume_db_parses_ffmpeg_output(monkeypatch):
+    def fake_run(*_args, **_kwargs):
+        return SimpleNamespace(stderr="[Parsed_volumedetect_0] mean_volume: -62.5 dB\n")
+
+    monkeypatch.setattr(lc.subprocess, "run", fake_run)
+    assert lc.mean_volume_db(Path("/tmp/chunk.mp4")) == -62.5
+
+
+def test_mean_volume_db_returns_none_on_ffmpeg_error(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, "ffmpeg")
+
+    monkeypatch.setattr(lc.subprocess, "run", fail)
+    assert lc.mean_volume_db(Path("/tmp/chunk.mp4")) is None
+
+
+def test_split_silent_files_uses_threshold(tmp_path, monkeypatch):
+    monkeypatch.setattr(lc, "DATA", tmp_path)
+    loud = "System Audio (output)_2026-01-05_04-30-00.mp4"
+    silent = "System Audio (output)_2026-01-05_04-30-30.mp4"
+    files = [(T(4, 30), loud), (T(4, 30, 30), silent)]
+
+    def fake_mean(path: Path):
+        return -70.0 if path.name == silent else -20.0
+
+    monkeypatch.setattr(lc, "mean_volume_db", fake_mean)
+    keep, drop = lc.split_silent_files(files)
+    assert [n for _, n in keep] == [loud]
+    assert [n for _, n in drop] == [silent]

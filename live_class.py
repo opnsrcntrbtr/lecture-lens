@@ -54,6 +54,7 @@ UI_NOISE = re.compile(r"(audio settings|video & effects|rotate 90|not seeing a|s
 LOCAL = dt.datetime.now().astimezone().tzinfo
 FNAME_TS = re.compile(r"_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.mp4$")
 CHUNK_S = 30.0
+SILENCE_MEAN_DB = float(os.environ.get("LIVE_WHISPER_SILENCE_MEAN_DB", "-55"))
 # Q&A docked inside the main meeting window: its panel header ("Switch") then author and time lines
 QA_DOCKED = re.compile(r"(^|\n)Switch\n[^\n]+\n\d{1,2}:\d{2}\s?[AP]M\n", re.I)
 # A shared slide is recognised by a marker line (e.g. "MODULE 1 • SESSION 1") and ends at its
@@ -526,6 +527,26 @@ def duration(path: Path) -> float:
     return float(r.stdout.strip() or CHUNK_S)
 
 
+def mean_volume_db(path: Path) -> float | None:
+    """ffmpeg volumedetect mean volume in dBFS; None when unavailable."""
+    try:
+        r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+                           capture_output=True, text=True, timeout=45, check=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    m = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", r.stderr)
+    return float(m.group(1)) if m else None
+
+
+def split_silent_files(files: list[tuple[dt.datetime, str]]) -> tuple[list[tuple[dt.datetime, str]], list[tuple[dt.datetime, str]]]:
+    """Return (loud, silent) files using per-file mean loudness."""
+    loud, silent = [], []
+    for f in files:
+        mean = mean_volume_db(DATA / f[1])
+        (silent if mean is not None and mean < SILENCE_MEAN_DB else loud).append(f)
+    return loud, silent
+
+
 def transcribe(batch: list[tuple[dt.datetime, str]], keep_from: dt.datetime, prompt: str, threads: int) -> list[dict]:
     model = whisper_model()
     if not model or not shutil.which("whisper-cli"):
@@ -764,8 +785,15 @@ def run(a):
         for b in batches(files):
             prev = [f for f in finished_files(names, AUDIO_DEVICE, start, now)
                     if f[0] < b[0][0] and (b[0][0] - f[0]).total_seconds() <= CHUNK_S + 15][-1:]
+            loud, silent = split_silent_files(prev + b)
+            silent_new = [n for _, n in silent if n in {n for _, n in b}]
+            if silent_new:
+                log(f"whisper skipping {len(silent_new)} silent file(s) below {SILENCE_MEAN_DB:.1f} dB")
+            if not any(n in {n for _, n in b} for _, n in loud):
+                done.update(n for _, n in b)
+                continue
             t0 = time.time()
-            segs = transcribe(prev + b, b[0][0], prompt, a.threads)
+            segs = transcribe(loud, b[0][0], prompt, a.threads)
             recent = load(seg_f)[-40:]
             kept, dropped = transcript_clean.clean_segments(recent + segs, prompt)
             new_keys = {(s["t"], s["text"]) for s in segs}
@@ -782,7 +810,13 @@ def run(a):
         # microphone backup for stretches with no system audio
         mics = backup_files(os.listdir(DATA), start, now, done)
         for b in batches(mics):
-            segs = [dict(s, text="(mic) " + s["text"]) for s in transcribe(b, b[0][0], prompt, a.threads)]
+            loud, silent = split_silent_files(b)
+            if silent:
+                log(f"mic backup skipping {len(silent)} silent file(s) below {SILENCE_MEAN_DB:.1f} dB")
+            if not loud:
+                done.update(n for _, n in b)
+                continue
+            segs = [dict(s, text="(mic) " + s["text"]) for s in transcribe(loud, b[0][0], prompt, a.threads)]
             kept, _ = transcript_clean.clean_segments(load(seg_f)[-40:] + segs, prompt)
             new_keys = {(s["t"], s["text"]) for s in segs}
             segs = [s for s in kept if (s["t"], s["text"]) in new_keys]
