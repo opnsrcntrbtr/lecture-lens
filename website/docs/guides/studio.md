@@ -59,6 +59,7 @@ In the Studio's **Live class** tab, pick today and click **Start following**. Ke
 
 ## Limits
 
+- **Long parts are split, not dropped.** The Studio measures how many characters fit a token on each lecture with Gemini Nano's own counter, and sizes parts from that. If a part still overflows the window, it is split in two and each half is digested.
 - **Notes are less complete.** Gemini Nano is a small model with a 9,216-token window, so long classes go through digests, which lose detail. Check the notes against the transcript before you rely on them. The [evaluation guide](evaluation.md) shows how to score Studio output with the local judge.
 - **Slide descriptions** need an engine that reads images. With the WebGPU fallback, pick the Phi-3.5 vision model, or untick **Describe slides**: the notes then use the on-screen text.
 - **Live Q&A follow-ups and prospective answers** are not in the Studio yet. In browser mode they are skipped.

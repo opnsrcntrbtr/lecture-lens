@@ -74,6 +74,18 @@ export class NanoEngine {
     }
   }
 
+  /** Tokens `text` takes in a fresh session, from the Prompt API's own counter (S3). */
+  async countTokens(text) {
+    const s = await this.#session("x");
+    try {
+      const measure = s.measureContextUsage ?? s.measureInputUsage;
+      if (!measure) throw new Error("this Chrome cannot count tokens");
+      return await measure.call(s, text);
+    } finally {
+      s.destroy();
+    }
+  }
+
   async describeImage(blob, text) {
     if (!this.canSeeImages) return null;
     const s = await this.#session("You describe lecture slides for a learner. Be exact; never invent text.");

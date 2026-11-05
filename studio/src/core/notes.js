@@ -5,6 +5,23 @@ import { SYS_TUTOR, VERSIONS, digestPrompt, reducePrompt, notesPromptA, notesPro
 import { parseCards, dedupeCards, cardCount, cardsTsv } from "./cards.js";
 import { slidesMarkdown, slideSource, cleanDescription } from "./slides.js";
 import { knownRefs, dropUnknownRefs } from "./citations.js";
+import { calibrateBudget, isOverflow } from "../engines/budget.js";
+
+/** Digest one transcript part; if it overflows the window, split it in two and digest each
+ *  half instead of failing the lecture (S3). Gives up below 10 lines. */
+export async function digestPart(engine, title, i, n, part, say = () => {}, depth = 0) {
+  try {
+    return cleanReply(await engine.prompt(SYS_TUTOR, digestPrompt(title, i, n, part), { maxTokens: 1200 }));
+  } catch (e) {
+    const lines = part.split("\n");
+    if (!isOverflow(e) || lines.length < 10 || depth >= 3) throw e;
+    say(`part ${i}/${n} is too long for the window; splitting it`);
+    const mid = Math.ceil(lines.length / 2);
+    const a = await digestPart(engine, title, i, n, lines.slice(0, mid).join("\n"), say, depth + 1);
+    const b = await digestPart(engine, title, i, n, lines.slice(mid).join("\n"), say, depth + 1);
+    return `${a}\n${b}`;
+  }
+}
 
 const NOTE_HEADINGS = ["TL;DR", "Key concepts", "Frameworks & models", "Worked examples and numbers",
   "How this applies to building AI products", "Action items for the learner", "Open questions"];
@@ -31,6 +48,7 @@ export function joinNoteHalves(a, b) {
 
 /** Notes, digests and cards for a lecture from transcript lines and the slide source. */
 export async function makeNotes(engine, { title, lines, slideSrc, cards = 20 }, say = () => {}) {
+  await calibrateBudget(engine, lines.join("\n"));   // characters per token, measured on this lecture
   const { partChars, sourceChars } = engine.budget;
   const transcript = lines.join("\n");
   const parts = transcript.length + slideSrc.length > sourceChars ? splitLines(lines, partChars) : [];
@@ -38,7 +56,7 @@ export async function makeNotes(engine, { title, lines, slideSrc, cards = 20 }, 
   if (parts.length) {
     for (const [i, part] of parts.entries()) {
       say(`digesting part ${i + 1}/${parts.length}…`);
-      digests.push(cleanReply(await engine.prompt(SYS_TUTOR, digestPrompt(title, i + 1, parts.length, part), { maxTokens: 1200 })));
+      digests.push(await digestPart(engine, title, i + 1, parts.length, part, say));
     }
   }
   // reduce: merge neighbouring digests until digests + slides fit one prompt

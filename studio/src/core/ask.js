@@ -50,7 +50,8 @@ export class BM25 {
     const out = []; let used = 0;
     for (const [, i] of order) {
       const d = this.docs[i], n = d.text.length + d.label.length + 8;
-      if (out.length >= max || used + n > budget) break;
+      if (out.length >= max) break;
+      if (used + n > budget) continue;   // too long here; a shorter, lower-ranked passage may still fit
       out.push(d); used += n;
     }
     return out;

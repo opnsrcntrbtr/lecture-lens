@@ -129,7 +129,7 @@ Tests run with `cd studio && node --test test/*.test.js` and the fake engine in
   context's words (mean support 0.67-0.76); correct paraphrases avoid them (0.57). Even
   for unmentioned padding alone, catching 6 of 11 also flags 10 of 48 correct claims.
   Overlap does not measure faithfulness (Honovich et al. 2022); the judge decides (S7).
-- [ ] **S3 Fit the window by tokens, not a guess.** `BM25.top` stops at the first
+- [x] **S3 Fit the window by tokens, not a guess.** `BM25.top` stops at the first
   passage that does not fit, leaving smaller later ones out (fix: skip it and keep
   going). Budgets assume 3.5 characters per token; calibrate the ratio from the
   engine's own `measureContextUsage` on a sample when it exists. On a window overflow
