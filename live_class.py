@@ -39,6 +39,8 @@ HERE = Path(__file__).resolve().parent
 DATA = Path(os.path.expanduser(os.environ.get("SCREENPIPE_DATA", "~/.screenpipe/data")))
 LECTURES = Path(os.path.expanduser(os.environ.get("STUDY_LECTURE_DIR", str(HERE / "lectures"))))
 VAULT = Path(os.path.expanduser(os.environ.get("STUDY_VAULT", "~/vaults/ai-product-course")))
+STATE = Path(os.path.expanduser("~/.screenpipe"))
+STOP_REQUEST = STATE / "live_class.stop"
 AUDIO_DEVICE = os.environ.get("LIVE_AUDIO_DEVICE", "System Audio (output)")
 LIVE_APP = os.environ.get("LIVE_APP", "zoom").lower()
 CLASS_WINDOWS = {"zoom webinar", "zoom meeting", "zoom", ""}
@@ -421,6 +423,7 @@ def qa_round(a, side_f, seg_f, slide_f, ev_f, qa_f, fu_f, qa_done, ok, now, log)
 
 # ------------------------------------------------------------------ loop
 def run(a):
+    STOP_REQUEST.unlink(missing_ok=True)
     today = dt.datetime.now(LOCAL).date()
     hh, mm = map(int, a.start.split(":"))
     start = dt.datetime.combine(today, dt.time(hh, mm), LOCAL).astimezone(dt.timezone.utc)
@@ -445,8 +448,44 @@ def run(a):
     next_whisper = time.time()
     log = lambda *m: print(dt.datetime.now(LOCAL).strftime("%H:%M:%S"), *m, flush=True)
     log("start", start.isoformat(), "until", until.isoformat(), "out", out)
+    status = "stopped"
 
-    while dt.datetime.now(dt.timezone.utc) < until:
+    def write_snapshot(now: dt.datetime):
+        words = sum(len(s["text"].split()) for s in load(seg_f))
+        try:
+            note.parent.mkdir(parents=True, exist_ok=True)
+            ev = {e["id"]: e for e in json.loads(ev_f.read_text())} if ev_f.exists() else {}
+            md = render(a.title, start, load(slide_f), load(outl_f), status, words, load(q_f), ev)
+            an_f = out / "ask_now.json"
+            if an_f.exists():
+                top = json.loads(an_f.read_text()).get("top", [])
+                if top:
+                    an = ["## Ask now (top 3, refreshed every 5 min)", ""]
+                    for i, c in enumerate(top, 1):
+                        refs = "; ".join(ev[x]["title"] for x in c.get("sources", []) if x in ev)
+                        an += [f"{i}. **{c['q']}**", f"   - _Draft:_ {c['answer']}" + (f" ({refs})" if refs else "")]
+                    j = md.find("\n## ")
+                    md = md[:j + 1] + "\n".join(an) + "\n\n" + md[j + 1:] if j >= 0 else md
+            if qa_f.exists():
+                fus: dict = {}
+                for f in load(fu_f):
+                    fus.setdefault(f["thread"], []).append(f)
+                threads = json.loads(qa_f.read_text())
+                fus = live_qa.curate_followups(threads, fus)
+                (out / "qa_view.json").write_text(json.dumps(  # what the app's Live tab shows
+                    {"threads": [t["id"] for t in threads if live_qa.thread_kind(t) != "trivial"], "followups": fus}))
+                qa_md = "\n".join(live_qa.render_section(threads, fus, ev))
+                if qa_md:
+                    i = md.find("\n## ")
+                    md = md[:i + 1] + qa_md + "\n" + md[i + 1:] if i >= 0 else md + qa_md
+            note.write_text(md)
+        except Exception as e:
+            log("render error", e)
+        state_f.write_text(json.dumps({"done_files": sorted(done), "last_slide_t": last_slide_t, "qa_done": qa_done,
+                                       "last_tokens": sorted(last_tokens or []), "last_outline": last_outline.isoformat(),
+                                       "status": status, "words": words, "updated": now.isoformat()}))
+
+    while dt.datetime.now(dt.timezone.utc) < until and not STOP_REQUEST.exists():
         h = health()
         ok = healthy(h)
         status = "ok" if ok else f"CHECK ({h.get('frame_status')}/{h.get('audio_status')})"
@@ -538,41 +577,34 @@ def run(a):
                         log("questions error", e)
             last_outline = to if (now - to).total_seconds() < 1200 else now - dt.timedelta(minutes=10)
 
-        words = sum(len(s["text"].split()) for s in load(seg_f))
-        try:
-            note.parent.mkdir(parents=True, exist_ok=True)
-            ev = {e["id"]: e for e in json.loads(ev_f.read_text())} if ev_f.exists() else {}
-            md = render(a.title, start, load(slide_f), load(outl_f), status, words, load(q_f), ev)
-            an_f = out / "ask_now.json"
-            if an_f.exists():
-                top = json.loads(an_f.read_text()).get("top", [])
-                if top:
-                    an = ["## Ask now (top 3, refreshed every 5 min)", ""]
-                    for i, c in enumerate(top, 1):
-                        refs = "; ".join(ev[x]["title"] for x in c.get("sources", []) if x in ev)
-                        an += [f"{i}. **{c['q']}**", f"   - _Draft:_ {c['answer']}" + (f" ({refs})" if refs else "")]
-                    j = md.find("\n## ")
-                    md = md[:j + 1] + "\n".join(an) + "\n\n" + md[j + 1:] if j >= 0 else md
-            if qa_f.exists():
-                fus: dict = {}
-                for f in load(fu_f):
-                    fus.setdefault(f["thread"], []).append(f)
-                threads = json.loads(qa_f.read_text())
-                fus = live_qa.curate_followups(threads, fus)
-                (out / "qa_view.json").write_text(json.dumps(  # what the app's Live tab shows
-                    {"threads": [t["id"] for t in threads if live_qa.thread_kind(t) != "trivial"], "followups": fus}))
-                qa_md = "\n".join(live_qa.render_section(threads, fus, ev))
-                if qa_md:
-                    i = md.find("\n## ")
-                    md = md[:i + 1] + qa_md + "\n" + md[i + 1:] if i >= 0 else md + qa_md
-            note.write_text(md)
-        except Exception as e:
-            log("render error", e)
-        state_f.write_text(json.dumps({"done_files": sorted(done), "last_slide_t": last_slide_t, "qa_done": qa_done,
-                                       "last_tokens": sorted(last_tokens or []), "last_outline": last_outline.isoformat(),
-                                       "status": status, "words": words, "updated": now.isoformat()}))
+        write_snapshot(now)
         time.sleep(a.every)
-    log("until reached; stopping")
+
+    if STOP_REQUEST.exists():
+        log("stop requested; draining pending whisper batches before exit")
+    else:
+        log("until reached; draining pending whisper batches before exit")
+    if not a.no_whisper:
+        try:
+            now = dt.datetime.now(dt.timezone.utc)
+            names = os.listdir(DATA)
+            files = [f for f in finished_files(names, AUDIO_DEVICE, start, now) if f[1] not in done]
+            titles = [s["title"] for s in load(slide_f)[-3:]]
+            prompt = (a.prompt + " " + " ".join(titles)).strip()[:600]
+            for b in batches(files):
+                prev = [f for f in finished_files(names, AUDIO_DEVICE, start, now)
+                        if f[0] < b[0][0] and (b[0][0] - f[0]).total_seconds() <= CHUNK_S + 15][-1:]
+                t0 = time.time()
+                segs = transcribe(prev + b, b[0][0], prompt, a.threads)
+                with seg_f.open("a") as f:
+                    f.writelines(json.dumps(s) + "\n" for s in segs)
+                done.update(n for _, n in b)
+                log(f"final whisper {len(b)} files -> {len(segs)} segments in {time.time() - t0:.0f}s")
+        except Exception as e:
+            log("final whisper error", e)
+    write_snapshot(dt.datetime.now(dt.timezone.utc))
+    STOP_REQUEST.unlink(missing_ok=True)
+    log("stopped")
 
 
 def status(a):
