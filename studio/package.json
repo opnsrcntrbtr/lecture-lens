@@ -1,0 +1,16 @@
+{
+  "name": "lecture-lens-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Lecture Lens Studio: the in-browser model path (Gemini Nano via Chrome's Prompt API, WebLLM on WebGPU as fallback).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@mlc-ai/web-llm": "0.2.87",
+    "esbuild": "0.28.2"
+  }
+}

@@ -34,6 +34,7 @@ eval/debug/
 .deepeval/
 tests/evals/.deepeval/
 tests/evals/.outputs.json
+tests/evals/.outputs.*.json
 tests/evals/.bench/
 logs/
 
@@ -54,3 +55,7 @@ tests/evals/.prospective.json
 
 # --- built locally --------------------------------------------------------------
 tools/vision_ocr
+studio/node_modules/
+studio/dist/
+studio/vendor/
+website/static/studio/

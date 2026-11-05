@@ -13,10 +13,19 @@ struct SettingsView: View {
         let help: String
         var kind: Kind = .text
         var id: String { key }
-        enum Kind { case text, model, toggle, number(ClosedRange<Double>, Double) }
+        enum Kind { case text, model, toggle, number(ClosedRange<Double>, Double), choice([(value: String, label: String)]) }
     }
 
+    static let studioDefault = "https://opnsrcntrbtr.github.io/lecture-lens/studio/"
+
     private let groups: [(String, [Field])] = [
+        ("Language model", [
+            Field(key: "STUDY_LLM_PROVIDER", label: "Where the model runs",
+                  help: "oMLX: the model server on this Mac. In Chrome: Lecture Lens Studio runs Gemini Nano (or an open model on WebGPU) in the browser; builds leave a job for it, then `lecture finish` writes the vault note. Evals and the judge stay on oMLX.",
+                  kind: .choice([("omlx", "oMLX on this Mac"), ("browser", "In Chrome (Lecture Lens Studio)")])),
+            Field(key: "STUDY_STUDIO_URL", label: "Studio page",
+                  help: "Empty = the hosted page (\(SettingsView.studioDefault)). With the unpacked extension, open it from Chrome's toolbar instead."),
+        ]),
         ("Models (oMLX on 127.0.0.1:8001)", [
             Field(key: "OMLX_MODEL", label: "Text model", help: "Answers, notes and flashcards.", kind: .model),
             Field(key: "OMLX_VL_MODEL", label: "Vision model", help: "Describes slides and diagrams. Empty = same as the text model.", kind: .model),
@@ -103,6 +112,8 @@ struct SettingsView: View {
                 HStack {
                     Button("Open .env in editor") { NSWorkspace.shared.open(Paths.envFile) }
                     Button("Open study folder") { NSWorkspace.shared.open(Paths.study) }
+                    Button("Open Lecture Lens Studio") { openStudio() }
+                        .help("Opens the in-browser model page in Google Chrome")
                 }
             }
             Section("About permissions") {
@@ -137,6 +148,11 @@ struct SettingsView: View {
                         }.menuStyle(.borderlessButton).fixedSize()
                     }
                 }
+            case .choice(let options):
+                Picker(f.label, selection: Binding(get: { binding.wrappedValue.isEmpty ? (options.first?.value ?? "") : binding.wrappedValue },
+                                                   set: { binding.wrappedValue = $0 })) {
+                    ForEach(options, id: \.value) { o in Text(o.label).tag(o.value) }
+                }
             case .toggle:
                 Toggle(f.label, isOn: Binding(get: { ["1", "true", "on", "yes"].contains(binding.wrappedValue.lowercased()) },
                                               set: { binding.wrappedValue = $0 ? "1" : "0" }))
@@ -151,6 +167,19 @@ struct SettingsView: View {
                 }
             }
             Text(f.help).font(.scaled(.caption)).foregroundStyle(.secondary)
+        }
+    }
+
+    /// The Studio in Google Chrome when installed (the Prompt API is Chrome-only), else the default browser.
+    private func openStudio() {
+        let raw = (values["STUDY_STUDIO_URL"] ?? "").trimmingCharacters(in: .whitespaces)
+        guard let url = URL(string: raw.isEmpty ? Self.studioDefault : raw), ["https", "http"].contains(url.scheme ?? "") else {
+            status = "Studio page must be an https address"; return
+        }
+        if let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
+            NSWorkspace.shared.open([url], withApplicationAt: chrome, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(url)
         }
     }
 
