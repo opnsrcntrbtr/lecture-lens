@@ -176,3 +176,13 @@ test("S1: an Ask answer carries its citation check", async () => {
   assert.ok(r.sources.length >= 1);
   assert.deepEqual(r.warnings, [`cites source(s) 99 but only ${r.sources.length} were given`]);
 });
+
+test("S4: Studio notes open with recall questions; the answers follow the notes", async () => {
+  const io = lectureFolder(), eng = new FakeEngine(rules);
+  await runLectureJob(eng, io, F);
+  const md = io.files.get(`${F}/notes.md`);
+  assert.match(md, /_\n\n## Before you read\n/);
+  const [head, , tail] = md.split("\n\n---\n\n");
+  assert.doesNotMatch(head, /Holds moisture/);                 // no answer before the notes
+  assert.match(tail, /^## Answers to the opening questions/);
+});

@@ -96,3 +96,29 @@ def test_browser_build_keeps_studio_notes_and_calls_no_model(tmp_path, monkeypat
     lk.build(session, con=None, describe=False, cards=20, quiet=True)
     assert (folder / "notes.md").read_text() == studio_notes
     assert (folder / "studio_job.json").exists()
+
+
+def test_finish_keeps_the_recall_block_out_of_the_vault_note(tmp_path, monkeypatch):
+    """Studio notes.md opens with recall questions (S4); the vault note gets the notes alone,
+    as on the oMLX path."""
+    monkeypatch.setattr(lk, "VAULT", tmp_path / "vault")
+    folder = tmp_path / "20300101-1000_Watering-the-garden"; folder.mkdir()
+    notes = "## TL;DR\n- water early\n\n## Key concepts\n- **Mulch**: holds moisture"
+    block = lk.recall_first(notes, [{"q": "Why mulch?", "a": "Holds moisture", "kind": "why"}])
+    (folder / "notes.md").write_text(f"# Watering the garden\n\n_byline_\n\n{block}\n")
+    (folder / "manifest.json").write_text(json.dumps({"id": "20300101-1000", "title": "Watering the garden",
+                                                      "start": "2030-01-01T10:00:00+05:30", "minutes": 60}))
+    (folder / "studio_result.json").write_text(json.dumps({"engine": "gemini-nano", "citations_removed": 2}))
+    note, man = lk.finish(folder)
+    text = Path(note).read_text()
+    assert "Before you read" not in text and "Answers to the opening questions" not in text
+    assert "water early" in text and "[[Mulch]]" in text
+    assert man["studio"]["citations_removed"] == 2
+    assert lk.strip_recall_first(notes) == notes
+
+
+def test_recall_first_matches_the_studio_fixture():
+    """studio/src/core/recall.js is tested against the same file (node --test)."""
+    fx = json.loads((Path(__file__).resolve().parents[2] / "studio/test/fixtures/recall.json").read_text())
+    for c in fx["cases"]:
+        assert lk.recall_first(c["notes"], c["cards"]) == c["expected"]

@@ -1,0 +1,64 @@
+{
+ "about": "Generated from lecture_kit.recall_first; studio/src/core/recall.js must give the same text. Invented content.",
+ "cases": [
+  {
+   "notes": "## TL;DR\n- Bees pollinate flowers.",
+   "cards": [
+    {
+     "q": "What is pollen?",
+     "a": "Male gametophytes",
+     "kind": "recall"
+    },
+    {
+     "q": "Why do flowers have nectar?",
+     "a": "To attract pollinators",
+     "kind": "why",
+     "at": "00:03:00"
+    },
+    {
+     "q": "Wind or bee pollination: which needs more pollen?",
+     "a": "Wind",
+     "kind": "compare"
+    },
+    {
+     "q": "A field has no bees: what happens to the apple crop?",
+     "a": "Yields fall",
+     "kind": "apply"
+    }
+   ],
+   "expected": "## Before you read\n\nAnswer these from memory first. The answers are at the end.\n\n1. Why do flowers have nectar?\n2. Wind or bee pollination: which needs more pollen?\n3. A field has no bees: what happens to the apple crop?\n\n---\n\n## TL;DR\n- Bees pollinate flowers.\n\n---\n\n## Answers to the opening questions\n\n1. To attract pollinators [00:03:00]\n2. Wind\n3. Yields fall"
+  },
+  {
+   "notes": "## TL;DR\n- Soil holds water.",
+   "cards": [
+    {
+     "q": "Only recall?",
+     "a": "Yes",
+     "kind": "recall"
+    }
+   ],
+   "expected": "## Before you read\n\nAnswer these from memory first. The answers are at the end.\n\n1. Only recall?\n\n---\n\n## TL;DR\n- Soil holds water.\n\n---\n\n## Answers to the opening questions\n\n1. Yes"
+  },
+  {
+   "notes": "## TL;DR\n- nothing",
+   "cards": [],
+   "expected": "## TL;DR\n- nothing"
+  },
+  {
+   "notes": "## TL;DR\n- x",
+   "cards": [
+    {
+     "q": "",
+     "a": "no question",
+     "kind": "why"
+    },
+    {
+     "q": "Kind missing?",
+     "a": "Still used",
+     "at": ""
+    }
+   ],
+   "expected": "## Before you read\n\nAnswer these from memory first. The answers are at the end.\n\n1. Kind missing?\n\n---\n\n## TL;DR\n- x\n\n---\n\n## Answers to the opening questions\n\n1. Still used"
+  }
+ ]
+}

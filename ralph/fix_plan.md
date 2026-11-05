@@ -136,7 +136,7 @@ Tests run with `cd studio && node --test test/*.test.js` and the fake engine in
   in a digest, split the part in two and retry instead of failing the lecture.
   Best source first is kept (Liu et al. 2024).
   Done when: tests for the packing bug, calibration and split-and-retry.
-- [ ] **S4 Recall-first notes in the Studio.** The oMLX path opens notes with three
+- [x] **S4 Recall-first notes in the Studio.** The oMLX path opens notes with three
   questions (L2; Roediger & Karpicke 2006; Richland et al. 2009); Studio notes do not.
   Port `recall_first`, write notes after cards.
   Done when: Python and JS give the same block on a shared fixture.

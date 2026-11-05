@@ -6,6 +6,7 @@ import { parseCards, dedupeCards, cardCount, cardsTsv } from "./cards.js";
 import { slidesMarkdown, slideSource, cleanDescription } from "./slides.js";
 import { knownRefs, dropUnknownRefs } from "./citations.js";
 import { calibrateBudget, isOverflow } from "../engines/budget.js";
+import { recallFirst } from "./recall.js";
 
 /** Digest one transcript part; if it overflows the window, split it in two and digest each
  *  half instead of failing the lecture (S3). Gives up below 10 lines. */
@@ -137,7 +138,7 @@ export async function runLectureJob(engine, io, folder, { describe = true, say =
   const { notes, digests, cards, citationsRemoved } = await makeNotes(engine, { title: job.title, lines: job.transcript || [], slideSrc, cards: job.cards ?? 20 }, say);
   const when = job.when ? `${job.when} · ` : "";
   await io.writeText(`${folder}/notes.md`,
-    `# ${job.title}\n\n_${when}${job.minutes ?? "?"} min · notes by ${engine.name} in Chrome (Lecture Lens Studio) from this Mac's own capture_\n\n${notes}\n`);
+    `# ${job.title}\n\n_${when}${job.minutes ?? "?"} min · notes by ${engine.name} in Chrome (Lecture Lens Studio) from this Mac's own capture_\n\n${recallFirst(notes, cards)}\n`);
   if (digests.length) {
     await io.writeText(`${folder}/digest.md`, `# Part digests — ${job.title}\n\n` + digests.map((d, i) => `## Part ${i + 1}\n\n${d}`).join("\n\n") + "\n");
   }
