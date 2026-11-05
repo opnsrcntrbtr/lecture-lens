@@ -21,6 +21,16 @@ await build({
   bundle: true, format: "esm", platform: "browser", target: "chrome120", minify: true,
   outfile: join(out, "vendor/web-llm.js"), logLevel: "warning",
 });
+// Whisper: transformers.js and the ONNX runtime files it would otherwise fetch from a CDN
+await build({
+  entryPoints: [join(root, "node_modules/@huggingface/transformers/dist/transformers.web.js")],
+  bundle: true, format: "esm", platform: "browser", target: "chrome120", minify: true,
+  outfile: join(out, "vendor/transformers.js"), logLevel: "warning",
+});
+await mkdir(join(out, "vendor/ort"), { recursive: true });
+for (const f of ["ort-wasm-simd-threaded.asyncify.mjs", "ort-wasm-simd-threaded.asyncify.wasm"]) {
+  await cp(join(root, "node_modules/onnxruntime-web/dist", f), join(out, "vendor/ort", f));
+}
 await writeFile(join(out, "BUILD.txt"), `Lecture Lens Studio, built ${new Date().toISOString()}\n` +
   "Load this folder in chrome://extensions (Developer mode > Load unpacked), or serve it as static files.\n");
 console.log(`built ${out}`);

@@ -164,6 +164,7 @@ struct LectureDetail: View {
                     .font(.scaled(.callout)).foregroundStyle(.secondary)
                     .help(model.autoImportNote ?? "Transcript merge and word error rate, Q&A import, answer scores")
             }
+            studioControls
             if session.built {
                 Button("Rebuild", systemImage: "arrow.triangle.2.circlepath") { model.build(session) }.disabled(building)
                 Button("Import Zoom files", systemImage: "tray.and.arrow.down") { model.ingest(folder.lastPathComponent) }
@@ -171,6 +172,25 @@ struct LectureDetail: View {
                     .help("Use Zoom's transcript, Q&A export or the deck saved in this class's folder or today's live folder")
                 Button("Show in Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
             }
+        }
+    }
+
+    /// Browser mode (Lecture Lens Studio): where this lecture is, and the next step.
+    @ViewBuilder private var studioControls: some View {
+        switch Studio.state(folder: folder) {
+        case .none:
+            EmptyView()
+        case .pending:
+            Label("Waiting for Lecture Lens Studio", systemImage: "globe").font(.scaled(.callout)).foregroundStyle(.secondary)
+            Button("Open Studio", systemImage: "globe") { Studio.open() }
+                .help("Run this lecture's notes, cards and slide descriptions in Chrome")
+        case .done(let engine):
+            Label("Done in the Studio (\(engine))", systemImage: "checkmark.circle").font(.scaled(.callout)).foregroundStyle(.secondary)
+            Button("Finish", systemImage: "square.and.arrow.down") { model.finishStudio(folder.lastPathComponent) }
+                .buttonStyle(.borderedProminent).disabled(building)
+                .help("Write the vault note and update the lecture from the Studio's notes and cards (lecture finish)")
+        case .finished(let engine):
+            Label("Notes by \(engine) in Chrome", systemImage: "globe").font(.scaled(.callout)).foregroundStyle(.secondary)
         }
     }
 

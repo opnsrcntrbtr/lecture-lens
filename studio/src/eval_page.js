@@ -19,3 +19,20 @@ $("go").onclick = async () => {
     log(`wrote ${name}: ${out.ask.length} answers, ${out.notes.length} notes, ${out.cards.length} card sets in ${out.seconds} s`);
   } catch (e) { log(`error: ${e.message}`); }
 };
+
+// ---- speech-to-text bench
+import("./asr/whisper.js").then(({ WHISPER_MODELS, WhisperASR, NanoASR }) => {
+  $("asr-go").onclick = async () => {
+    try {
+      const file = $("asr-audio").files[0], ref = $("asr-ref").value.trim();
+      if (!file || !ref) { log("pick an audio file and paste its text"); return; }
+      const { decodeTo16k } = await import("./asr/audio.js"), { benchAsr } = await import("./asr/bench.js");
+      const samples = await decodeTo16k(file);
+      const engines = [];
+      for (const m of WHISPER_MODELS.slice(0, 2)) engines.push(await new WhisperASR(m.id).init({ onProgress: (p, t) => log(`${t} ${Math.round(p * 100)}%`) }));
+      if ($("asr-nano").checked) { try { engines.push(await new NanoASR().init()); } catch (e) { log(`nano audio: ${e.message}`); } }
+      const rows = await benchAsr(engines, samples, ref, log);
+      $("asr-out").textContent = rows.map((r) => `${r.engine} (${r.device ?? "-"}): WER ${r.wer ?? "error"} · ${r.seconds} s for ${r.audio_seconds} s of audio`).join("\n");
+    } catch (e) { log(`error: ${e.message}`); }
+  };
+});

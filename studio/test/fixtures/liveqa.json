@@ -1,0 +1,141 @@
+{
+ "about": "Shared by studio/test/liveqa.test.js and tests/unit/test_live_qa.py: the Python and JS live Q&A rules must agree. Invented content.",
+ "threads": [
+  {
+   "id": "t1",
+   "by": "Attendee",
+   "time": "10:05 AM",
+   "q": "Thanks!",
+   "answers": []
+  },
+  {
+   "id": "t2",
+   "by": "Attendee",
+   "time": "10:06 AM",
+   "q": "Will the recording be uploaded to the portal?",
+   "answers": [
+    {
+     "by": "Pat Example",
+     "time": "10:07 AM",
+     "text": "Yes, by tonight."
+    }
+   ]
+  },
+  {
+   "id": "t3",
+   "by": "You",
+   "time": "10:10 AM",
+   "q": "How deep should mulch be around young tomato plants in raised beds?",
+   "answers": []
+  },
+  {
+   "id": "t4",
+   "by": "Attendee",
+   "time": "10:12 AM",
+   "q": "Does drip irrigation beat sprinklers for vegetable beds?",
+   "answers": [
+    {
+     "by": "Pat Example",
+     "time": "10:14 AM",
+     "text": "Usually yes, less evaporation."
+    }
+   ]
+  },
+  {
+   "id": "t5",
+   "by": "You",
+   "time": "10:15 AM",
+   "q": "ok",
+   "answers": []
+  }
+ ],
+ "done": {
+  "t4": 1
+ },
+ "kind": [
+  "trivial",
+  "admin",
+  "content",
+  "content",
+  "trivial"
+ ],
+ "needs_followup": [
+  false,
+  true,
+  false,
+  false,
+  false
+ ],
+ "needs_prospective": [
+  false,
+  false,
+  true,
+  false,
+  false
+ ],
+ "prospective": [
+  {
+   "raw": "{\"answer\": \"Five to eight centimetres [lecture] works best (S2) [3].\", \"confidence\": \"MEDIUM\", \"listen_for\": \"depth\"}",
+   "parsed": {
+    "answer": "Five to eight centimetres works best (S2).",
+    "confidence": "medium",
+    "listen_for": "depth",
+    "prompt": "prospective-v2",
+    "sources": [
+     "S2"
+    ]
+   }
+  },
+  {
+   "raw": "Here you go: {\"answer\": \"\", \"confidence\": \"high\"}",
+   "parsed": null
+  },
+  {
+   "raw": "not json",
+   "parsed": null
+  },
+  {
+   "raw": "{\"answer\": \"Keep mulch off the stems [Q&A thread 2]; S9 says so.\", \"confidence\": \"maybe\"}",
+   "parsed": {
+    "answer": "Keep mulch off the stems; S9 says so.",
+    "confidence": "low",
+    "listen_for": "",
+    "prompt": "prospective-v2",
+    "sources": []
+   }
+  }
+ ],
+ "clean": [
+  {
+   "text": "Yes [lecture] and no [slide 3].",
+   "out": "Yes and no."
+  },
+  {
+   "text": "Plain answer",
+   "out": "Plain answer"
+  }
+ ],
+ "bank": {
+  "S1": {
+   "title": "Water study",
+   "fact": "Drip irrigation reduces evaporation losses in vegetable beds"
+  },
+  "S2": {
+   "title": "Mulch guide",
+   "fact": "Organic mulch five centimetres deep keeps soil moist"
+  }
+ },
+ "relevant": [
+  {
+   "ids": [
+    "S1",
+    "S2",
+    "S7"
+   ],
+   "text": "Does drip irrigation reduce evaporation in vegetable beds?",
+   "out": [
+    "S1"
+   ]
+  }
+ ]
+}

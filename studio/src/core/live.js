@@ -5,6 +5,7 @@
 // which also answers the app's Sync now requests (sync_request.json -> sync_done.json).
 import { tokens, jaccard, grounded, cleanReply, salvageJsonObjects } from "./text.js";
 import { SYS_TUTOR, VERSIONS, outlinePrompt, questionsPrompt, questionsSchema, QUESTION_TYPES } from "./prompts.js";
+import { qaRound, doneFromFiles } from "./liveqa.js";
 
 export const WINDOW_MS = 10 * 60 * 1000;
 
@@ -58,7 +59,7 @@ const read = async (io, f) => ((await io.exists(f)) ? io.readText(f) : "");
 const append = async (io, f, rows) => { if (rows.length) await io.appendText(f, rows.map((r) => JSON.stringify(r) + "\n").join("")); };
 
 /** One round of the live loop. `state.lastOutline` is the start of the next window (ms). */
-export async function liveRound(engine, io, dir, state, { title, now = Date.now(), idea = "", say = () => {} }) {
+export async function liveRound(engine, io, dir, state, { title, now = Date.now(), idea = "", qa = true, say = () => {} }) {
   const segs = jsonl(await read(io, `${dir}/whisper_segments.jsonl`));
   const slides = jsonl(await read(io, `${dir}/slides.jsonl`));
   const sync = await takeSync(io, dir);
@@ -97,6 +98,13 @@ export async function liveRound(engine, io, dir, state, { title, now = Date.now(
     } else {
       state.lastOutline = now - to < 1800 * 1000 ? to : now - WINDOW_MS;
     }
+  }
+  if (qa) {   // Q&A follow-ups and prospective answers, every round (they are cheap when nothing is new)
+    if (!state.qaDone) {
+      const threads = (await io.exists(`${dir}/qa_threads.json`)) ? JSON.parse(await io.readText(`${dir}/qa_threads.json`)) : [];
+      state.qaDone = doneFromFiles(threads, jsonl(await read(io, `${dir}/qa_followups.jsonl`)));
+    }
+    try { result.qa = await qaRound(engine, io, dir, state, { title, now, say }); } catch (e) { say(`qa error: ${e.message}`); }
   }
   if (sync.size) {
     const outl = jsonl(await read(io, `${dir}/outline.jsonl`));

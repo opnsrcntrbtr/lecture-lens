@@ -42,6 +42,7 @@ Set in `.env` (ignored by git). `.env.example` has every variable with a safe pl
 | `STUDY_PORTAL_NAME` | Portal name as shown in window titles |
 | `STUDY_COURSE_NAME` | Written into each lecture note |
 | `STUDY_LLM_PROVIDER` | `omlx` (default): the model server. `browser`: [Lecture Lens Studio](../guides/studio.md) runs the model in Chrome; builds write `studio_job.json` and the live follower leaves the outline and questions to it. Evals stay on oMLX |
+| `STUDY_STUDIO_TRANSCRIBE` | `1`: in browser mode, `lecture build` also saves the lecture's audio chunks (hard links in `audio/`, listed in `audio.json`) so the Studio can transcribe them with Whisper in Chrome |
 | `STUDY_STUDIO_URL` | The Studio page the app opens (default: the hosted page on the docs site) |
 | `STUDY_LIVE_FOLLOWER` | Start `live_class.py` with live-mode capture (default `true`) |
 | `STUDY_LIVE_TITLE`, `STUDY_LIVE_HOURS`, `STUDY_LIVE_PROMPT` | Live note title, how long the follower runs (default 4 h), whisper vocabulary prompt |
