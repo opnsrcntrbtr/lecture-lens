@@ -470,6 +470,11 @@ def window_ready(segs: list[dict], to: dt.datetime, now: dt.datetime, max_wait_s
     return bool(segs) and segs[-1]["t"] >= to.isoformat() or (now - to).total_seconds() >= max_wait_s
 
 
+def browser_mode() -> bool:
+    """STUDY_LLM_PROVIDER=browser: the model steps run in Lecture Lens Studio (Chrome)."""
+    return os.environ.get("STUDY_LLM_PROVIDER", "omlx").strip().lower() == "browser"
+
+
 SYNC_KINDS = {"slides", "outline", "questions"}
 
 
@@ -738,13 +743,19 @@ def run(a):
     final_sent = False
     log = lambda *m: print(dt.datetime.now(LOCAL).strftime("%H:%M:%S"), *m, flush=True)
     log("start", start.isoformat(), "until", until.isoformat(), "out", out)
+    browser = browser_mode()
+    if browser:   # Lecture Lens Studio writes the outline and questions and answers Sync now
+        a.no_outline = a.no_questions = True
+        (out / "studio_live_job.json").write_text(json.dumps({"title": a.title, "start": start.isoformat(),
+            "until": until.isoformat(), "idea": os.environ.get("LIVE_CAPSTONE_IDEA", "").strip()}))
+        log("browser mode: outline, questions and Q&A follow-ups are left to Lecture Lens Studio")
 
     while dt.datetime.now(dt.timezone.utc) < until:
         h = health()
         ok = healthy(h)
         status = "ok" if ok else f"CHECK ({h.get('frame_status')}/{h.get('audio_status')})"
         now = dt.datetime.now(dt.timezone.utc)
-        sync = take_sync(out)
+        sync = set() if browser else take_sync(out)
         if sync:
             log("sync requested", ",".join(sorted(sync)))
             if sync & {"outline", "questions"}:
@@ -851,7 +862,7 @@ def run(a):
         # Zoom Q&A: threads every round, follow-ups for newly answered threads
         if not a.no_qa:
             try:
-                qa_done = qa_round(a, side_f, seg_f, slide_f, ev_f, qa_f, fu_f, qa_done, ok, now, log)
+                qa_done = qa_round(a, side_f, seg_f, slide_f, ev_f, qa_f, fu_f, qa_done, ok and not browser, now, log)
             except Exception as e:
                 log("qa error", e)
         if (now - last_ask).total_seconds() >= 300:

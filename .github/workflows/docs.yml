@@ -2,7 +2,7 @@ name: Deploy docs
 on:
   push:
     branches: [main]
-    paths: ["website/**", ".github/workflows/docs.yml"]
+    paths: ["website/**", "studio/**", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
@@ -31,6 +31,9 @@ jobs:
           cache-dependency-path: website/package-lock.json
       - run: npm ci
         working-directory: website
+      - name: Lecture Lens Studio (served at /lecture-lens/studio/)
+        run: npm ci && npm run build -- --out ../website/static/studio
+        working-directory: studio
       - run: npm run build
         working-directory: website
         env:

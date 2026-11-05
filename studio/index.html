@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lecture Lens Studio</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="src/app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Lecture Lens Studio</h1>
+    <span id="engine-chip" class="chip">engine: not ready</span>
+  </header>
+  <p class="lede">Notes, flashcards, answers and live-class questions from your own lecture captures, made by a model running inside Chrome. Nothing leaves this browser and your lectures folder.</p>
+
+  <section class="card" id="setup">
+    <h2>1. Model</h2>
+    <div class="row">
+      <label for="engine-pref">Engine</label>
+      <select id="engine-pref"></select>
+      <button id="engine-init">Prepare model</button>
+    </div>
+    <progress id="engine-progress" max="1" value="0" hidden></progress>
+    <p id="caps" class="muted">Checking what this browser can run…</p>
+
+    <h2>2. Lectures folder</h2>
+    <div class="row">
+      <button id="folder-pick">Choose lectures folder</button>
+      <button id="folder-regrant" hidden>Reconnect</button>
+      <span id="folder-name" class="muted">none</span>
+    </div>
+    <p class="muted">Pick the <code>lectures</code> folder of your Lecture Lens install. Chrome asks once per session to allow editing it.</p>
+  </section>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="after" aria-selected="true">After class</button>
+    <button role="tab" data-tab="ask">Ask</button>
+    <button role="tab" data-tab="live">Live class</button>
+    <button role="tab" data-tab="recap">Recap</button>
+  </nav>
+
+  <section class="card tab" id="tab-after">
+    <div class="row">
+      <label><input type="checkbox" id="describe" checked> Describe slides (needs an engine that reads images)</label>
+      <button id="run-pending">Run all pending</button>
+      <button id="refresh">Refresh</button>
+    </div>
+    <table>
+      <thead><tr><th>Lecture</th><th>State</th><th></th></tr></thead>
+      <tbody id="lectures"></tbody>
+    </table>
+    <p class="muted">A lecture is <em>pending</em> after <code>lecture build</code> ran with <code>STUDY_LLM_PROVIDER=browser</code>. When it is done, run <code>./lecture finish</code> to update the vault note.</p>
+  </section>
+
+  <section class="card tab" id="tab-ask" hidden>
+    <div class="row">
+      <label for="ask-lecture">Lecture</label>
+      <select id="ask-lecture"></select>
+    </div>
+    <textarea id="ask-q" rows="3" placeholder="Ask about this lecture…"></textarea>
+    <div class="row"><button id="ask-go">Ask</button></div>
+    <div id="ask-answer" class="answer"></div>
+    <ol id="ask-sources" class="sources"></ol>
+  </section>
+
+  <section class="card tab" id="tab-live" hidden>
+    <div class="row">
+      <label for="live-day">Day</label>
+      <select id="live-day"></select>
+      <label for="live-title">Title</label>
+      <input id="live-title" placeholder="Live class">
+    </div>
+    <div class="row">
+      <button id="live-start">Start following</button>
+      <button id="live-stop" disabled>Stop</button>
+      <span id="live-status" class="muted">stopped</span>
+    </div>
+    <p class="muted">Keep this tab open during class. Every minute it reads the live folder; every 10 minutes it writes an outline and three questions for the app's Live tab, and it answers the app's <em>Sync now</em>.</p>
+  </section>
+
+  <section class="card tab" id="tab-recap" hidden>
+    <div class="row">
+      <label for="recap-module">Module</label>
+      <select id="recap-module"></select>
+      <button id="recap-go">Write recap</button>
+    </div>
+    <pre id="recap-out" class="answer"></pre>
+  </section>
+
+  <section class="card">
+    <h2>Log</h2>
+    <pre id="log" aria-live="polite"></pre>
+  </section>
+</body>
+</html>

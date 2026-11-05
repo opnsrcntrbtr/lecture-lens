@@ -16,6 +16,12 @@ The job to be done: *when I attend a class, I want it captured and turned into m
 | Transcript completeness | About a quarter of spoken words were missing in a measured class | Words per minute is a health signal; saved audio can be re-transcribed after class |
 | Eval checks from real failures | Notes hid contradictions and answered a deferred question | Checks for contradiction reporting, deferred questions and name fidelity |
 
+## In progress
+
+| Item | Why | Done when |
+| --- | --- | --- |
+| [Lecture Lens Studio](../guides/studio.md): the model inside Chrome | No model server: Gemini Nano (or WebGPU) does notes, cards, answers and live questions in the browser ([ADR-005](../decisions/ADR-005-in-browser-llm.md)) | The local judge scores Studio notes and answers within an agreed margin of the oMLX generator on the synthetic suite |
+
 ## Next
 
 | Item | Why |

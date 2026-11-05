@@ -30,6 +30,7 @@ All commands live in the repository root and read `.env`.
 | `./lecture doctor [--quick] [--json]` | Health checks |
 | `./transcript_ref.py <folder> <reference.txt>` | Merge a reference transcript and measure word error rate |
 | `./lecture next [--json]` | The next class in the programme calendar |
+| `./lecture finish [<id>\|last\|all]` | Browser mode: after Lecture Lens Studio ran a lecture, write its vault note and update `manifest.json` |
 | `./live-sync questions\|outline\|slides\|all` | Ask the running live follower to update now instead of at its next 10-minute batch; waits up to 3 minutes for the result |
 | `tools/merge_reference_transcript.py <live_dir> <reference.txt> <out.md> [--keep 1,2] [--label 1=Name]` | Put clock times on a dictation app's `Speaker N: text` export by aligning it to the live whisper words; speakers not kept become "Attendee"; the follower's own lines fill any gap over 90 s. `lecture build` uses `transcript_merged.md` when present |
 | `tools/retranscribe_recordings.py <folder> <start_utc> <end_utc>` | Re-transcribe saved system-audio chunks with whisper.cpp (for a recording played back on this Mac) |

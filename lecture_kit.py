@@ -530,7 +530,7 @@ def lecture_title(session, transcript):
     """A portal player's page title is often generic ('<Portal> - Learning Experience
     Platform', so name the lecture from what was said (one short model call)."""
     t = session["title"]
-    if not GENERIC_TITLE.match(t.strip()) or not transcript.strip():
+    if not GENERIC_TITLE.match(t.strip()) or not transcript.strip() or study.browser_mode():
         return t
     try:
         name = study.llm("You name lecture recordings.", "Give a 3-8 word title for this lecture, "
@@ -671,9 +671,66 @@ def live_qa_source(session, folder, budget=9000):
     return ("CLASS Q&A (quoted; attendee questions with staff replies, not the lecturer's words):\n" + "\n".join(lines))[:budget]
 
 
+def studio_job(session, transcript_lines, deck_src, qa_src, cards):
+    """The job file Lecture Lens Studio runs in browser mode (STUDY_LLM_PROVIDER=browser):
+    everything the model steps need, so the Studio never reads the capture database."""
+    start = session["start"].astimezone()
+    return {"version": 1, "id": session["id"], "title": session["title"], "start": session["start"].isoformat(),
+            "when": f"{start:%a %d %b %Y %H:%M}", "minutes": session["minutes"], "cards": cards,
+            "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "transcript": list(transcript_lines),
+            "deck_src": deck_src or "", "qa_src": qa_src or ""}
+
+
+def write_vault_note(folder, info, notes, n_cards):
+    """The Obsidian note for a lecture: links to the artefacts, not copies. `info` holds id,
+    title, start (ISO), minutes and source; shared by `build` and `finish`."""
+    vault_dir = VAULT / VAULT_SUB
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    start = dt.datetime.fromisoformat(info["start"]).astimezone()
+    concepts = re.findall(r"^\s*[-*]\s+\*\*(.+?)\*\*", notes, re.M)[:12]
+    links = " ".join(f"[[{c.strip()}]]" for c in dict.fromkeys(concepts))
+    path = vault_dir / f"{info['id']} {info['title']}.md".replace("/", "-")
+    path.write_text(
+        "---\n"
+        f"date: {start:%Y-%m-%d}\n"
+        f"duration_min: {info['minutes']}\ncourse: {COURSE}\n"
+        f"source: {info.get('source') or 'live class (Zoom)'}\n"
+        f"artefacts: {folder}\ntags: [lecture, ai-product-management]\n---\n\n"
+        f"# {info['title']}\n\n{notes}\n\n"
+        f"## Concepts\n{links or '_none extracted_'}\n\n"
+        f"## Artefacts\n- Transcript: `{folder/'transcript.md'}`\n- Slides: `{folder/'slides.md'}`"
+        f"\n- Flashcards: `{folder/'cards.tsv'}` ({n_cards} cards)"
+        + (f"\n- Class Q&A: `{folder/'qa.md'}`" if (folder / "qa.md").exists() else "") + "\n")
+    return path
+
+
+def finish(folder):
+    """After Lecture Lens Studio ran a lecture: vault note and manifest from its outputs."""
+    res_f = folder / "studio_result.json"
+    if not res_f.exists():
+        raise FileNotFoundError(f"{folder.name}: no studio_result.json yet (run the lecture in Lecture Lens Studio)")
+    res = json.loads(res_f.read_text())
+    man = json.loads((folder / "manifest.json").read_text())
+    md = (folder / "notes.md").read_text()
+    body = md.split("\n", 3)[3] if md.count("\n") >= 3 else md     # drop the "# title" and the byline
+    cards_f = folder / "cards.tsv"
+    n_cards = sum(1 for l in cards_f.read_text().splitlines() if l.strip()) if cards_f.exists() else 0
+    slides_f = folder / "slides.json"
+    described = sum(1 for s in json.loads(slides_f.read_text()) if s.get("description")) if slides_f.exists() else 0
+    note = write_vault_note(folder, {**man, "source": man.get("source")}, body.strip(), n_cards)
+    man.update({"llm": f"{res.get('engine', 'browser')} (Lecture Lens Studio)", "cards": n_cards,
+                "slides_described": described, "studio": {k: res.get(k) for k in ("engine", "finished_at", "seconds", "prompt_versions")},
+                "finished_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+    (folder / "manifest.json").write_text(json.dumps(man, indent=2))
+    return note, man
+
+
 def build(session, con, describe=True, cards=20, quiet=False):
     def say(*a):
         if not quiet: print(*a, file=sys.stderr)
+    browser = study.browser_mode()   # the model runs in Lecture Lens Studio; leave it a job file
+    if browser:
+        describe = False
     folder = LECTURES / f"{session['id']}_{slugify(session['title'])}"
     (folder / "slides").mkdir(parents=True, exist_ok=True)
 
@@ -742,6 +799,9 @@ def build(session, con, describe=True, cards=20, quiet=False):
             + (f"> On-screen text: {s['screen_text']}\n" if s['screen_text'] else "")
             for s in slides) or "_no keyframes captured_") + "\n")
 
+    if browser:   # the Studio describes the keyframes and rewrites slides.md from this
+        (folder / "slides.json").write_text(json.dumps(slides, indent=1))
+
     # 3. notes + cards (model, grounded in the two files above)
     slide_src = "SLIDES:\n" + "\n".join(f"[slide {s['n']} @ {s['at']}] {s['description'] or s['screen_text']}"
                                          for s in slides)
@@ -761,8 +821,17 @@ def build(session, con, describe=True, cards=20, quiet=False):
         src_lines = [l for l in merged.read_text().splitlines()[3:] if l.strip()]
         say(f"  using merged reference transcript ({len(src_lines)} lines)")
     transcript_src = "\n".join(src_lines)
-    parts = _split_lines(src_lines, PART_CHARS) if len(transcript_src) + len(slide_src) > study.CTX else []
-    if parts:
+    parts = [] if browser else _split_lines(src_lines, PART_CHARS) if len(transcript_src) + len(slide_src) > study.CTX else []
+    if browser:
+        job = studio_job(session, src_lines, deck_src, qa_src, cards)
+        (folder / "studio_job.json").write_text(json.dumps(job, indent=1))
+        (folder / "studio_result.json").unlink(missing_ok=True)
+        notes = (f"_Notes pending: open Lecture Lens Studio in Chrome, run this lecture, then `./lecture finish "
+                 f"{session['id']}`._")
+        if not (folder / "notes.md").exists():
+            (folder / "notes.md").write_text(f"# {session['title']}\n\n{notes}\n")
+        say("  browser mode: studio_job.json written; run it in Lecture Lens Studio, then `lecture finish`")
+    elif parts:
         digests = digest_parts(session["title"], parts, say)
         (folder / "digest.md").write_text(f"# Part digests — {session['title']}\n\n" + "\n\n".join(
             f"## Part {i}\n\n{d}" for i, d in enumerate(digests, 1)) + "\n")
@@ -770,12 +839,15 @@ def build(session, con, describe=True, cards=20, quiet=False):
                   + "\n\n" + slide_src)[: study.CTX]
     else:
         source = (f"TRANSCRIPT (timecoded):\n{transcript_src}\n\n" + slide_src)[: study.CTX]
-    notes = make_notes(session["title"], source)
-    (folder / "notes.md").write_text(
-        f"# {session['title']}\n\n_{session['start'].astimezone():%a %d %b %Y %H:%M} · {session['minutes']} min · "
-        f"notes by {study.MODEL} from this Mac's own capture_\n\n{notes}\n")
+    if not browser:
+        notes = make_notes(session["title"], source)
+        (folder / "notes.md").write_text(
+            f"# {session['title']}\n\n_{session['start'].astimezone():%a %d %b %Y %H:%M} · {session['minutes']} min · "
+            f"notes by {study.MODEL} from this Mac's own capture_\n\n{notes}\n")
 
-    if cards and parts:   # cards from the words themselves, part by part, not from the digest
+    if browser:
+        card_rows = []
+    elif cards and parts:   # cards from the words themselves, part by part, not from the digest
         card_rows, per = [], max(3, -(-cards // len(parts)))
         for i, part in enumerate(parts, 1):
             say(f"  cards from part {i}/{len(parts)}…")
@@ -793,21 +865,9 @@ def build(session, con, describe=True, cards=20, quiet=False):
     cal_s = course_calendar.session_at(session["start"])   # programme calendar (gitignored)
     module = course_calendar.module_label(cal_s) if cal_s else ""
     # 4. Obsidian note (links, not copies — the vault points at the artefacts)
-    vault_dir = VAULT / VAULT_SUB
-    vault_dir.mkdir(parents=True, exist_ok=True)
-    concepts = re.findall(r"^\s*[-*]\s+\*\*(.+?)\*\*", notes, re.M)[:12]
-    links = " ".join(f"[[{c.strip()}]]" for c in dict.fromkeys(concepts))
-    (vault_dir / f"{session['id']} {session['title']}.md".replace("/", "-")).write_text(
-        "---\n"
-        f"date: {session['start'].astimezone():%Y-%m-%d}\n"
-        f"duration_min: {session['minutes']}\ncourse: {COURSE}\n"
-        f"source: {((session['frames'][0].get('browser_url') if session['frames'] else '') or 'live class (Zoom)')}\n"
-        f"artefacts: {folder}\ntags: [lecture, ai-product-management]\n---\n\n"
-        f"# {session['title']}\n\n{notes}\n\n"
-        f"## Concepts\n{links or '_none extracted_'}\n\n"
-        f"## Artefacts\n- Transcript: `{folder/'transcript.md'}`\n- Slides: `{folder/'slides.md'}`"
-        f"\n- Flashcards: `{folder/'cards.tsv'}` ({len(card_rows)} cards)"
-        + (f"\n- Class Q&A: `{folder/'qa.md'}`" if (folder / "qa.md").exists() else "") + "\n")
+    source_url = (session['frames'][0].get('browser_url') if session['frames'] else '') or 'live class (Zoom)'
+    write_vault_note(folder, {"id": session["id"], "title": session["title"], "start": session["start"].isoformat(),
+                              "minutes": session["minutes"], "source": source_url}, notes, len(card_rows))
 
     manifest = {"id": session["id"], "title": session["title"], "module": module or None,
                 "start": session["start"].isoformat(), "end": session["end"].isoformat(),
@@ -818,7 +878,9 @@ def build(session, con, describe=True, cards=20, quiet=False):
                 "deck_slides": len(deck),
                 "transcript_segments": len(audio), "transcript_parts": len(parts) or 1, "slides": len(slides),
                 "slides_described": sum(1 for s in slides if s["description"]),
-                "cards": len(card_rows), "vl_model": VL_MODEL or None, "llm": study.MODEL,
+                "cards": len(card_rows), "vl_model": None if browser else VL_MODEL or None,
+                "llm": "Lecture Lens Studio (pending)" if browser else study.MODEL,
+                "source": source_url,
                 "player_box": list(box) if box else None,
                 "built_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     if cal_s:
@@ -959,7 +1021,9 @@ def run_checks(vision_probe=True):
         chk("pillow", True, "Pillow available")
     except ImportError:
         chk("pillow", False, "Pillow missing", "pip install pillow", level="warn")
-    if not VL_MODEL:
+    if study.browser_mode():
+        chk("vision", True, "browser mode: Lecture Lens Studio describes slides in Chrome")
+    elif not VL_MODEL:
         chk("vision", False, "OMLX_VL_MODEL not set — slides keep OCR text only", "set OMLX_VL_MODEL in .env", level="warn")
     elif vision_probe:
         try:
@@ -1159,6 +1223,16 @@ def cmd_ingest(a):
     print(json.dumps(report, indent=1))
 
 
+def cmd_finish(a):
+    folders = [d for d in sorted(LECTURES.iterdir()) if (d / "studio_result.json").exists()] if a.id == "all" else [find_folder(a.id)]
+    for folder in folders:
+        try:
+            note, man = finish(folder)
+            print(f"✓ {folder.name}: {man['cards']} cards, {man['slides_described']} slides described · vault: {note}")
+        except FileNotFoundError as e:
+            print(f"~ {e}")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="lecture", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1189,6 +1263,8 @@ def main():
     p.add_argument("--budget", type=int, default=24000); p.set_defaults(fn=cmd_brief)
     p = sub.add_parser("qa", help="rewrite qa.md from the live folder (uses post-class judge scores when present)")
     p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_qa)
+    p = sub.add_parser("finish", help="after Lecture Lens Studio ran a lecture (browser mode): vault note and manifest")
+    p.add_argument("id", nargs="?", default="last", help="session id, 'last' or 'all'"); p.set_defaults(fn=cmd_finish)
     p = sub.add_parser("ingest", help="after class: use the meeting app's transcript/Q&A export/deck found beside the class")
     p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_ingest)
     a = ap.parse_args(); a.fn(a)
