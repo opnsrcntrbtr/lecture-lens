@@ -53,4 +53,10 @@ STATUS=${pipestatus[1]}
 set -e
 
 python summarize.py "$RES"
+# Change against the previous run of the same suite, case by case (McNemar; compare_runs.py).
+PREV=$(ls -d "${RES:h}"/*-$SUITE 2>/dev/null | grep -v "^$RES\$" | sort | tail -1)
+if [[ -n $PREV && -f $PREV/summary.json ]]; then
+  echo "== change against ${PREV:t}"
+  python compare_runs.py "$PREV/summary.json" "$RES/summary.json" | tee "$RES/compare.md" || true
+fi
 exit $STATUS

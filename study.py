@@ -174,14 +174,106 @@ def retrieve(question, start, end, app=None, log=sys.stderr):
     return queries, rows
 
 
+RETRIEVAL_VERSION = "bm25-v1"
+_TOKEN = re.compile(r"[a-z0-9]+")
+_STOP = frozenset("a an and are as at be by for from has have how in is it its of on or that the this "
+                  "to was were what when where which who why will with does do did not".split())
+
+
+def _terms(text):
+    return [t for t in _TOKEN.findall(text.lower()) if t not in _STOP and len(t) > 1]
+
+
+def bm25_rank(question, rows, k1=1.5, b=0.75):
+    """Order rows by Okapi BM25 relevance to the question, best first.
+
+    BM25 as in Robertson & Zaragoza (2009), "The Probabilistic Relevance
+    Framework: BM25 and Beyond", with the non-negative idf
+    log(1 + (N - n + 0.5) / (n + 0.5)). The collection is the candidate rows
+    themselves, so the score needs no index. Ties keep time order. A row with no
+    query term scores 0 and goes last, but is kept: the model may still need it.
+    """
+    import math
+    docs = [_terms(r["text"]) for r in rows]
+    if not docs:
+        return []
+    q = list(dict.fromkeys(_terms(question)))
+    N = len(docs); avg = sum(map(len, docs)) / N or 1.0
+    df = {t: sum(1 for d in docs if t in d) for t in q}
+    def score(d):
+        s = 0.0
+        for t in q:
+            f = d.count(t)
+            if f:
+                idf = math.log(1 + (N - df[t] + 0.5) / (df[t] + 0.5))
+                s += idf * f * (k1 + 1) / (f + k1 * (1 - b + b * len(d) / avg))
+        return s
+    scored = sorted(enumerate(rows), key=lambda ir: (-score(docs[ir[0]]), ir[0]))
+    return [r for _, r in scored]
+
+
 def answer_from(question, rows, think=False):
     """Generation step, separated from retrieval so evals can run it on fixed
-    context. Returns (answer, ctx_rows_used, source_block_sent_to_model)."""
-    ctx = next(chunks(rows))  # best-effort single window within context budget
+    context. Returns (answer, ctx_rows_used, source_block_sent_to_model).
+
+    Rows are ranked by BM25 before packing (bm25-v1). Before this, rows were
+    packed in time order, so with many hits the earliest captures filled the
+    budget and a relevant late one was dropped. Best source first: models use
+    the start of a long context best (Liu et al. 2024, "Lost in the Middle").
+    """
+    ctx = next(chunks(bm25_rank(question, rows)), [])  # best-effort single window within budget
     src = as_sources(ctx)
     ans = llm(SYS_TUTOR, f"Sources:\n{src}\n\nQuestion: {question}\n\n{ANSWER_INSTRUCTIONS}",
               max_tokens=1500, think=think)
     return ans, ctx, src
+
+
+_SOURCES_TAIL = re.compile(r"\n[ \t>*#_-]*sources used\b.*\Z", re.I | re.S)
+_CITE = re.compile(r"\[(\d+(?:\s*[-–,]\s*\d+)*)\]")
+
+
+def answer_body(answer):
+    """The answer without the trailing 'Sources used' list the model is asked for."""
+    return _SOURCES_TAIL.sub("", answer).rstrip()
+
+
+def _cited(group):
+    out = set()
+    for part in re.split(r"\s*,\s*", group):
+        m = re.fullmatch(r"(\d+)\s*[-–]\s*(\d+)", part.strip())
+        if m:
+            lo, hi = int(m[1]), int(m[2])
+            out.update(range(lo, hi + 1) if 0 < hi - lo < 50 else (lo, hi))
+        else:
+            out.add(int(part))
+    return out
+
+
+def check_citations(answer, n_sources):
+    """Deterministic checks on an answer's [n] citations; no model.
+
+    After ALCE (Gao et al. 2023, "Enabling Large Language Models to Generate Text
+    with Citations"), a citation is part of the answer's correctness: it must
+    point at a source the model was given, and a substantive statement should
+    carry one. Returns (warnings, coverage) where coverage is the share of
+    substantive sentences (6+ words) in the answer body that cite something.
+    A plain "the sources don't say" answer is not flagged for having no citation.
+    """
+    body = answer_body(answer)
+    cited = set()
+    for g in _CITE.findall(body):
+        cited |= _cited(g)
+    warnings = []
+    bad = sorted(n for n in cited if not 1 <= n <= n_sources)
+    if bad:
+        warnings.append(f"cites source(s) {', '.join(map(str, bad))} but only {n_sources} were given")
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+|\n+", body) if len(re.findall(r"\w+", _CITE.sub("", x))) >= 6]
+    with_cite = sum(1 for x in sentences if _CITE.search(x))
+    coverage = round(with_cite / len(sentences), 3) if sentences else None
+    refusal = re.search(r"(sources|captures|lecture)s? (do not|don't|does not|doesn't) (contain|say|cover|mention)", body, re.I)
+    if sentences and not with_cite and not refusal:
+        warnings.append("the answer cites no source")
+    return warnings, coverage
 
 
 def cmd_ask(a):
@@ -200,15 +292,18 @@ def cmd_ask(a):
             print(json.dumps({"ok": False, "error": "no captures matched", "queries": queries})); sys.exit(1)
         sys.exit(f"No captures matched {queries} in that window. Try --since 30d or check `study check`.")
     ans, ctx, _ = answer_from(a.question, rows, a.think)
+    warns, coverage = check_citations(ans, len(ctx))
     if a.json:
         print(json.dumps({"ok": True, "question": a.question, "answer": ans, "queries": queries,
                           "sources": [{"n": i, "ts": r["ts"], "src": r["src"], "where": r["where"],
                                        "text": r["text"][:1500]} for i, r in enumerate(ctx, 1)],
+                          "citation_warnings": warns, "citation_coverage": coverage,
                           "model": MODEL, "prompt_version": PROMPT_VERSION,
                           "latency_s": round(time.time() - t0, 2)}))
         return
     print(f"  (searched {len(queries)} terms → {len(rows)} captures, using {len(ctx)})\n", file=sys.stderr)
     print(ans)
+    for w in warns: print(f"  ⚠ citation check: {w}", file=sys.stderr)
     legend = "\n".join(f"[{i}] {local_time(r['ts'])} · {r['where'][:90]}" for i, r in enumerate(ctx, 1))
     if a.show_sources: print("\n---\n" + legend)
 

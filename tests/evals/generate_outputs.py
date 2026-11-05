@@ -22,7 +22,6 @@ import study  # noqa: E402
 import lecture_kit  # noqa: E402
 
 
-_SOURCES_TAIL = re.compile(r"\n[ \t>*#_-]*sources used\b.*\Z", re.I | re.S)
 
 def answer_body(answer):
     """The answer without its trailing 'Sources used' list.
@@ -32,7 +31,7 @@ def answer_body(answer):
     that list as fabricated or irrelevant: about 12 of 17 failed ask cases. The
     list is a UI feature, checked by the app; the judge scores the answer itself.
     """
-    return _SOURCES_TAIL.sub("", answer).rstrip()
+    return study.answer_body(answer)
 
 
 def rows_from(chunks):
@@ -58,7 +57,7 @@ def main():
         for f in sorted(HERE.glob("session_*_goldens.json")): goldens += json.loads(f.read_text())
         for f in sorted(HERE.glob("session_*_contexts.json")): contexts += json.loads(f.read_text())
     out = {"generator": study.MODEL, "prompt_versions": {
-        "ask": study.PROMPT_VERSION, "notes": lecture_kit.NOTES_PROMPT_VERSION,
+        "ask": study.PROMPT_VERSION, "retrieval": study.RETRIEVAL_VERSION, "notes": lecture_kit.NOTES_PROMPT_VERSION,
         "cards": lecture_kit.CARDS_PROMPT_VERSION}, "ask": [], "notes": [], "cards": []}
     t0 = time.time()
     for i, g in enumerate(goldens, 1):
