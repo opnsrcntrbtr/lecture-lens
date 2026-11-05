@@ -71,6 +71,10 @@ struct LiveView: View {
                     Text("No live class today. Start capture in live mode, then run live_class.py.")
                         .foregroundStyle(.secondary)
                 }
+                if let engine = live.studioEngine {
+                    Label("Studio drafting with \(engine)", systemImage: "globe").foregroundStyle(.secondary)
+                        .help("Lecture Lens Studio in Chrome writes the outline, questions and Q&A drafts (browser mode)")
+                }
                 Spacer()
                 if !live.pruned.isEmpty {
                     Toggle("Show \(live.pruned.count) pruned", isOn: $showPruned).toggleStyle(.checkbox)
@@ -324,6 +328,7 @@ struct LiveData {
     var slides: [SlideEntry] = []
     var evidence: [String: String] = [:]
     var askNow: [Drafted] = []
+    var studioEngine: String?
 
     var isFresh: Bool {
         guard let u = state?.updated, let d = ISO8601DateFormatter.flexible.date(from: u) else { return false }
@@ -385,6 +390,7 @@ struct LiveData {
         d.slides = lines("slides.jsonl", SlideEntry.self)
         for e in json("evidence.json", [Evidence].self) ?? [] { d.evidence[e.id] = e.title }
         d.askNow = json("ask_now.json", AskNowFile.self)?.top ?? []
+        d.studioEngine = Studio.liveEngine(folder: d.folder)
         return d
     }
 }

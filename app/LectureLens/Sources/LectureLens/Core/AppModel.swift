@@ -283,6 +283,13 @@ final class AppModel {
     }
 
     /// After class: transcript merge + WER, Q&A import (anonymised), prospective-answer scores.
+    /// Browser mode: after Lecture Lens Studio ran a lecture, write its vault note and manifest.
+    func finishStudio(_ folderName: String) {
+        jobs.enqueue("Finish (Studio)", Paths.tool("lecture"), ["finish", folderName]) { [weak self] _ in
+            Task { await self?.loadSessions() }
+        }
+    }
+
     func ingest(_ folderName: String) {
         jobs.enqueue("Import Zoom files", Paths.tool("lecture"), ["ingest", folderName]) { [weak self] _ in
             Task { await self?.loadSessions() }

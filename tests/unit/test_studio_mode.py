@@ -122,3 +122,30 @@ def test_recall_first_matches_the_studio_fixture():
     fx = json.loads((Path(__file__).resolve().parents[2] / "studio/test/fixtures/recall.json").read_text())
     for c in fx["cases"]:
         assert lk.recall_first(c["notes"], c["cards"]) == c["expected"]
+
+
+def test_audio_export_for_browser_transcription(tmp_path):
+    import sqlite3
+    data = tmp_path / "data"; data.mkdir()
+    names = ["System Audio (output)_2030-01-01_04-30-00.mp4", "System Audio (output)_2030-01-01_04-30-30.mp4"]
+    for n in names:
+        (data / n).write_bytes(b"\0" * 8)
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE audio_chunks (id INTEGER PRIMARY KEY, file_path TEXT, timestamp TEXT)")
+    con.executemany("INSERT INTO audio_chunks (file_path, timestamp) VALUES (?, ?)", [
+        (str(data / names[0]), "2030-01-01T04:30:00+00:00"), (str(data / names[1]), "2030-01-01T04:30:30+00:00"),
+        (str(data / "Mic_2030-01-01_04-30-00.mp4"), "2030-01-01T04:30:00+00:00"),
+        (str(data / "System Audio (output)_2030-01-01_06-00-00.mp4"), "2030-01-01T06:00:00+00:00")])
+    start = dt.datetime(2030, 1, 1, 10, 0, tzinfo=IST)            # 04:30 UTC
+    chunks = lk.audio_chunk_files(con, start, start + dt.timedelta(minutes=5))
+    assert [p.name for _, p in chunks] == names, "system audio only, inside the window"
+    folder = tmp_path / "lecture"; folder.mkdir()
+    listing = lk.export_audio(folder, chunks, start + dt.timedelta(seconds=10))
+    assert [x["offset_s"] for x in listing] == [0.0, 20.0]
+    assert all((folder / "audio" / x["file"]).exists() and " " not in x["file"] for x in listing)
+    assert json.loads((folder / "audio.json").read_text()) == listing
+
+
+def test_studio_job_marks_a_merged_transcript():
+    assert lk.studio_job(SESSION, [], "", "", 4, "merged")["transcript_source"] == "merged"
+    assert lk.studio_job(SESSION, [], "", "", 4)["transcript_source"] == "capture"

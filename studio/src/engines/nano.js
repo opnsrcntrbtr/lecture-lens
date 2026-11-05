@@ -96,5 +96,27 @@ export class NanoEngine {
     }
   }
 
-  destroy() { for (const s of this.base.values()) s.destroy(); this.base.clear(); }
+  /** Is Chrome's Summarizer API usable here (stable from Chrome 138)? */
+  static async summarizerAvailability() {
+    if (typeof Summarizer === "undefined") return "unsupported";
+    try { return await Summarizer.availability({ expectedInputLanguages: ["en"], outputLanguage: "en" }); } catch { return "unavailable"; }
+  }
+
+  /** Key points of one transcript part with the Summarizer API: faster than a Prompt API
+   *  digest, with less control (no instructions beyond the shared context). */
+  async summarize(text, context = "") {
+    if (!this.summarizer) {
+      this.summarizer = await Summarizer.create({ type: "key-points", format: "markdown", length: "long",
+        expectedInputLanguages: ["en"], outputLanguage: "en",
+        sharedContext: "A lecture transcript. Lines start with [hh:mm:ss] timecodes; keep the timecode of each point." });
+    }
+    const quota = this.summarizer.inputQuota;
+    if (quota && this.summarizer.measureInputUsage) {
+      const need = await this.summarizer.measureInputUsage(text, { context }).catch(() => null);
+      if (need != null && need > quota) throw new Error(`input is ${need} tokens; the summarizer quota is ${quota}`);
+    }
+    return this.summarizer.summarize(text, { context });
+  }
+
+  destroy() { for (const s of this.base.values()) s.destroy(); this.base.clear(); this.summarizer?.destroy?.(); this.summarizer = null; }
 }

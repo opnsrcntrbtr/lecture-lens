@@ -1,18 +1,39 @@
 // After-class job for one lecture folder: slide descriptions, digests, notes, cards.
 // Map-reduce sized to the engine's context window (Gemini Nano: 9,216 tokens).
-import { splitLines, cleanReply, sections } from "./text.js";
+import { splitLines, cleanReply, sections, contentWords } from "./text.js";
 import { SYS_TUTOR, VERSIONS, digestPrompt, reducePrompt, notesPromptA, notesPromptB, cardsPrompt, cardsSchema, slidePrompt } from "./prompts.js";
 import { parseCards, dedupeCards, cardCount, cardsTsv } from "./cards.js";
 import { slidesMarkdown, slideSource, cleanDescription } from "./slides.js";
 import { knownRefs, dropUnknownRefs } from "./citations.js";
 import { calibrateBudget, isOverflow } from "../engines/budget.js";
 import { recallFirst } from "./recall.js";
+import { transcribeLecture, transcriptMarkdown } from "./transcribe.js";
 
 /** Digest one transcript part; if it overflows the window, split it in two and digest each
  *  half instead of failing the lecture (S3). Gives up below 10 lines. */
+/** Give each digest bullet that lost its timecode the timecode of the transcript line it
+ *  shares most words with. Measured 5 Nov: Gemini Nano kept 0 of 58 timecodes in its digests,
+ *  and the Summarizer API none either, though the prompt asks for them; the notes cite them. */
+export function attachTimecodes(digest, part) {
+  const src = part.split("\n").map((l) => l.match(/^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)$/)).filter(Boolean)
+    .map((m) => ({ tc: m[1], words: contentWords(m[2]) }));
+  if (!src.length) return digest;
+  return digest.split("\n").map((line) => {
+    const m = line.match(/^(\s*[-*•]\s+)(.*)$/);
+    if (!m || /\[\d{2}:\d{2}:\d{2}\]/.test(line)) return line;
+    const w = contentWords(m[2]);
+    let best = null, score = 0;
+    for (const s of src) { let n = 0; for (const x of w) if (s.words.has(x)) n++; if (n > score) { score = n; best = s; } }
+    return best && score >= 2 ? `${m[1]}[${best.tc}] ${m[2]}` : line;
+  }).join("\n");
+}
+
 export async function digestPart(engine, title, i, n, part, say = () => {}, depth = 0) {
   try {
-    return cleanReply(await engine.prompt(SYS_TUTOR, digestPrompt(title, i, n, part), { maxTokens: 1200 }));
+    if (engine.fastDigests && engine.summarize) {   // Summarizer API: faster, fewer instructions
+      return attachTimecodes(cleanReply(await engine.summarize(part, `Lecture: ${title} (part ${i} of ${n})`)), part);
+    }
+    return attachTimecodes(cleanReply(await engine.prompt(SYS_TUTOR, digestPrompt(title, i, n, part), { maxTokens: 1200 })), part);
   } catch (e) {
     const lines = part.split("\n");
     if (!isOverflow(e) || lines.length < 10 || depth >= 3) throw e;
@@ -125,10 +146,19 @@ export async function describeSlides(engine, io, folder, title, slides, say = ()
 }
 
 /** Run every pending step for one lecture folder (relative to the lectures root). */
-export async function runLectureJob(engine, io, folder, { describe = true, say = () => {} } = {}) {
+export async function runLectureJob(engine, io, folder, { describe = true, say = () => {}, asr = null, decode = null } = {}) {
   const job = JSON.parse(await io.readText(`${folder}/studio_job.json`));
   const slides = (await io.exists(`${folder}/slides.json`)) ? JSON.parse(await io.readText(`${folder}/slides.json`)) : [];
   const t0 = Date.now();
+  // Browser transcription replaces the capture transcript, unless a reference transcript was merged in
+  let transcribed = 0;
+  if (asr && decode && job.transcript_source !== "merged" && (await io.exists(`${folder}/audio.json`))) {
+    const lines = await transcribeLecture(asr, io, folder, decode, { say });
+    if (lines.length) {
+      await io.writeText(`${folder}/transcript_studio.md`, transcriptMarkdown(job.title, lines, asr.name));
+      job.transcript = lines; transcribed = lines.length;
+    }
+  }
   const described = describe ? await describeSlides(engine, io, folder, job.title, slides, say) : 0;
   if (slides.length) {
     await io.writeText(`${folder}/slides.json`, JSON.stringify(slides, null, 1));
@@ -146,6 +176,8 @@ export async function runLectureJob(engine, io, folder, { describe = true, say =
   const result = {
     status: "done", engine: engine.name, finished_at: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 1000),
     cards: cards.length, slides_described: described, digest_parts: digests.length,
+    transcript: transcribed ? { engine: asr.name, lines: transcribed } : { source: job.transcript_source || "capture" },
+    fast_digests: !!(engine.fastDigests && engine.summarize && digests.length),
     citations_removed: citationsRemoved,   // [slide n] / [deck n] the model cited but was never given
     prompt_versions: { digest: VERSIONS.digest, notes: VERSIONS.notes, cards: VERSIONS.cards, slide: VERSIONS.slide, citations: VERSIONS.citations },
   };
