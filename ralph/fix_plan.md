@@ -122,13 +122,13 @@ Tests run with `cd studio && node --test test/*.test.js` and the fake engine in
   since a citation that points nowhere misleads more than none.
   Done when: node tests cover valid, out-of-range and uncited answers and a notes
   page citing a missing slide; Python and JS agree on shared fixtures.
-- [ ] **S2 Flag answer sentences the sources do not support.** Small models pad with
-  general claims (the PR's example: a card saying surfacing uncertainty "prevents
-  overreliance"). Abstractive models routinely add unsupported content (Maynez et al.
-  2020). A cheap lexical screen: a substantive sentence whose content words are mostly
-  absent from its sources is flagged, not deleted. A screen, not a verdict: lexical
-  overlap is a weak faithfulness signal (Honovich et al. 2022), so the judge still decides.
-  Done when: tests on a supported, a padded and a refusal answer.
+- [~] **S2 Flag answer sentences the sources do not support. Rejected on evidence.**
+  Measured before shipping (`studio/scripts/support_bench.mjs`) on the judge benchmark's
+  96 labelled pairs: a content-word overlap screen has precision about 0.5 at every
+  threshold (0.3-0.8), i.e. chance. Wrong-number, swapped and half-true claims reuse the
+  context's words (mean support 0.67-0.76); correct paraphrases avoid them (0.57). Even
+  for unmentioned padding alone, catching 6 of 11 also flags 10 of 48 correct claims.
+  Overlap does not measure faithfulness (Honovich et al. 2022); the judge decides (S7).
 - [ ] **S3 Fit the window by tokens, not a guess.** `BM25.top` stops at the first
   passage that does not fit, leaving smaller later ones out (fix: skip it and keep
   going). Budgets assume 3.5 characters per token; calibrate the ratio from the
