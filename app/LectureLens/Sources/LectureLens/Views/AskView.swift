@@ -105,6 +105,7 @@ struct AskView: View {
 private struct TurnView: View {
     let turn: AskView.Turn
     @State private var showSources = true
+    @State private var showCitations = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -123,6 +124,14 @@ private struct TurnView: View {
                             if let l = r.latency_s { Text(String(format: "%.1fs", l)).font(.scaled(.caption2)) }
                             Text("last \(turn.window)").font(.scaled(.caption2))
                         }.foregroundStyle(.tertiary)
+                        if let src = r.sources, !src.isEmpty {
+                            Button { showCitations = true } label: { Label("Citations (\(src.count))", systemImage: "quote.bubble") }
+                                .controlSize(.small)
+                                .help("Which sentence each source supports, and the lecture moments around it")
+                                .sheet(isPresented: $showCitations) {
+                                    AskCitationSheet(question: turn.question, answer: answer, sources: src)
+                                }
+                        }
                         FeedbackBar(target: "answer", ref: ["question": turn.question, "window": turn.window],
                                     input: turn.question, output: answer,
                                     context: (r.sources ?? []).map { "[\($0.n)] \($0.text)" },

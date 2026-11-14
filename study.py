@@ -18,7 +18,8 @@ Config (env vars, usually set in ~/.zshrc or .env)
   STUDY_NOTES_DIR default ~/lecture-lens/notes
   STUDY_CTX_CHARS max characters of captured text per LLM call (default 60000 ≈ 15k tokens)
 """
-import argparse, datetime as dt, json, os, re, sys, urllib.error, urllib.parse, urllib.request
+from __future__ import annotations
+import argparse, contextlib, datetime as dt, fcntl, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -69,7 +70,52 @@ def _get(url, timeout=30, auth=False):
     with _OPENER.open(req, timeout=timeout) as r:
         return json.loads(r.read())
 
-def llm(system, user, max_tokens=2048, temperature=0.3, think=False):
+class LLMBusy(RuntimeError):
+    """The local model is in use by another caller and this one would not wait."""
+
+
+# How long each kind of caller waits for the local model: people waiting on a click wait,
+# background rounds (live follower, auto-curate) skip and let the next round cover it.
+SLOT_WAIT = {"interactive": 120.0, "background": 5.0, "build": 900.0}
+
+
+def _lock_path() -> Path:
+    return Path(os.path.expanduser(os.environ.get("STUDY_LLM_LOCK", os.path.join(
+        os.environ.get("STUDY_LECTURE_DIR", str(HERE / "lectures")), ".llm.lock"))))
+
+
+@contextlib.contextmanager
+def llm_slot(kind: str | None = None):
+    """One caller at a time on the local model (flock on lectures/.llm.lock). The kind comes
+    from the argument, else $STUDY_LLM_SLOT, else interactive; LLMBusy after its wait."""
+    kind = kind or os.environ.get("STUDY_LLM_SLOT", "interactive")
+    p = _lock_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    f = open(p, "a+")
+    deadline = time.monotonic() + SLOT_WAIT.get(kind, SLOT_WAIT["interactive"])
+    try:
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise LLMBusy(f"local model busy ({kind} caller gave up)")
+                time.sleep(0.25)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+    finally:
+        f.close()
+
+
+def llm(system, user, max_tokens=2048, temperature=0.3, think=False, slot=None):
+    with llm_slot(slot):
+        return _llm(system, user, max_tokens, temperature, think)
+
+
+def _llm(system, user, max_tokens=2048, temperature=0.3, think=False):
     body = {"model": MODEL, "temperature": temperature, "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             # Qwen3-family hint; servers that don't know it ignore it

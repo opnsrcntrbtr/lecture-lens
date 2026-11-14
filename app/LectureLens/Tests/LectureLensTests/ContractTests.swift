@@ -96,3 +96,69 @@ import Testing
     #expect(s[0].at == "00:01:00" && s[0].text.contains("funnel diagram"))
     #expect(s[1].image.lastPathComponent == "02_000530.jpg")
 }
+
+
+@Test func classReminderStages() throws {
+    let json = #"{"week": 9, "title": "Watering the garden", "date": "2030-01-01", "start": "10:00", "end": "13:00", "tz": "Asia/Kolkata"}"#
+    let c = try JSONDecoder().decode(NextClass.self, from: Data(json.utf8))
+    let w = try #require(ClassReminder.window(c))
+    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(-600), liveRunning: false, sent: []) == nil)
+    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(-120), liveRunning: false, sent: []) == .soon)
+    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(60), liveRunning: false, sent: []) == nil)
+    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(600), liveRunning: false, sent: []) == .late)
+    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(600), liveRunning: true, sent: []) == nil)
+    let sent: Set<String> = [ClassReminder.key(c, .late)]
+    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(900), liveRunning: false, sent: sent) == nil)
+    #expect(ClassReminder.due(c, now: w.end.addingTimeInterval(60), liveRunning: false, sent: []) == nil)
+}
+
+@Test func decodesCitation() throws {
+    let json = #"{"ok": true, "t": "2030-01-01T05:05:00+00:00", "sources": [{"id": "S1", "title": "Garden guide", "fact": "Mulch holds water.", "url": "https://example.org/g", "date": null}], "moments": [{"t": "2030-01-01T05:04:00+00:00", "text": "Raised beds drain faster.", "shared": ["beds", "raised"]}], "slide": {"t": "2030-01-01T05:02:00+00:00", "title": "Watering raised beds"}}"#
+    let c = try JSONDecoder().decode(Citation.self, from: Data(json.utf8))
+    #expect(c.sources?.first?.url == "https://example.org/g")
+    #expect(c.moments?.first?.shared == ["beds", "raised"])
+    #expect(c.slide?.title == "Watering raised beds")
+    let bare = try JSONDecoder().decode(Citation.self, from: Data(#"{"ok": false, "error": "unreadable time: x"}"#.utf8))
+    #expect(bare.sources == nil && bare.error != nil)
+}
+
+@Test func citationArgsAreAnArgv() {
+    let a = Citation.args(t: "11:12 AM", text: "Why mulch? Holds water.", sources: ["S1", "S2"], day: "20300101")
+    #expect(a == ["cite", "--json", "--t", "11:12 AM", "--text", "Why mulch? Holds water.", "--sources", "S1,S2", "--day", "20300101"])
+    #expect(!Citation.args(t: "x", text: "y", sources: [], day: nil).contains("--sources"))
+}
+
+@Test func askCitationSentences() {
+    let s = CitationText.sentences("Mulch holds water [1]. Beds drain fast [12]. Both help [2, 1].", citing: 1)
+    #expect(s == ["Mulch holds water [1]", "Both help [2, 1]"])
+}
+
+@Test func curatedRoundsAndAsked() throws {
+    let lines = [
+        #"{"t": "2030-01-01T05:00:00+00:00", "type": "clarify", "q": "Generated?", "answer": "a", "sources": []}"#,
+        #"{"t": "2030-01-01T05:10:00+00:00", "type": "clarify", "q": "How often should raised beds be watered in summer?", "answer": "a", "sources": ["S1"], "curated": true, "round": 1, "part": "now"}"#,
+        #"{"t": "2030-01-01T05:35:00+00:00", "type": "practical", "q": "Which sensor tells us the soil is dry?", "answer": "b", "sources": [], "curated": true, "round": 2, "part": "later"}"#,
+    ]
+    let qs = try lines.map { try JSONDecoder().decode(Drafted.self, from: Data($0.utf8)) }
+    let r = CuratedQuestions.rounds(qs)
+    #expect(r.map(\.round) == [2, 1] && r[1].rows.first?.part == "now")
+    let thread = try JSONDecoder().decode(QAThread.self, from: Data(#"{"id": "a", "by": "You", "time": "11:12 AM", "q": "How often should raised beds be watered in the summer heat?", "answers": []}"#.utf8))
+    #expect(CuratedQuestions.askedIn(qs[1].q, threads: [thread])?.time == "11:12 AM")
+    #expect(CuratedQuestions.askedIn(qs[2].q, threads: [thread]) == nil)
+    let now = Date()
+    #expect(CuratedQuestions.due(enabled: true, fresh: true, last: nil, now: now))
+    #expect(!CuratedQuestions.due(enabled: true, fresh: true, last: now.addingTimeInterval(-600), now: now))
+    #expect(!CuratedQuestions.due(enabled: true, fresh: false, last: nil, now: now))
+}
+
+@Test func decodesAfterClassAndRetryRule() throws {
+    let json = #"{"ok": false, "lecture": "x", "at": "2030-01-01T09:00:00+00:00", "steps": [{"name": "build", "ok": true, "note": "done"}, {"name": "names", "ok": false, "note": "2 line(s) still name an attendee in notes.md"}]}"#
+    let r = try JSONDecoder().decode(AfterClassReport.self, from: Data(json.utf8))
+    #expect(r.steps.map(\.ok) == [true, false] && r.error == nil)
+    let now = Date()
+    #expect(!CuratedQuestions.due(enabled: true, fresh: true, last: nil, retryAt: now.addingTimeInterval(60), now: now))
+    #expect(CuratedQuestions.due(enabled: true, fresh: true, last: nil, retryAt: now.addingTimeInterval(-1), now: now))
+    let c = try JSONDecoder().decode(NextClass.self, from: Data(#"{"week": 1, "title": "t", "date": "2030-01-01", "start": "10:00", "end": "13:00", "tz": "Europe/London"}"#.utf8))
+    let w = try #require(ClassReminder.window(c))
+    #expect(Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "Europe/London")!, from: w.start).hour == 10)
+}

@@ -885,6 +885,44 @@ def finish(folder):
     return note, man
 
 
+
+_AUTHORS: dict[str, set] = {}
+_NAMES_SEEN: dict[str, set] = {}   # live folder -> names removed from its transcript this run
+
+
+def _guard_names(session, lines, report=True):
+    """Attendee names out of transcript lines and slide text (name_guard.py): Q&A panel
+    authors and people addressed by name are replaced; look-alikes are listed for review in
+    the gitignored live folder, never in the lecture files."""
+    try:
+        import name_guard, live_qa
+    except Exception:
+        return lines
+    staff = {x.strip() for x in os.environ.get("LIVE_QA_STAFF", "").split(",") if x.strip()}
+    d = _live_dir(session)
+    authors = _AUTHORS.get(str(d))
+    side = d / "side_windows_raw.jsonl"
+    if authors is None and side.exists():
+        authors = set()
+        for l in side.read_text().splitlines():
+            if not l.strip():
+                continue
+            for e in live_qa.parse_panel(json.loads(l).get("text", "")):
+                a = e["author"]
+                if a not in staff and not live_qa.YOU.search(a) and not a.lower().startswith("anonymous"):
+                    authors.add(a)
+    _AUTHORS[str(d)] = authors = authors or set()
+    out, rep = name_guard.guard(lines, panel_authors=authors, allow=name_guard.load_allow(LECTURES / "name_allow.txt"))
+    seen = _NAMES_SEEN.setdefault(str(d), set())
+    seen.update(rep["removed"])
+    if seen - set(rep["removed"]):   # names found in the transcript also leave slide text
+        out = [name_guard.redactor(seen)(l) for l in out]
+    if report and (rep["removed"] or rep["review"]):
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "names_review.json").write_text(json.dumps(rep, indent=1))
+    return out
+
+
 def build(session, con, describe=True, cards=20, quiet=False):
     def say(*a):
         if not quiet: print(*a, file=sys.stderr)
@@ -904,7 +942,7 @@ def build(session, con, describe=True, cards=20, quiet=False):
         say(f"  using the live whisper re-transcription ({len(live)} parts) instead of screenpipe's ({len(audio)})")
         audio, transcript_source = live, "whisper_live"
     t0 = session["start"]
-    transcript_lines = [f"[{hhmmss((a['ts']-t0).total_seconds())}] {a['text']}" for a in audio]
+    transcript_lines = _guard_names(session, [f"[{hhmmss((a['ts']-t0).total_seconds())}] {a['text']}" for a in audio])
     transcript = "\n".join(transcript_lines)
     prior = None  # keep the title from an earlier build: the model words it differently each time
     try: prior = json.loads((folder / "manifest.json").read_text()).get("title")
@@ -951,7 +989,8 @@ def build(session, con, describe=True, cards=20, quiet=False):
                 desc = desc_cache[key] = vl_describe(dest, session["title"])
                 cache_file.write_text(json.dumps(desc_cache))
         slides.append({"n": i, "at": stamp, "file": dest.name,
-                       "screen_text": re.sub(r"\s+", " ", f["text"] or "")[:1500], "description": desc})
+                       "screen_text": _guard_names(session, [re.sub(r"\s+", " ", f["text"] or "")[:1500]], report=False)[0],
+                       "description": desc})
     (folder / "slides.md").write_text(
         f"# Slides & visuals — {session['title']}\n\n" + ("\n".join(
             f"## {s['n']}. at {s['at']}\n\n![[{s['file']}]]\n\n"
@@ -978,7 +1017,7 @@ def build(session, con, describe=True, cards=20, quiet=False):
     # complete than ours; notes and cards use it when present. transcript.md stays our own.
     src_lines, merged = transcript_lines, folder / "transcript_merged.md"
     if merged.exists():
-        src_lines = [l for l in merged.read_text().splitlines()[3:] if l.strip()]
+        src_lines = _guard_names(session, [l for l in merged.read_text().splitlines()[3:] if l.strip()], report=False)
         say(f"  using merged reference transcript ({len(src_lines)} lines)")
     transcript_src = "\n".join(src_lines)
     parts = [] if browser else _split_lines(src_lines, PART_CHARS) if len(transcript_src) + len(slide_src) > study.CTX else []
@@ -1274,6 +1313,154 @@ def brief_prompt(title, agenda, prior, preread):
             "against a primary source before class. Never invent sources or numbers; quote the notes' own terms.")
 
 
+
+def cmd_cite(a):
+    """Citations for one answer shown in the app (cite.py): public sources it names and the
+    lecture moments near its time that share its words, with the slide on screen then."""
+    import cite
+    at = cite.parse_t(a.t)
+    if at is None and a.day:   # a Q&A panel time such as "11:12 AM" on the live folder's day
+        try:
+            hm = dt.datetime.strptime(a.t.replace(" ", "").upper(), "%I:%M%p").time()
+            day = dt.datetime.strptime(a.day, "%Y%m%d").date()
+            at = dt.datetime.combine(day, hm).astimezone()
+        except ValueError:
+            at = None
+    if at is None:
+        print(json.dumps({"ok": False, "error": f"unreadable time: {a.t}"})); return
+    d = LECTURES / "live" / (a.day or at.astimezone().strftime("%Y%m%d"))
+    load = lambda f: [json.loads(l) for l in f.read_text().splitlines() if l.strip()] if f.exists() else []
+    segs = load(d / "whisper_segments.jsonl") or cite.lecture_segments(LECTURES, at)
+    found = cite.moments(segs, at, a.text, window_min=a.window)
+    if found:
+        day_start = dt.datetime.strptime(d.name, "%Y%m%d").replace(hour=12).astimezone() if re.fullmatch(r"\d{8}", d.name) else at
+        clean = _guard_names({"start": day_start}, [m["text"] for m in found], report=False)
+        for m, c in zip(found, clean):
+            m["text"] = c
+    bank = json.loads((d / "evidence.json").read_text()) if (d / "evidence.json").exists() else []
+    ids = [x.strip() for x in (a.sources or "").split(",") if x.strip()]
+    print(json.dumps({"ok": True, "t": at.isoformat(), "sources": cite.sources(ids, bank), "moments": found,
+                      "slide": cite.slide_at(load(d / "slides.jsonl"), at)}))
+
+
+def cmd_curate(a):
+    """One round of curated top questions for today's live class (curate.py): writes rows to
+    questions.jsonl and a section to top_questions.md; prints JSON for the app."""
+    import curate
+    now = dt.datetime.now(dt.timezone.utc)
+    day = a.day or now.astimezone().strftime("%Y%m%d")
+    d = LECTURES / "live" / day
+    def out(obj):
+        print(json.dumps(obj, ensure_ascii=False))
+    if not (d / "whisper_segments.jsonl").exists():
+        return out({"ok": False, "error": f"no live transcript for {day}"})
+    if getattr(study, "browser_mode", lambda: False)():
+        return out({"ok": False, "error": "the language model runs in Lecture Lens Studio (browser mode)"})
+    sess = course_calendar.session_on(dt.datetime.strptime(day, "%Y%m%d").date()) or {}
+    title = a.title or sess.get("title") or "Live class"
+    slot = "background" if a.background else "interactive"
+    llm = lambda prompt: study.llm(study.SYS_TUTOR, prompt, max_tokens=1600, temperature=0.3, slot=slot)
+    day_start = dt.datetime.strptime(day, "%Y%m%d").replace(hour=12).astimezone()   # the live folder's day, not today
+    guard = lambda lines: _guard_names({"start": day_start}, lines, report=False)
+    try:
+        out(curate.run(d, llm, now, title, guard=guard, k=a.k, lookback_min=a.lookback))
+    except Exception as e:   # the local model may be busy or down: the app shows the reason
+        out({"ok": False, "error": f"{type(e).__name__}: {e}"[:300]})
+
+
+AFTER_FILES = ("transcript.md", "transcript_merged.md", "digest.md", "notes.md", "slides.md", "qa.md")
+
+
+def names_left(folder: Path, names: list[str], vault_note: Path | None = None) -> dict:
+    """How many lines of each lecture file still contain a removed attendee name (counts
+    only: the names themselves are never printed)."""
+    import name_guard
+    red = name_guard.redactor(set(names))
+    out = {}
+    for f in [folder / n for n in AFTER_FILES] + ([vault_note] if vault_note else []):
+        if f and f.exists():
+            n = sum(1 for l in f.read_text().splitlines() if red(l) != l)
+            if n:
+                out[f.name] = n
+    return out
+
+
+def after_blockers() -> list[str]:
+    """Why After class should not run now: capture still on, or an eval's judge loaded."""
+    why = []
+    try:
+        r = subprocess.run([str(HERE / "sp-mode"), "--json"], capture_output=True, text=True, timeout=15)
+        if json.loads(r.stdout or "{}").get("running"):
+            why.append("capture is still running: stop it in the app first")
+    except Exception:
+        pass
+    judge = os.environ.get("OMLX_JUDGE_MODEL", "")
+    try:
+        st = study.omlx_status() if hasattr(study, "omlx_status") else json.loads(
+            urllib.request.urlopen(f"{study.OMLX.rsplit('/v1', 1)[0]}/api/status", timeout=5).read())
+        if judge and judge in (st.get("loaded_models") or []):
+            why.append("an eval has the judge model loaded")
+    except Exception:
+        pass
+    return why
+
+
+def cmd_after(a):
+    """After class in one go: ingest the meeting app's files (when the lecture is built),
+    build, check that no removed attendee name is left in the lecture files, rewrite qa.md.
+    Each step is a separate run, so one failure leaves earlier outputs and names the step;
+    the report goes to after_class.json and stdout."""
+    def out(obj):
+        print(json.dumps(obj, ensure_ascii=False))
+    why = [] if a.force else after_blockers()
+    if why:
+        return out({"ok": False, "error": "; ".join(why), "steps": []})
+    os.environ["STUDY_LLM_SLOT"] = "build"
+    me = [sys.executable, str(HERE / "lecture_kit.py")]
+    steps, folder = [], None
+
+    def step(name, args, timeout):
+        try:
+            r = subprocess.run(me + args, capture_output=True, text=True, timeout=timeout)
+            ok = r.returncode == 0
+            note = ((r.stderr if not ok else r.stdout) or r.stderr).strip().splitlines()[-1:] or [""]
+            steps.append({"name": name, "ok": ok, "note": note[0][:200]})
+            return ok, r.stdout
+        except subprocess.TimeoutExpired:
+            steps.append({"name": name, "ok": False, "note": f"timed out after {timeout // 60} min"})
+            return False, ""
+
+    try:
+        folder = find_folder(a.id) if a.id != "last" or any(LECTURES.glob("*/manifest.json")) else None
+    except SystemExit:
+        folder = None
+    built_before = folder is not None and a.id != "last"
+    if built_before:
+        step("ingest", ["ingest", a.id], 1200)
+    ok, stdout = step("build", ["build", a.id, "--json"] + (["--since", a.since] if a.since else []), 7200)
+    if ok:
+        try:
+            folder = Path(json.loads(stdout.strip().splitlines()[-1])["folder"])
+        except (ValueError, KeyError, IndexError):
+            folder = find_folder(a.id)
+        if not built_before:
+            step("ingest", ["ingest", folder.name], 1200)
+        man = json.loads((folder / "manifest.json").read_text())
+        day = dt.datetime.fromisoformat(man["start"]).astimezone().strftime("%Y%m%d")
+        rev_f = LECTURES / "live" / day / "names_review.json"
+        rev = json.loads(rev_f.read_text()) if rev_f.exists() else {"removed": {}, "review": {}}
+        vault = VAULT / VAULT_SUB / f"{man.get('id', '')} {man.get('title', '')}.md".replace("/", "-")
+        left = names_left(folder, list(rev.get("removed") or []), vault)
+        steps.append({"name": "names", "ok": not left,
+                      "note": f"{sum(left.values())} line(s) still name an attendee in {', '.join(left)}" if left
+                      else f"no removed name left; {len(rev.get('review') or {})} word(s) to review"})
+        step("qa", ["qa", folder.name], 300)
+    report = {"ok": all(s["ok"] for s in steps), "lecture": folder.name if folder else None,
+              "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "steps": steps}
+    if folder:
+        (folder / "after_class.json").write_text(json.dumps(report, indent=1))
+    out(report)
+
 def cmd_next(a):
     """The next scheduled class from the programme calendar."""
     s = course_calendar.next_session()
@@ -1422,6 +1609,24 @@ def main():
     p.set_defaults(fn=cmd_doctor)
     p = sub.add_parser("qa-import", help="use the meeting app's Q&A export: score the live capture, anonymise, feed the build")
     p.add_argument("id"); p.add_argument("export"); p.set_defaults(fn=cmd_qa_import)
+    p = sub.add_parser("after", help="after class: ingest, build, attendee-name check, qa.md (JSON report)")
+    p.add_argument("id", nargs="?", default="last"); p.add_argument("--since", default="")
+    p.add_argument("--force", action="store_true", help="run even while capture or the judge is busy")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_after)
+    p = sub.add_parser("curate", help="live class: one round of curated top questions (JSON)")
+    p.add_argument("--day", default="", help="live folder day, yyyymmdd (default today)")
+    p.add_argument("--title", default="", help="class title (default from the calendar)")
+    p.add_argument("-k", type=int, default=5, help="questions per round")
+    p.add_argument("--lookback", type=int, default=25, help="minutes of transcript for the first round")
+    p.add_argument("--background", action="store_true", help="automatic round: skip if the local model is busy")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_curate)
+    p = sub.add_parser("cite", help="citations for an answer shown in the app: sources and lecture moments (JSON)")
+    p.add_argument("--t", required=True, help="ISO time, or a Q&A panel time like '11:12 AM' with --day")
+    p.add_argument("--text", required=True, help="question and answer text")
+    p.add_argument("--sources", default="", help="evidence ids, comma-separated")
+    p.add_argument("--day", default="", help="live folder day, yyyymmdd")
+    p.add_argument("--window", type=float, default=10.0, help="minutes either side")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_cite)
     p = sub.add_parser("next", help="the next class from the programme calendar"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_next)
     p = sub.add_parser("brief", help="before class: recall points and questions from the agenda and earlier notes")
     p.add_argument("--title", required=True); p.add_argument("--agenda", help="text file with the agenda")

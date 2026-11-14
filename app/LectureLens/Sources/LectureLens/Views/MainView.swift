@@ -34,7 +34,7 @@ struct MainView: View {
         } detail: {
             switch model.screen ?? .capture {
             case .capture: CaptureView(model: model)
-            case .live: LiveView()
+            case .live: LiveView(model: model)
             case .lectures: LecturesView(model: model)
             case .ask: AskView(model: model)
             case .evals: EvalsView(model: model)

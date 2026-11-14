@@ -94,6 +94,9 @@ fi
 
 # App audio tap (patched engine): capture the browser's own audio, not the mic.
 export SCREENPIPE_AUDIO_TAP_APPS="${SCREENPIPE_AUDIO_TAP_APPS:-}"
+# off/none/0 disables the tap (macOS hands a per-app tap silence until "Screen & System Audio
+# Recording" is granted to the app that starts screenpipe; System Audio records either way)
+[[ "${SCREENPIPE_AUDIO_TAP_APPS:l}" == (off|none|0|false) ]] && export SCREENPIPE_AUDIO_TAP_APPS=""
 [[ -n "$SCREENPIPE_AUDIO_TAP_APPS" ]] && echo "audio tap: $SCREENPIPE_AUDIO_TAP_APPS (app audio, no microphone)"
 
 if (( fg )); then exec "$SP_BIN" "${args[@]}"; fi

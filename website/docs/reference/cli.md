@@ -32,6 +32,9 @@ All commands live in the repository root and read `.env`.
 | `./lecture review --stats [--json]` | Due and new counts, and cards that keep failing |
 | `./transcript_ref.py <folder> <reference.txt>` | Merge a reference transcript and measure word error rate |
 | `./lecture next [--json]` | The next class in the programme calendar |
+| `./lecture after [<id>\|last] [--json]` | After class in one go: import the meeting app's files, build, check that no removed attendee name is left in the lecture files, rewrite qa.md. Writes `after_class.json`; refuses while capture runs or the judge is loaded |
+| `./lecture curate [--day yyyymmdd] [--background] --json` | Live class: one round of curated top questions from what was taught since the last round, the Q&A, the agenda and the evidence bank. Appends to `questions.jsonl` and `top_questions.md` |
+| `./lecture cite --t <time> --text <q and answer> [--sources S1,S2] [--day yyyymmdd] --json` | Citations for an answer: the evidence-bank sources it names and the transcript lines near its time that share its words, with the slide then |
 | `./lecture finish [<id>\|last\|all]` | Browser mode: after Lecture Lens Studio ran a lecture, write its vault note and update `manifest.json` |
 | `./live-sync questions\|outline\|slides\|all` | Ask the running live follower to update now instead of at its next 10-minute batch; waits up to 3 minutes for the result |
 | `tools/merge_reference_transcript.py <live_dir> <reference.txt> <out.md> [--keep 1,2] [--label 1=Name]` | Put clock times on a dictation app's `Speaker N: text` export by aligning it to the live whisper words; speakers not kept become "Attendee"; the follower's own lines fill any gap over 90 s. `lecture build` uses `transcript_merged.md` when present |
