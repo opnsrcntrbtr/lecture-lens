@@ -49,10 +49,84 @@ final class AppModel {
             Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 Task { @MainActor in await self?.refreshFast() } },
             Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-                Task { @MainActor in await self?.refreshDoctor(probeVision: false) } },
+                Task { @MainActor in await self?.refreshDoctor(probeVision: false); self?.checkAutoCurate() } },
             Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.checkAutoImport() } },
+                Task { @MainActor in self?.checkAutoImport(); self?.checkClassStart(); self?.checkClassEnded() } },
         ]
+    }
+
+    // MARK: curated top questions (curate.py)
+    var curateRunning = false
+    var curateNote: String?
+    private var lastCurate: Date?
+    private var curateRetryAt: Date?
+    private var endNoticeSent: Set<String> = []
+    var autoCurate: Bool = UserDefaults.standard.bool(forKey: CuratedQuestions.autoKey) {
+        didSet { UserDefaults.standard.set(autoCurate, forKey: CuratedQuestions.autoKey) }
+    }
+
+    /// One round now. Waits for an eval's judge to unload (it holds the local model).
+    func curateNow(background: Bool = false) {
+        guard !curateRunning else { return }
+        guard !judgeLoaded else { curateNote = "judge loaded: try after the eval"; return }
+        curateRunning = true; curateNote = nil
+        Task {
+            defer { curateRunning = false }
+            var good = false
+            do {
+                let args = ["curate", "--json"] + (background ? ["--background"] : [])
+                let r = try await ToolRunner.json(CurateResult.self, "lecture", args, timeout: 300)
+                if !r.ok { curateNote = r.error ?? "failed" }
+                else if let n = r.round, let a = r.added { curateNote = "round \(n): \(a) new"; good = true }
+                else { curateNote = r.note ?? "nothing new"; good = true }
+            } catch { curateNote = "failed: \(error)".prefix(120).description }
+            // a good round restarts the 25 minutes; a failed one is retried after 5
+            if good { lastCurate = .now; curateRetryAt = nil } else { curateRetryAt = .now.addingTimeInterval(CuratedQuestions.retryAfterFailure) }
+        }
+    }
+
+    /// Auto-curate every 25 minutes while the follower is running (Settings on the Live tab).
+    func checkAutoCurate(now: Date = .now) {
+        guard autoCurate, !curateRunning else { return }
+        Task {
+            let fresh = await Task.detached { LiveData.fresh(LiveData.state()) }.value
+            if CuratedQuestions.due(enabled: autoCurate, fresh: fresh, last: lastCurate, retryAt: curateRetryAt, now: now) {
+                curateNow(background: true)
+            }
+        }
+    }
+
+    /// The follower decided the class is over (state "ended") while capture still runs:
+    /// say so once a day. Capture is only ever stopped by the learner.
+    func checkClassEnded() {
+        guard mode.running else { return }
+        Task {
+            let s = await Task.detached { LiveData.state() }.value
+            guard s?.status == "ended", let at = s?.ended_at, !endNoticeSent.contains(String(at.prefix(10))) else { return }
+            endNoticeSent.insert(String(at.prefix(10)))
+            ClassReminder.notify(id: "class-ended-\(at.prefix(10))", title: "Class seems to have ended",
+                                 body: "Stop capture, then run After class on the Lectures screen.")
+        }
+    }
+
+    /// After class in one job: ingest, build, attendee-name check, qa.md (`lecture after`).
+    func afterClass(_ s: Session) {
+        guard let id = s.id else { return }
+        jobs.enqueue("After class \(s.displayTitle)", Paths.tool("lecture"), ["after", id, "--since", "90d", "--json"]) { [weak self] _ in
+            Task { await self?.loadSessions() }
+        }
+    }
+
+    /// Class-start reminders sent this run (ClassReminder.key).
+    private var remindersSent: Set<String> = []
+
+    /// A notification when today's class starts without Live capture (ClassReminder).
+    func checkClassStart(now: Date = .now) {
+        guard let c = nextClass else { return }
+        let live = mode.running && mode.mode == "live"
+        guard let stage = ClassReminder.due(c, now: now, liveRunning: live, sent: remindersSent) else { return }
+        remindersSent.insert(ClassReminder.key(c, stage))
+        ClassReminder.post(c, stage)
     }
 
     func refreshAll(probeVision: Bool) async {

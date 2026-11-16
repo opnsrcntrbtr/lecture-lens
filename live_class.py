@@ -66,6 +66,18 @@ SLIDE_FOOTER = re.compile(os.environ.get("LIVE_SLIDE_FOOTER", r"$^"))
 
 
 # ------------------------------------------------------------------ pure helpers (unit-tested)
+def class_ended(now: dt.datetime, sched_end: dt.datetime | None, last_speech: dt.datetime | None,
+                last_app_frame: dt.datetime | None, quiet_min: int = 10, app_gone_min: int = 5) -> bool:
+    """The class is over: past its scheduled end, no new speech for quiet_min and no frame of
+    the meeting app for app_gone_min. Without a schedule only --until ends the follower
+    (14 Nov ran 50 min past the calendar end, so the end time alone is not enough)."""
+    if sched_end is None or now < sched_end:
+        return False
+    quiet = last_speech is None or (now - last_speech) >= dt.timedelta(minutes=quiet_min)
+    gone = last_app_frame is None or (now - last_app_frame) >= dt.timedelta(minutes=app_gone_min)
+    return quiet and gone
+
+
 def file_start(name: str) -> dt.datetime | None:
     """screenpipe names audio files <device>_<UTC yyyy-mm-dd_HH-MM-SS>.mp4"""
     m = FNAME_TS.search(name)
@@ -744,6 +756,7 @@ def run(a):
     start = dt.datetime.combine(today, dt.time(hh, mm), LOCAL).astimezone(dt.timezone.utc)
     uh, um = map(int, a.until.split(":"))
     until = dt.datetime.combine(today, dt.time(uh, um), LOCAL).astimezone(dt.timezone.utc)
+    os.environ.setdefault("STUDY_LLM_SLOT", "background")   # skip a round rather than queue behind Ask or a build
     out = LECTURES / "live" / today.strftime("%Y%m%d")
     out.mkdir(parents=True, exist_ok=True)
     seg_f, slide_f, side_f, outl_f, state_f, q_f = (out / n for n in
@@ -868,6 +881,14 @@ def run(a):
                                        "status": status, "words": words, "updated": now.isoformat()}))
 
     status = "stopped"
+    last_app_frame = dt.datetime.now(dt.timezone.utc)
+    try:
+        import course_calendar
+        cs = course_calendar.session_on(today)
+        sched_end = course_calendar._bounds(cs)[1] if cs else None
+    except Exception:
+        sched_end = None
+    ended = False
     while dt.datetime.now(dt.timezone.utc) < until and not STOP_REQUEST.exists():
         h = health()
         ok = healthy(h)
@@ -901,6 +922,7 @@ def run(a):
                 last_seen = now
             if rows:
                 last_slide_t = rows[-1]["t"]
+                last_app_frame = now
         except Exception as e:
             log("slides error", e)
 
@@ -959,6 +981,7 @@ def run(a):
             except Exception as e:
                 log("ask-now error", e)
 
+        busy = False
         # outline every 10 minutes
         due = (not a.no_outline and (now - last_outline).total_seconds() >= 600
                and window_ready(load(seg_f), last_outline + dt.timedelta(minutes=10), now))
@@ -985,7 +1008,8 @@ def run(a):
                     log("outline", frm.astimezone(LOCAL).strftime("%H:%M"), "(sync)" if forced else "")
                     sync_result["outline_window"] = [frm.isoformat(), to.isoformat()]
                 except Exception as e:
-                    log("outline error", e)
+                    busy |= type(e).__name__ == "LLMBusy"
+                    log("model busy; outline skipped" if type(e).__name__ == "LLMBusy" else "outline error", e)
             if len(text.split()) > 40 and ok and not a.no_questions and (not forced or "questions" in sync):
                 try:
                     before = len(load(q_f))
@@ -994,14 +1018,15 @@ def run(a):
                     sync_result["questions"] = len(load(q_f)) - before
                     wrote = sync_result["questions"] > 0 or not forced   # an empty sync doesn't use up the window
                 except Exception as e:
-                    log("questions error", e)
+                    busy |= type(e).__name__ == "LLMBusy"
+                    log("model busy; questions skipped" if type(e).__name__ == "LLMBusy" else "questions error", e)
             if forced:
                 sync_result["window"] = [frm.isoformat(), to.isoformat()]
                 if wrote:   # questions were drafted: the next scheduled batch starts where this sync ended
                     last_outline = to
                 else:
                     sync_result["note"] = "not enough new transcript yet" if ok else f"capture {status}"
-            else:
+            elif not busy:   # a skipped round (model busy) leaves the window for the next one
                 last_outline = to if (now - to).total_seconds() < 1800 else now - dt.timedelta(minutes=10)
 
         write_snapshot(now)
@@ -1009,10 +1034,22 @@ def run(a):
             sync_result.update({"what": sorted(sync), "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                                 "slides": len(load(slide_f)), "outline": len(load(outl_f))})
             (out / "sync_done.json").write_text(json.dumps(sync_result))
+        segs_all = load(seg_f)
+        last_speech = dt.datetime.fromisoformat(segs_all[-1]["t"]) if segs_all else None
+        if class_ended(now, sched_end, last_speech, last_app_frame):
+            try:
+                ask_now_round(seg_f, q_f, fu_f, qa_f, out / "ask_now.json", now)
+            except Exception as e:
+                log("ask-now error", e)
+            st = json.loads(state_f.read_text()) if state_f.exists() else {}
+            state_f.write_text(json.dumps({**st, "status": "ended", "ended_at": now.isoformat(), "updated": now.isoformat()}))
+            ended = True
+            break
         t_end = time.time() + a.every       # sleep, but wake within 2 s for an on-demand sync
         while time.time() < t_end and not (out / "sync_request.json").exists() and not STOP_REQUEST.exists():
             time.sleep(2)
-    log(("stop requested" if STOP_REQUEST.exists() else "until reached") + "; draining pending whisper batches before exit")
+    log(("class ended (past the scheduled end, no speech or meeting window)" if ended else
+         "stop requested" if STOP_REQUEST.exists() else "until reached") + "; draining pending whisper batches before exit")
     if not a.no_whisper:
         try:
             whisper_pass(dt.datetime.now(dt.timezone.utc), final=True)

@@ -25,6 +25,7 @@ struct NextClass: Decodable, Sendable {
     let end: String
     let module: String?
     let module_title: String?
+    let tz: String?
 
     var day: Date? {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.timeZone = TimeZone(identifier: "Asia/Kolkata")
@@ -46,6 +47,15 @@ struct NextClass: Decodable, Sendable {
         guard let m = module, !m.isEmpty else { return "Week \(week) · orientation" }
         return "Week \(week) · \(m)" + ((module_title ?? "").isEmpty ? "" : ": \(module_title!)")
     }
+}
+
+/// `lecture after --json` (also saved as after_class.json in the lecture folder).
+struct AfterClassReport: Decodable, Sendable {
+    let ok: Bool
+    let error: String?
+    let at: String?
+    let steps: [Step]
+    struct Step: Decodable, Sendable, Identifiable { let name: String; let ok: Bool; let note: String; var id: String { name } }
 }
 
 struct ModeState: Decodable, Sendable {

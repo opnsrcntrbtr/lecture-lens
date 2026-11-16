@@ -87,7 +87,7 @@ struct LectureDetail: View {
                                       : Paths.lectures.appendingPathComponent(session.folder)
     }
     private var building: Bool {
-        model.judgeLoaded || model.jobs.jobs.contains { $0.running && $0.title == "Build \(session.displayTitle)" }
+        model.judgeLoaded || model.jobs.jobs.contains { $0.running && ($0.title == "Build \(session.displayTitle)" || $0.title == "After class \(session.displayTitle)") }
     }
 
     var body: some View {
@@ -165,6 +165,10 @@ struct LectureDetail: View {
                     .help(model.autoImportNote ?? "Transcript merge and word error rate, Q&A import, answer scores")
             }
             studioControls
+            AfterClassChips(url: folder.appendingPathComponent("after_class.json"))
+            Button("After class", systemImage: "checkmark.seal") { model.afterClass(session) }
+                .disabled(building || model.mode.running)
+                .help(model.mode.running ? "Stop capture first" : "Import Zoom files, build, check attendee names are gone, rewrite qa.md")
             if session.built {
                 Button("Rebuild", systemImage: "arrow.triangle.2.circlepath") { model.build(session) }.disabled(building)
                 Button("Import Zoom files", systemImage: "tray.and.arrow.down") { model.ingest(folder.lastPathComponent) }
@@ -421,6 +425,23 @@ struct CardsPane: View {
             cards = text.split(separator: "\n").compactMap { l in
                 let p = l.components(separatedBy: "\t")
                 return p.count >= 2 ? (p[0], p[1]) : nil
+            }
+        }
+    }
+}
+
+
+/// One chip per After-class step from after_class.json: green when it worked, orange with the reason when not.
+struct AfterClassChips: View {
+    let url: URL
+    var body: some View {
+        if let data = try? Data(contentsOf: url), let r = try? JSONDecoder().decode(AfterClassReport.self, from: data) {
+            HStack(spacing: 4) {
+                ForEach(r.steps) { s in
+                    Label(s.name, systemImage: s.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.scaled(.caption2)).foregroundStyle(s.ok ? Color.green : Color.orange)
+                        .help(s.note)
+                }
             }
         }
     }

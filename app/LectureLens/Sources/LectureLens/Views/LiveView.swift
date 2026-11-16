@@ -6,6 +6,7 @@ import SwiftUI
 /// the slide log. Read-only; refreshed every few seconds. Copy a question, then paste it
 /// into Zoom yourself.
 struct LiveView: View {
+    @Bindable var model: AppModel
     @State private var live = LiveData()
     @State private var copied: String?
     @State private var qaFilter: QAFilter = .all
@@ -39,6 +40,7 @@ struct LiveView: View {
             VStack(alignment: .leading, spacing: 18) {
                 statusBox
                 askNowBox
+                curatedBox
                 qaBox
                 questionsBox
                 outlineBox
@@ -96,6 +98,7 @@ struct LiveView: View {
                         HStack(alignment: .top) {
                             Text("\(i + 1). ").font(.scaled(.callout, weight: .bold)) + Text(c.q).font(.scaled(.callout, weight: .semibold))
                             Spacer()
+                            CitationButton(title: c.q, t: c.t, text: c.q + " " + c.answer, sources: c.sources, day: live.day)
                             copyButton(c.q)
                         }
                         Text("Draft: \(c.answer)\(live.sourceTitles(c.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
@@ -105,6 +108,59 @@ struct LiveView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    // MARK: curated top questions
+    private var curatedBox: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                let rounds = CuratedQuestions.rounds(live.questions)
+                if rounds.isEmpty {
+                    Text("Curate a round to get the top questions for what was taught since the last one, grounded in the evidence bank.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(rounds, id: \.round) { r in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Round \(r.round) · \(LiveData.clock(r.rows.first?.t ?? ""))").font(.scaled(.caption, weight: .semibold)).foregroundStyle(.secondary)
+                        ForEach(r.rows) { c in curatedRow(c) }
+                    }
+                    Divider()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            HStack(spacing: 8) {
+                Text("Top questions (curated rounds)")
+                Spacer()
+                if let n = model.curateNote { Text(n).font(.scaled(.caption)).foregroundStyle(.secondary) }
+                if model.curateRunning { ProgressView().controlSize(.small) }
+                Toggle("Every 25 min", isOn: $model.autoCurate).toggleStyle(.checkbox).controlSize(.small)
+                    .help("While the follower is running, curate a round every 25 minutes (uses the local model)")
+                Button("Curate now", systemImage: "sparkles") { model.curateNow() }
+                    .controlSize(.small).disabled(model.curateRunning || live.state == nil)
+            }
+        }
+    }
+
+    private func curatedRow(_ c: Drafted) -> some View {
+        let asked = CuratedQuestions.askedIn(c.q, threads: live.threads)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .top) {
+                if let a = asked {
+                    Label("Asked \(a.time)", systemImage: "checkmark.circle.fill").labelStyle(.titleAndIcon)
+                        .font(.scaled(.caption2, weight: .semibold)).foregroundStyle(.green)
+                        .help(a.answers.isEmpty ? "Posted in the Q&A; no reply yet" : "Posted in the Q&A; \(a.answers.count) repl\(a.answers.count == 1 ? "y" : "ies")")
+                }
+                Text(c.part == "later" ? "later · \(c.type): " : "\(c.type): ").font(.scaled(.callout, weight: .semibold))
+                    + Text(c.q).font(.scaled(.callout))
+                Spacer()
+                CitationButton(title: c.q, t: c.t, text: c.q + " " + c.answer, sources: c.sources, day: live.day)
+                copyButton(c.q)
+            }
+            Text("Draft: \(c.answer)\(live.sourceTitles(c.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+        .opacity(c.part == "later" ? 0.75 : 1)
     }
 
     // MARK: Q&A
@@ -128,8 +184,14 @@ struct LiveView: View {
                 }
                 ForEach(shownThreads) { t in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("\(t.time) · \(t.by)").font(.scaled(.caption, weight: .semibold))
-                            .foregroundStyle(t.by == "You" ? Color.accentColor : .secondary)
+                        HStack {
+                            Text("\(t.time) · \(t.by)").font(.scaled(.caption, weight: .semibold))
+                                .foregroundStyle(t.by == "You" ? Color.accentColor : .secondary)
+                            Spacer()
+                            CitationButton(title: t.q, t: t.time,
+                                           text: ([t.q] + t.answers.map(\.text) + [live.prospective[t.id]?.answer ?? ""]).joined(separator: " "),
+                                           day: live.day)
+                        }
                         Text(t.q).textSelection(.enabled)
                         ForEach(Array(t.answers.enumerated()), id: \.offset) { _, a in
                             Text("↳ \(a.by): \(a.text)").font(.scaled(.callout)).foregroundStyle(.secondary)
@@ -176,6 +238,7 @@ struct LiveView: View {
             HStack(alignment: .top) {
                 Text("Follow-up (\(f.type)): ").font(.scaled(.callout, weight: .semibold)) + Text(f.q).font(.scaled(.callout))
                 Spacer()
+                CitationButton(title: f.q, t: f.t, text: f.q + " " + f.answer, sources: f.sources, day: live.day)
                 copyButton(f.q)
             }
             Text("Draft: \(f.answer)\(live.sourceTitles(f.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
@@ -191,12 +254,13 @@ struct LiveView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 if live.questions.isEmpty { Text("First questions after 10 minutes of class.").foregroundStyle(.secondary) }
-                ForEach(live.questions.reversed().filter { visible($0.q) }) { q in
+                ForEach(live.questions.reversed().filter { visible($0.q) && $0.curated != true }) { q in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(alignment: .top) {
                             Text(LiveData.clock(q.t) + "  ").font(.scaled(.caption, weight: .semibold)).foregroundStyle(.secondary)
                             + Text("\(q.type): ").font(.scaled(.callout, weight: .semibold)) + Text(q.q).font(.scaled(.callout))
                             Spacer()
+                            CitationButton(title: q.q, t: q.t, text: q.q + " " + q.answer, sources: q.sources, day: live.day)
                             copyButton(q.q)
                         }
                         Text("Draft: \(q.answer)\(live.sourceTitles(q.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
@@ -295,11 +359,13 @@ struct LiveView: View {
 
 // MARK: - data written by live_class.py
 
-struct LiveState: Decodable { var status: String?; var words: Int?; var updated: String? }
+struct LiveState: Decodable { var status: String?; var words: Int?; var updated: String?; var ended_at: String? }
 struct QAAnswer: Decodable { var by: String; var time: String; var text: String }
 struct QAThread: Decodable, Identifiable { var id: String; var by: String; var time: String; var q: String; var answers: [QAAnswer] }
 struct Drafted: Decodable, Identifiable {
     var thread: String?; var t: String; var type: String; var q: String; var answer: String; var sources: [String]
+    /// Curated top questions (curate.py): round number and part ("now" or "later").
+    var curated: Bool?; var round: Int?; var part: String?
     var id: String { t + q }
 }
 struct OutlinePart: Decodable, Identifiable { var from: String; var to: String; var bullets: String; var partial: Bool?; var id: String { from + to } }
@@ -342,6 +408,9 @@ struct LiveData {
         return out
     }
 
+    /// The live folder's day (yyyymmdd), for `lecture cite --day`.
+    var day: String { folder.lastPathComponent }
+
     func sourceTitles(_ ids: [String]) -> String {
         let t = ids.compactMap { evidence[$0] }
         return t.isEmpty ? "" : " (" + t.joined(separator: "; ") + ")"
@@ -352,6 +421,19 @@ struct LiveData {
         let f = DateFormatter(); f.dateFormat = "HH:mm"
         return f.string(from: d)
     }
+    /// Only today's state.json: cheap enough for a timer (auto-curate, class-end notice).
+    static func state(day: Date = Date()) -> LiveState? {
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd"
+        let url = Paths.lectures.appendingPathComponent("live/\(f.string(from: day))/state.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(LiveState.self, from: data)
+    }
+
+    static func fresh(_ s: LiveState?) -> Bool {
+        guard let u = s?.updated, let d = ISO8601DateFormatter.flexible.date(from: u) else { return false }
+        return Date().timeIntervalSince(d) < 180 && s?.status != "ended"
+    }
+
 
     static func load(day: Date = Date()) async -> LiveData {
         let f = DateFormatter(); f.dateFormat = "yyyyMMdd"
