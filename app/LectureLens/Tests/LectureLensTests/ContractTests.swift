@@ -218,3 +218,13 @@ import Testing
     #expect(r.needs_review == true && r.gates?.count == 3 && r.gates?[1].value?.description == "Garden")
     #expect(r.gates?[0].value?.description == "0")
 }
+
+@Test func capstoneContracts() throws {
+    let s = try JSONDecoder().decode(CapStatus.self, from: Data(#"{"ok": true, "locked": false, "artefacts": [{"artefact_id": "prd", "kind": "prd", "path": "/tmp/prd.md", "sha256": "ab", "version": 2, "updated": "2030-01-05T04:30:00+00:00"}], "findings": [{"finding_id": "f1", "artefact_id": "prd", "artefact_sha": "ab", "quote": "The agent should be fast.", "criterion_id": "requirements", "check_id": "acceptance_testable", "verdict": "fail", "issue": "A tester could not decide.", "question_to_learner": "What would a tester measure?", "hint_level": 0, "lecture_refs": [], "evidence_refs": [], "reviewer_view": "general", "confidence": 1.0, "stale": false}], "rubric": "public_composite"}"#.utf8))
+    #expect(s.artefacts?.first?.version == 2 && s.findings?.first?.check_id == "acceptance_testable")
+    let d = try JSONDecoder().decode(CapDrill.self, from: Data(#"{"ok": true, "seed": 3, "scenario_id": "sim-3", "format": "micro", "brief": "You are incident commander.", "injects": [{"inject_id": "i1", "t_offset_min": 0, "role": "support lead", "text": "Customers quote a policy you do not have."}]}"#.utf8))
+    #expect(d.seed == 3 && d.injects?.count == 1)
+    #expect(Capstone.ratingsArg(["time_to_declare": "S", "severity_call": "P"]) == "severity_call=P,time_to_declare=S")
+    #expect(Capstone.decideArgs(inject: "i1", severity: "SEV1", containment: "pause", customer: "c", team: "i", regulator: "", golden: "no", rationale: "r").prefix(5) == ["capstone", "sim", "decide", "--inject", "i1"])
+    #expect(Capstone.label("unit_econ_heavy_user") == "Unit Econ Heavy User")
+}

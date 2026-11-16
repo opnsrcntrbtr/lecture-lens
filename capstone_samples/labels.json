@@ -1,0 +1,4 @@
+{"A": ["opportunity_quantified", "acceptance_testable", "fallback_defined", "wrong_answer_cost", "stop_condition"],
+ "B": ["eval_threshold_tied", "wrong_answer_cost", "moat_base_model", "unit_econ_heavy_user", "fallback_defined"],
+ "C": ["opportunity_quantified", "acceptance_testable", "eval_threshold_tied", "moat_base_model", "unit_econ_heavy_user", "stop_condition"],
+ "D": [], "E": []}

@@ -91,26 +91,36 @@ def lecture_records(folder: Path, guard: Callable[[list[str]], list[str]]) -> tu
     """Guarded line records of one built lecture folder: transcript (merged when present),
     then slide descriptions. Returns (title, records)."""
     title = folder.name.split("_", 1)[-1].replace("-", " ")
-    start = None
+    start, minutes = None, 0.0
     man = folder / "manifest.json"
     if man.exists():
         try:
             m = json.loads(man.read_text())
             title = m.get("title") or title
             start = dt.datetime.fromisoformat(str(m.get("start")).replace("Z", "+00:00"))
+            minutes = float(m.get("minutes") or 0)
         except Exception:
             pass
     recs: list[dict] = []
     tr = folder / ("transcript_merged.md" if (folder / "transcript_merged.md").exists() else "transcript.md")
     if tr.exists():
         raw = [l for l in tr.read_text().splitlines() if TIMED.match(l)]
-        for i, line in enumerate(guard(raw)):
-            m = TIMED.match(line)
+        lines = [(TIMED.match(l), l) for l in guard(raw)]
+        offs = [int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]) for m, _ in lines if m]
+        # a merged reference transcript can carry wall-clock times (10:19:24) instead of offsets
+        clock = bool(start and offs and max(offs) > minutes * 60 + 900 and min(offs) >= start.astimezone().hour * 3600 - 3600)
+        for i, (m, line) in enumerate(lines):
             if not m:
                 continue
             off = int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3])
+            if clock:
+                local = start.astimezone()
+                t_abs = local.replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(seconds=off)
+                off = (t_abs - start).total_seconds()
+            else:
+                t_abs = start + dt.timedelta(seconds=off) if start else None
             recs.append({"kind": "t", "idx": i, "t0": float(off), "text": m[4].strip(),
-                         "t_abs": (start + dt.timedelta(seconds=off)).isoformat() if start else None})
+                         "t_abs": t_abs.isoformat() if t_abs else None})
     sm = folder / "slides.md"
     if sm.exists():
         blocks, cur = [], None
