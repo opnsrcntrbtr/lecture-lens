@@ -41,6 +41,7 @@ struct LiveView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 statusBox
+                PrequestionsBox(day: live.day.isEmpty || live.day == "/" ? LiveData.todayKey() : live.day)
                 askNowBox
                 curatedBox
                 qaBox
@@ -423,6 +424,8 @@ struct LiveData {
 
     /// The live folder's day (yyyymmdd), for `lecture cite --day`.
     var day: String { folder.lastPathComponent }
+
+    static func todayKey(_ d: Date = Date()) -> String { let f = DateFormatter(); f.dateFormat = "yyyyMMdd"; return f.string(from: d) }
 
     /// Past live-class folders (yyyyMMdd), newest first, today excluded.
     static func pastDays(root: URL = Paths.lectures.appendingPathComponent("live"), today: Date = Date()) -> [String] {

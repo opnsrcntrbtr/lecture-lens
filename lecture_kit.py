@@ -1969,6 +1969,189 @@ def cmd_curate(a):
         out({"ok": False, "error": f"{type(e).__name__}: {e}"[:300]})
 
 
+# ------------------------------------------------------------- study aids v2 (LS-1, LS-2, LS-4)
+STUDY_DIR = Path(os.path.expanduser(os.environ.get("STUDY_PRACTICE_DIR", str(HERE / "practice"))))
+
+
+def _lecture_lines(folder: Path) -> list[dict]:
+    """The lecture's guarded transcript and slide lines with evidence-store line IDs."""
+    import evidence
+    man = json.loads((folder / "manifest.json").read_text())
+    day = dt.datetime.fromisoformat(man["start"].replace("Z", "+00:00")).astimezone().strftime("%Y%m%d")
+    _, recs = evidence.lecture_records(folder, _day_guard(day))
+    key = evidence.lecture_key(folder.name)
+    return [{"line_id": f"{key}/{r['kind']}/{r['idx']}", "t": (r.get("t_abs") or "")[11:19], "text": r["text"]}
+            for r in recs if r["text"].strip()]
+
+
+def quiz_items(folder: Path) -> list[dict]:
+    """v2 items when built, else the v1 practice quiz in the v2 shape (linted)."""
+    import quiz
+    items = quiz.read_jsonl(folder / "quiz.jsonl")
+    if items:
+        return items
+    f = folder / "practice_quiz.json"
+    if not f.exists():
+        return []
+    d = json.loads(f.read_text())
+    out = [quiz.from_v1(q, folder.name) for q in (d.get("questions") if isinstance(d, dict) else d)]
+    for i in out:
+        i["lint"] = quiz.lint(i)
+    return out
+
+
+def build_quiz_v2(folder: Path, n: int = 10, checks: bool = True, say=print) -> dict:
+    import quiz
+    man = json.loads((folder / "manifest.json").read_text())
+    lines = [l for l in _lecture_lines(folder) if "/t/" in l["line_id"]]
+    llm = lambda p: study.llm("You write practice items from quoted class lines. Follow the JSON format exactly.",
+                              p, max_tokens=4000, temperature=0.3, slot="build")
+    items = quiz.generate(man["title"], folder.name, lines, llm, n)
+    by_id = {l["line_id"]: l for l in lines}
+    if checks:
+        for it in items:
+            it["leak_flag"] = quiz.leak_check(it, llm)
+            it["key_supported"] = quiz.key_check(it, by_id, llm)
+    quiz.write_jsonl(folder / "quiz.jsonl", items)
+    shipped = [i for i in items if i.get("key_supported") is not False]
+    v1 = [{"q": i["stem"], "options": i["options"], "answer": i["key"], "why": i["explanation"], "at": i.get("at", "")}
+          for i in shipped]
+    (folder / "practice_quiz.json").write_text(json.dumps({"prompt_version": quiz.PROMPT_VERSION, "questions": v1}, indent=1))
+    (folder / "practice_quiz.md").write_text(quiz.markdown(man["title"], v1))
+    rep = {"ok": True, "folder": folder.name, "items": len(items), "shipped": len(shipped),
+           "lint": quiz.lint_report(items), "leak_flags": sum(1 for i in items if i.get("leak_flag")),
+           "key_unsupported": sum(1 for i in items if i.get("key_supported") is False),
+           "levels": {lv: sum(1 for i in items if i.get("requested_level") == lv) for lv in quiz.LEVELS}}
+    return rep
+
+
+def cmd_quiz(a):
+    """LS-2: write a practice quiz for a built lecture: linted, cited, key-checked items."""
+    folder = find_folder(a.id)
+    rep = build_quiz_v2(folder, a.n)
+    print(json.dumps(rep) if a.json else f"✓ {rep['shipped']} of {rep['items']} items shipped: {folder / 'practice_quiz.md'}")
+
+
+def cmd_quiz_lint(a):
+    import quiz
+    if a.file:
+        p = Path(a.file)
+        rows = quiz.read_jsonl(p) if p.suffix == ".jsonl" else [quiz.from_v1(q, p.parent.name) for q in
+                                                                 (json.loads(p.read_text()).get("questions") or [])]
+        rep = quiz.lint_report(rows)
+        rep["flags"] = [{"stem": r["stem"][:80], **quiz.lint(r)} for r in rows]
+    else:
+        rows = []
+        for f in sorted(LECTURES.glob("*/practice_quiz.json")):
+            d = json.loads(f.read_text())
+            rows += [quiz.from_v1(q, f.parent.name) for q in (d.get("questions") if isinstance(d, dict) else d)]
+        rep = quiz.lint_report(rows)
+    print(json.dumps({"ok": True, **rep}))
+
+
+def _recap_content(folder: Path) -> tuple[str, str]:
+    for name, kind in (("cheat_sheet.md", "cheat_sheet"), ("notes.md", "recap")):
+        p = folder / name
+        if p.exists():
+            text = p.read_text()
+            if kind == "recap":   # the notes' TL;DR and key concepts are the recap
+                m = re.search(r"(?s)(TL;DR.*?)(?=\n#+\s*(?:Frameworks|Examples|How this|Open questions)|\Z)", text)
+                text = m.group(1) if m else text[:4000]
+            return text, kind
+    return "", "recap"
+
+
+def cmd_practice(a):
+    import practice
+    store = practice.Store(STUDY_DIR)
+    out = lambda o: print(json.dumps(o, ensure_ascii=False))
+    try:
+        if a.action == "progress":
+            return out({"ok": True, **practice.progress(store)})
+        if a.action == "start":
+            folder = find_folder(a.lecture)
+            man = json.loads((folder / "manifest.json").read_text())
+            if a.kind == "recap":
+                content, kind = _recap_content(folder)
+                if not content:
+                    return out({"ok": False, "error": "no notes or cheat sheet for this lecture"})
+                return out({"ok": True, **practice.start_recap(store, folder.name, man["title"], content, kind)})
+            items = quiz_items(folder)
+            if not items:
+                return out({"ok": False, "error": "no practice quiz yet: build one first"})
+            if a.kind == "closed":
+                return out({"ok": True, **practice.closed_book_items(store, items, folder.name)})
+            return out({"ok": True, **practice.start_quiz(store, folder.name, items, n=a.n)})
+        if a.action == "attempt":
+            return out({"ok": True, **practice.attempt(store, a.session, a.text)})
+        if a.action == "reveal":
+            return out(practice.reveal_recap(store, a.session, a.skip))
+        if a.action == "hint":
+            return out(practice.hint(store, a.session))
+        if a.action == "answer":
+            return out(practice.answer(store, a.session, a.choice, a.confidence))
+        if a.action == "skip":
+            return out(practice.skip_item(store, a.session))
+        if a.action == "next":
+            return out(practice.advance(store, a.session))
+    except FileNotFoundError:
+        return out({"ok": False, "error": "no such session"})
+    except SystemExit as e:
+        return out({"ok": False, "error": str(e)})
+
+
+def cmd_prequestions(a):
+    import prequestions as pq
+    now = dt.datetime.now(dt.timezone.utc)
+    day = a.day or now.astimezone().strftime("%Y%m%d")
+    live = LECTURES / "live" / day
+    out = lambda o: print(json.dumps(o, ensure_ascii=False))
+    if a.action == "make":
+        agenda = (live / "agenda.txt").read_text() if (live / "agenda.txt").exists() else (a.agenda or "")
+        sess = course_calendar.session_on(dt.datetime.strptime(day, "%Y%m%d").date()) or {}
+        if not agenda.strip():
+            agenda = "\n".join(f"- {x}" for x in (sess.get("topics") or [])) or sess.get("title", "")
+        if not agenda.strip():
+            return out({"ok": False, "error": f"no agenda for {day}: paste it into live/{day}/agenda.txt"})
+        if pq.load(live) and not a.force:
+            return out({"ok": True, "prequestions": pq.load(live), "note": "already made"})
+        llm = lambda p: study.llm("You write prequestions from a class agenda. Questions only.", p, max_tokens=800,
+                                  temperature=0.3, slot="interactive")
+        guard = _day_guard(day)
+        rows = pq.generate(sess.get("title") or "Class", "\n".join(guard(agenda.splitlines())), llm, a.k)
+        return out({"ok": True, "prequestions": pq.save(live, rows)})
+    if a.action == "guess":
+        return out({"ok": True, "prequestion": pq.guess(live, a.id, a.text, now)})
+    if a.action == "mark":
+        return out({"ok": True, "prequestion": pq.mark(live, a.id, a.got_it == "y")})
+    if a.action == "resolve":
+        return out({"ok": True, "prequestions": resolve_prequestions(day)})
+    return out({"ok": True, "prequestions": pq.load(live)})
+
+
+def resolve_prequestions(day: str) -> list[dict]:
+    """After class: resolve the day's prequestions over its class lines and write the cards
+    into the built lecture folder (cards_prequestions.tsv, read by the Anki export)."""
+    import curate, prequestions as pq
+    live = LECTURES / "live" / day
+    if not pq.load(live):
+        return []
+    now = dt.datetime.now(dt.timezone.utc)
+    lines = curate.day_lines(live, now, _day_guard(day)) if (live / "whisper_segments.jsonl").exists() else []
+    for lid, folder in _index_targets("all"):
+        if lid.startswith(day) and not lines:
+            lines = [l for l in _lecture_lines(folder) if "/t/" in l["line_id"]]
+    llm = lambda p: study.llm("You check whether class passages answer questions. JSON only.", p, max_tokens=600,
+                              temperature=0.0, slot="build")
+    rows = pq.resolve(live, lines, llm)
+    for lid, folder in _index_targets("all"):
+        if lid.startswith(day) and not lid.startswith("live/") and (folder / "manifest.json").exists():
+            title = json.loads((folder / "manifest.json").read_text()).get("title", "")
+            (folder / "cards_prequestions.tsv").write_text(pq.cards_tsv(rows, title))
+            break
+    return rows
+
+
 def cmd_qlabels(a):
     """M-7: label a day's questions as would-ask, duplicate and answered-in-class (the NG-5
     baseline). Labels go to eval/golden/questions_labels_<day>.jsonl (private: they quote class)."""
@@ -2302,6 +2485,12 @@ def cmd_after(a):
                       "note": f"{sum(left.values())} line(s) still name an attendee in {', '.join(left)}" if left
                       else f"no removed name left; {len(rev.get('review') or {})} word(s) to review"})
         step("qa", ["qa", folder.name], 300)
+        try:
+            pqs = resolve_prequestions(day)
+            if pqs:
+                steps.append({"name": "prequestions", "ok": True, "note": f"{sum(1 for r in pqs if (r.get('resolved') or {}).get('status') == 'answered')} of {len(pqs)} answered in class"})
+        except Exception as e:
+            steps.append({"name": "prequestions", "ok": False, "note": f"{type(e).__name__}: {e}"[:200]})
     gates = []
     if folder and (folder / "manifest.json").exists():
         try:
@@ -2645,6 +2834,21 @@ def main():
     p.add_argument("--window", type=float, default=10.0, help="minutes either side")
     p.add_argument("--answer", default="", help="answer text alone, for the sentence check (default: --text)")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_cite)
+    p = sub.add_parser("quiz", help="LS-2: practice quiz from a built lecture"); p.add_argument("id", nargs="?", default="last")
+    p.add_argument("-n", type=int, default=10); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_quiz)
+    p = sub.add_parser("quiz-lint", help="LS-2: lint practice quiz items (all lectures, or --file)")
+    p.add_argument("--file"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_quiz_lint)
+    p = sub.add_parser("practice", help="LS-1: attempt-first study sessions (recap, quiz, closed-book) and progress")
+    p.add_argument("action", choices=["start", "attempt", "reveal", "hint", "answer", "skip", "next", "progress"])
+    p.add_argument("--lecture", default="last"); p.add_argument("--kind", choices=["recap", "quiz", "closed"], default="quiz")
+    p.add_argument("--session", default=""); p.add_argument("--text", default=""); p.add_argument("--skip", action="store_true")
+    p.add_argument("--choice", type=int, default=-1); p.add_argument("--confidence", default="")
+    p.add_argument("-n", type=int, default=5); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_practice)
+    p = sub.add_parser("prequestions", help="LS-4: prequestions before class, resolved after it")
+    p.add_argument("action", choices=["make", "show", "guess", "mark", "resolve"]); p.add_argument("--day", default="")
+    p.add_argument("--id", default=""); p.add_argument("--text", default=""); p.add_argument("--got-it", dest="got_it", default="")
+    p.add_argument("--agenda", default=""); p.add_argument("-k", type=int, default=4); p.add_argument("--force", action="store_true")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_prequestions)
     p = sub.add_parser("judgecard", help="EP-1: rebuild eval/judge_card.json from the labelled calibration sheets")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=lambda a: __import__("runpy").run_path(str(HERE / "tests" / "evals" / "judge_card.py"),

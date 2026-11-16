@@ -17,6 +17,8 @@ Lecture Lens is a study toolkit and a small native macOS app. It reads what [lec
 | Sit in a live class in a meeting app | Captures slides and audio, picks the distinct slides, describes them with a vision model |
 | Click **Build** | Writes a timecoded transcript, notes with slide and time citations, and flashcards |
 | Ask a question | Answers from your own captures, with sources |
+| Open a lecture's **Practice** tab | Asks you to recall first, then shows the recap with what you missed; quiz items are linted for giveaway flaws and each key is checked against a cited line |
+| Before a live class | Turns the agenda into a few prequestions to guess at; after class, each is answered from what was said, beside your guess |
 | Change a prompt or a model | Runs a local evaluation so you can see whether quality moved |
 
 ## What it does not do
