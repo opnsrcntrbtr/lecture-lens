@@ -113,7 +113,10 @@ struct CapstoneView: View {
                 artefactsBox
                 reviewBox
                 econBox
+                ReadinessBox(artefacts: status?.artefacts ?? [])
                 drillBox
+                PanelBox()
+                CapProgressBox()
                 askBox
             }
             .padding(24)
@@ -197,7 +200,7 @@ struct CapstoneView: View {
                 if f.stale == true { Text("artefact changed: re-run").font(.scaled(.caption2)).foregroundStyle(.orange) }
                 if f.exploratory != false {
                     Text("exploratory").font(.scaled(.caption2)).foregroundStyle(.secondary)
-                        .help("This checker has not yet met its accuracy bar on the seeded test set (TPR 0.80, TNR 0.90)")
+                        .help("This checker has not yet met its accuracy bar: TPR 0.80 and TNR 0.90 on the seeded set, and 60 of your labels at 85% valid")
                 }
             }
             Text("“\(f.quote)”").italic().font(.scaled(.callout)).textSelection(.enabled)
@@ -214,6 +217,7 @@ struct CapstoneView: View {
                 Text("Hint \(h.level ?? 0): \(t)").font(.scaled(.caption)).foregroundStyle(.secondary).textSelection(.enabled)
                 if h.needs_attempt == true { Text("Write an attempt first to unlock the next level.").font(.scaled(.caption2)).foregroundStyle(.tertiary) }
             }
+            FindingLabelRow(findingId: f.finding_id)
         }
         .padding(.vertical, 4)
     }

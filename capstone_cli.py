@@ -5,6 +5,11 @@
   econ --file inputs.json | premortem add|propose|classify ... | faq
   sim start --seed N | sim next | sim decide ... | sim reply --inject I | sim rate obj=P,... | sim hotwash
   postmortem --artefact ID | sample
+  readiness list | rate --item I --rating R [--artefact A --quote Q | --eval-run E] | candidates --item I
+            | triage --answers k=y,... | card --artefact A
+  panel start [--type panel|leadership] [--pressure P] [--minutes N] [--seed N] | next | answer --text T
+        | finish | self --scores c=3,... | critique | show | metrics
+  label --finding ID --valid y|n --specific y|n | progress
 Everything except init, status and register refuses while capture runs.
 """
 from __future__ import annotations
@@ -22,6 +27,9 @@ sys.path.insert(0, str(HERE))
 import capstone as cs           # noqa: E402
 import capstone_review as cr    # noqa: E402
 import capstone_sim as sim      # noqa: E402
+import capstone_eval as ce      # noqa: E402
+import capstone_panel as cp     # noqa: E402
+import capstone_readiness as rd  # noqa: E402
 
 ROOT = Path(os.path.expanduser(os.environ.get("STUDY_CAPSTONE_DIR", str(HERE / "capstone"))))
 SAMPLES = HERE / "capstone_samples"
@@ -65,7 +73,7 @@ def latest_findings(ws: cs.Workspace) -> list[dict]:
     for r in rows:
         by[r["check_id"]] = r
     arts = {a["artefact_id"]: a for a in ws.artefacts()}
-    card = checker_card()
+    card = checker_card(ws)
     out = []
     for r in by.values():
         a = arts.get(r["artefact_id"])
@@ -76,16 +84,16 @@ def latest_findings(ws: cs.Workspace) -> list[dict]:
     return out
 
 
-def checker_card() -> dict:
-    """check_id -> 'ok' | 'exploratory' from the newest M-11 report (tools/capstone_bench.py);
-    every check is exploratory until it has been measured."""
+def bench_report() -> dict | None:
+    """The newest M-11 report (tools/capstone_bench.py), if any."""
     reports = sorted((HERE / "eval" / "results").glob("*-capstone-m11.json"))
-    if not reports:
-        return {c: "exploratory" for c in cr.CHECKERS}
-    card = json.loads(reports[-1].read_text()).get("card", [])
-    out = {c: "exploratory" for c in cr.CHECKERS}
-    out.update({c["check_id"]: c["status"] for c in card})
-    return out
+    return json.loads(reports[-1].read_text()) if reports else None
+
+
+def checker_card(ws: cs.Workspace) -> dict:
+    """check_id -> 'ok' | 'exploratory'. A check is 'ok' only with the M-11 bench thresholds met
+    and enough of the learner's own labels (CC-6); every check starts exploratory."""
+    return {r["criterion"]: r["status"] for r in ce.checker_card(ws, bench_report(), list(cr.CHECKERS))}
 
 
 def hints_state(ws: cs.Workspace) -> dict:
@@ -113,6 +121,18 @@ def main(argv=None):
     p.add_argument("--severity", default=""); p.add_argument("--containment", default="")
     p.add_argument("--customer", default=""); p.add_argument("--internal", default=""); p.add_argument("--regulator", default="")
     p.add_argument("--golden", default=""); p.add_argument("--rationale", default=""); p.add_argument("--ratings", default="")
+    p = sub.add_parser("readiness"); p.add_argument("action", choices=["list", "rate", "candidates", "triage", "card"])
+    p.add_argument("--item"); p.add_argument("--rating"); p.add_argument("--artefact"); p.add_argument("--quote")
+    p.add_argument("--eval-run", dest="eval_run"); p.add_argument("--answers", default="")
+    p = sub.add_parser("panel"); p.add_argument("action", choices=["start", "next", "answer", "finish", "self", "critique",
+                                                                    "show", "metrics"])
+    p.add_argument("--type", default="panel", choices=cp.TYPES); p.add_argument("--pressure", default="neutral",
+                                                                                 choices=cp.PRESSURES)
+    p.add_argument("--minutes", type=int); p.add_argument("--seed", type=int); p.add_argument("--text", default="")
+    p.add_argument("--scores", default="")
+    p = sub.add_parser("label"); p.add_argument("--finding", required=True); p.add_argument("--valid", required=True)
+    p.add_argument("--specific", required=True)
+    sub.add_parser("progress")
     a = ap.parse_args(argv)
 
     def out(obj):
@@ -201,6 +221,71 @@ def main(argv=None):
         return out({"ok": True, "questions": cr.faq_questions(ws, llm_fn())})
     if a.cmd == "postmortem":
         return out({"ok": True, "findings": sim.postmortem_findings(ws, a.artefact)})
+    if a.cmd == "readiness":
+        r = rd.Readiness(ws)
+        try:
+            if a.action == "rate":
+                ev = ({"eval_run_id": a.eval_run} if a.eval_run else
+                      {"artefact_id": a.artefact, "quote": a.quote} if a.artefact else None)
+                r.rate(a.item, a.rating, ev)
+            elif a.action == "candidates":
+                return out({"ok": True, "item": a.item, "candidates": rd.candidates(ws, a.item)})
+            elif a.action == "triage":
+                answers = dict(x.split("=", 1) for x in a.answers.split(",") if "=" in x)
+                return out({"ok": True, "questions": rd.TRIAGE_QUESTIONS,
+                            **rd.triage(answers, json.loads((ROOT / "governance_snapshot.json").read_text()))})
+            elif a.action == "card":
+                if not a.artefact:
+                    return out({"ok": False, "error": "--artefact is your system card's id"})
+                return out({"ok": True, "artefact": a.artefact, **rd.audit_card(ws.text(a.artefact)[0])})
+        except (ValueError, StopIteration) as e:
+            return out({"ok": False, "error": str(e) or "unknown artefact"})
+        return out({"ok": True, **r.status()})
+    if a.cmd == "panel":
+        cur = ROOT / "current_panel.json"
+        if a.action == "start":
+            seed = a.seed if a.seed is not None else int.from_bytes(os.urandom(2), "big")
+            pn = cp.Panel(ws, seed)
+            try:
+                v = pn.start(a.type, a.pressure, a.minutes)
+            except ValueError as e:
+                return out({"ok": False, "error": str(e)})
+            cur.write_text(json.dumps({"seed": seed, "dir": str(pn.dir)}))
+            return out({"ok": True, **pn.next_question(llm_fn())})
+        if not cur.exists():
+            return out({"ok": False, "error": "no panel: panel start first"})
+        c = json.loads(cur.read_text())
+        pn = cp.Panel(ws, c["seed"])
+        pn.dir = Path(c["dir"])
+        try:
+            if a.action == "answer":
+                if len(a.text.strip()) < 2:
+                    return out({"ok": False, "error": "type your answer"})
+                pn.answer(a.text)
+                return out({"ok": True, **pn.next_question(llm_fn())})
+            if a.action == "next":
+                return out({"ok": True, **pn.next_question(llm_fn())})
+            if a.action == "finish":
+                return out({"ok": True, **pn.finish()})
+            if a.action == "self":
+                pn.self_score(dict(x.split("=", 1) for x in a.scores.split(",") if "=" in x))
+                return out({"ok": True, **pn.view()})
+            if a.action == "critique":
+                return out({"ok": True, "score": pn.critique(llm_fn()), "metrics": pn.metrics(), **pn.view()})
+            if a.action == "metrics":
+                return out({"ok": True, **pn.metrics()})
+        except (ValueError, RuntimeError) as e:
+            return out({"ok": False, "error": str(e)})
+        score = pn.dir / "score.json"
+        return out({"ok": True, **pn.view(), "score": json.loads(score.read_text()) if score.exists() else None})
+    if a.cmd == "label":
+        yn = lambda v: str(v).lower() in ("y", "yes", "true", "1")
+        try:
+            return out({"ok": True, "label": ce.label_finding(ws, a.finding, yn(a.valid), yn(a.specific))})
+        except KeyError as e:
+            return out({"ok": False, "error": str(e)})
+    if a.cmd == "progress":
+        return out({"ok": True, **ce.progress(ws, bench_report(), list(cr.CHECKERS))})
     if a.cmd == "sim":
         cur = ROOT / "current_drill.json"
         if a.action == "start":
