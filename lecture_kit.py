@@ -1634,8 +1634,223 @@ def cmd_cite(a):
             m["text"] = c
     bank = json.loads((d / "evidence.json").read_text()) if (d / "evidence.json").exists() else []
     ids = [x.strip() for x in (a.sources or "").split(",") if x.strip()]
-    print(json.dumps({"ok": True, "t": at.isoformat(), "sources": cite.sources(ids, bank), "moments": found,
-                      "slide": cite.slide_at(load(d / "slides.jsonl"), at)}))
+    out = {"ok": True, "t": at.isoformat(), "sources": cite.sources(ids, bank), "moments": found,
+           "slide": cite.slide_at(load(d / "slides.jsonl"), at)}
+    try:
+        v3 = cite_v3(a.answer or a.text, d.name, at, a.window)
+    except Exception as e:   # the sheet still shows sources and moments
+        v3 = None; out["v3_error"] = f"{type(e).__name__}: {e}"[:200]
+    if v3:
+        out.update({k: v3[k] for k in ("answer_id", "checker", "sentences", "metrics") if k in v3})
+    print(json.dumps(out, ensure_ascii=False))
+
+
+# ------------------------------------------------------------- evidence store (NG-1)
+INDEX = LECTURES / "index.sqlite"
+CHECKER_CAL = HERE / "eval" / "results" / "checker_calibration.json"
+CITE_LOG = HERE / "eval" / "results" / "citations.jsonl"
+
+
+def _index_targets(which: str = "all") -> list[tuple[str, Path]]:
+    """(lecture_id, folder) pairs: built lecture folders and live-class day folders."""
+    out = []
+    for f in sorted(LECTURES.iterdir()) if LECTURES.exists() else []:
+        if f.is_dir() and re.match(r"\d{8}-\d{4}_", f.name) and (
+                (f / "transcript.md").exists() or (f / "transcript_merged.md").exists() or (f / "slides.md").exists()):
+            out.append((f.name, f))
+    for f in sorted((LECTURES / "live").iterdir()) if (LECTURES / "live").exists() else []:
+        if f.is_dir() and re.fullmatch(r"\d{8}", f.name) and (f / "whisper_segments.jsonl").exists():
+            out.append((f"live/{f.name}", f))
+    if which in ("", "all"):
+        return out
+    return [(i, f) for i, f in out if i == which or i.startswith(which) or evidence_key(i) == which]
+
+
+def evidence_key(lecture_id):
+    import evidence
+    return evidence.lecture_key(lecture_id)
+
+
+def _embedder():
+    """(embed, model) when STUDY_EMBED_MODEL names an embedding model on the local server;
+    (None, None) otherwise. The model must be pinned in the server so loading it never
+    evicts the main model."""
+    model = getattr(study, "EMBED_MODEL", "") or ""
+    return (study.embed, model) if model and hasattr(study, "embed") else (None, None)
+
+
+def _day_guard(day: str):
+    day_start = dt.datetime.strptime(day, "%Y%m%d").replace(hour=12).astimezone()
+    return lambda lines: _guard_names({"start": day_start}, lines, report=False)
+
+
+def build_index(which="all", say=print) -> dict:
+    import evidence, name_guard
+    embed, model = _embedder()
+    con = evidence.connect(INDEX)
+    done = []
+    for lecture_id, folder in _index_targets(which):
+        day = re.search(r"(\d{8})", lecture_id)[1]
+        guard = _day_guard(day)
+        if lecture_id.startswith("live/"):
+            title, recs = evidence.live_records(folder, guard)
+            bounds = [r["t0"] for r in recs if r["kind"] == "s"]
+        else:
+            title, recs = evidence.lecture_records(folder, guard)
+            al = folder / "aligned_segments.json"
+            try:
+                bounds = [w["start_s"] for w in json.loads(al.read_text()) if w.get("slide_n") is not None] if al.exists() \
+                    else [r["t0"] for r in recs if r["kind"] == "s"]
+            except Exception:
+                bounds = [r["t0"] for r in recs if r["kind"] == "s"]
+        rep = evidence.index_lecture(con, lecture_id, title, recs, bounds, embed=embed, embed_model=model,
+                                     guard_version=getattr(name_guard, "GUARD_VERSION", None))
+        done.append(rep)
+        say(f"  {evidence.lecture_key(lecture_id)}: {rep['chunks']} passages, {rep['lines']} lines"
+            + (f", {rep['embedded']} embedded" if model else ""))
+    # the name check: the guard run again over what the index holds changes nothing
+    left = 0
+    for lecture_id, _ in _index_targets(which):
+        texts = [r[0] for r in con.execute("SELECT text FROM lines WHERE lecture_id=? ORDER BY rowid", (lecture_id,))]
+        again = _day_guard(re.search(r"(\d{8})", lecture_id)[1])(texts)
+        left += sum(1 for x, y in zip(texts, again) if x != y)
+    con.execute("INSERT OR REPLACE INTO meta VALUES('names_left', ?)", (str(left),)); con.commit()
+    return {"ok": True, "index": str(INDEX.name), "lectures": done, "embed_model": model or None, "names_left": left}
+
+
+def cmd_index(a):
+    import contextlib, io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf) if a.json else contextlib.nullcontext():
+        rep = build_index(a.which, say=(lambda *_: None) if a.json else print)
+    if a.json:
+        print(json.dumps(rep))
+    else:
+        print(f"index: {len(rep['lectures'])} lecture(s); names left: {rep['names_left']}")
+
+
+def _search_fn(con, lectures=None, near=None, sources=("transcript", "slide", "evidence")):
+    import evidence
+    embed, model = _embedder()
+    return lambda q, k=8: evidence.search(con, q, k=k, lectures=lectures, near=near, sources=sources,
+                                          embed=embed, embed_model=model)
+
+
+def cmd_search(a):
+    import evidence
+    if not INDEX.exists():
+        print(json.dumps({"ok": False, "error": "no index yet: run `lecture index all`"})); return
+    con = evidence.connect(INDEX)
+    lectures = [i for i, _ in _index_targets(a.lecture)] if a.lecture else None
+    hits = _search_fn(con, lectures)(a.query, a.k)
+    if a.json:
+        print(json.dumps([{k: h[k] for k in ("chunk_id", "lecture_id", "line_ids", "t0", "context", "text",
+                                              "score_lex", "score_dense", "score_rerank")} for h in hits], ensure_ascii=False))
+    else:
+        for h in hits:
+            print(f"{h['chunk_id']}  {h['context']}\n    {h['text'][:200]}")
+
+
+def _checker(slot="interactive"):
+    import cite
+    cal = json.loads(CHECKER_CAL.read_text()) if CHECKER_CAL.exists() else None
+    if os.environ.get("STUDY_CITE_CHECKER", "lexical") == "llm":
+        ck = cite.llm_checker(lambda p: study.llm("You check whether passages support a claim. Reply with JSON only.",
+                                                   p, max_tokens=80, temperature=0.0, slot=slot))
+    else:
+        ck = cite.LEXICAL
+    return cite.calibrated(ck, cal)
+
+
+def cite_v3(answer: str, day: str, at: dt.datetime | None, window_min: float = 10.0) -> dict | None:
+    """Sentence-by-sentence check of an answer against the evidence store (NG-2); None when
+    no index exists. Passages come from the day's lectures, near the answer's time."""
+    import cite, evidence
+    if not INDEX.exists():
+        return None
+    con = evidence.connect(INDEX)
+    lectures = [i for i, _ in _index_targets("all") if day in i]
+    if not lectures:
+        return None
+    near = (at, window_min * 60) if at else None
+    folders = dict(_index_targets("all"))
+
+    def thumb(h):
+        if h["source"] != "slide" or h["lecture_id"].startswith("live/"):
+            return None
+        f = folders.get(h["lecture_id"])
+        n = h["chunk_id"].rsplit("/", 1)[-1]
+        hit = sorted((f / "slides").glob(f"{int(n):02d}_*.jpg")) if f and n.isdigit() and (f / "slides").exists() else []
+        return str(hit[0]) if hit else None
+
+    words_fn, other_fn = (_search_fn(con, lectures, near, ("transcript",)),
+                          _search_fn(con, lectures, near, ("slide", "evidence")))
+    # short slide and source records outrank long transcript passages in BM25, so the top
+    # eight are mixed: six transcript passages, then two slides or sources
+    mixed = lambda q, k=8: words_fn(q, k - 2) + other_fn(q, 2)
+    res = cite.lint(answer, search=mixed, lines_of=lambda ids: evidence.lines_of(con, ids),
+                    checker=_checker(), slide_thumb=thumb)
+    try:   # ALCE-style metrics per answer for the eval store: counts and ids, never text
+        CITE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with CITE_LOG.open("a") as f:
+            f.write(json.dumps({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                                "answer_id": res["answer_id"], "day": day, "checker": res["checker"],
+                                **res.get("metrics", {})}) + "\n")
+    except OSError:
+        pass
+    return res
+
+
+def cmd_checker(a):
+    """Calibrate the support checker on learner-labelled pairs (M-5), or write unlabelled
+    candidate pairs to label."""
+    import cite, evidence
+    if a.action == "calibrate":
+        pairs = [json.loads(l) for l in Path(a.pairs).read_text().splitlines() if l.strip()]
+        pairs = [p for p in pairs if p.get("label") in (0, 1)]
+        ck = _checker(slot="background")
+        rep = cite.calibrate(ck, pairs)
+        rep["at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        CHECKER_CAL.parent.mkdir(parents=True, exist_ok=True)
+        CHECKER_CAL.write_text(json.dumps(rep, indent=1))
+        print(json.dumps(rep))
+        return
+    todo = Path(a.out)
+    labelled = Path(a.pairs)
+    if a.action in ("todo", "label"):
+        rows = [json.loads(l) for l in todo.read_text().splitlines() if l.strip()] if todo.exists() else []
+        if a.action == "label":
+            if not (0 <= a.i < len(rows)) or a.label not in (0, 1):
+                print(json.dumps({"ok": False, "error": "need --i within the list and --label 0 or 1"})); return
+            r = rows.pop(a.i)
+            r["label"] = a.label
+            r["labelled_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+            labelled.parent.mkdir(parents=True, exist_ok=True)
+            with labelled.open("a") as f:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            todo.write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in rows))
+        done = sum(1 for l in labelled.read_text().splitlines() if l.strip()) if labelled.exists() else 0
+        print(json.dumps({"ok": True, "labelled": done, "target": 100,
+                          "todo": [{"i": i, "sentence": r["sentence"], "passage": r["passage"]} for i, r in enumerate(rows[:50])],
+                          "remaining": len(rows)}, ensure_ascii=False))
+        return
+    # pairs: sentences from the day's curated answers against their top passages
+    d = LECTURES / "live" / a.day
+    rows = [json.loads(l) for l in (d / "questions.jsonl").read_text().splitlines() if l.strip()] if (d / "questions.jsonl").exists() else []
+    con = evidence.connect(INDEX)
+    lectures = [i for i, _ in _index_targets("all") if a.day in i]
+    out, guard = [], _day_guard(a.day)
+    for r in rows:
+        at = cite.parse_t(r.get("t", ""))
+        for s in cite.split_sentences(r.get("answer", "")):
+            for h in evidence.search(con, s, k=2, lectures=lectures, near=(at, 600) if at else None):
+                out.append({"sentence": guard([s])[0], "passage": h["text"][:700], "line_ids": h["line_ids"], "label": None})
+        if len(out) >= a.n:
+            break
+    dest = Path(a.out)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n".join(json.dumps(p, ensure_ascii=False) for p in out[: a.n]) + "\n")
+    print(json.dumps({"ok": True, "pairs": len(out[: a.n]), "file": str(dest)}))
 
 
 def cmd_curate(a):
@@ -2077,7 +2292,22 @@ def main():
     p.add_argument("--sources", default="", help="evidence ids, comma-separated")
     p.add_argument("--day", default="", help="live folder day, yyyymmdd")
     p.add_argument("--window", type=float, default=10.0, help="minutes either side")
+    p.add_argument("--answer", default="", help="answer text alone, for the sentence check (default: --text)")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_cite)
+    p = sub.add_parser("index", help="build the evidence store (lectures/index.sqlite) from guarded text")
+    p.add_argument("which", nargs="?", default="all", help="lecture id, its date-time prefix, live/<day>, or all")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_index)
+    p = sub.add_parser("search", help="search the evidence store")
+    p.add_argument("query"); p.add_argument("--lecture", default="", help="limit to one lecture (id or prefix)")
+    p.add_argument("--k", type=int, default=8); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_search)
+    p = sub.add_parser("checker", help="citation support checker: calibrate on labelled pairs, or write pairs to label")
+    p.add_argument("action", choices=["calibrate", "pairs", "todo", "label"])
+    p.add_argument("--i", type=int, default=-1, help="label: position in the todo list")
+    p.add_argument("--label", type=int, default=-1, help="label: 1 supports, 0 does not")
+    p.add_argument("--pairs", default=str(HERE / "eval" / "golden" / "support_pairs.jsonl"))
+    p.add_argument("--day", default="", help="pairs: live folder day, yyyymmdd")
+    p.add_argument("--n", type=int, default=120); p.add_argument("--out", default=str(HERE / "eval" / "golden" / "support_pairs_todo.jsonl"))
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_checker)
     p = sub.add_parser("next", help="the next class from the programme calendar"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_next)
     p = sub.add_parser("brief", help="before class: recall points and questions from the agenda and earlier notes")
     p.add_argument("--title", required=True); p.add_argument("--agenda", help="text file with the agenda")

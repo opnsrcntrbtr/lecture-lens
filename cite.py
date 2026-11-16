@@ -5,6 +5,7 @@ then. Deterministic: no model call. Attendee names are removed from the lines sh
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -174,6 +175,12 @@ def verify_citations(
     window_s: float = 90.0,
     start: dt.datetime | None = None,
 ) -> list[dict]:
+    """Explicit-reference warnings only: lint() without the evidence store."""
+    return lint(text, valid_slides=valid_slides, transcript_segments=transcript_segments, min_shared=min_shared,
+                duration_s=duration_s, window_s=window_s, start=start)["warnings"]
+
+
+def _lint_refs(text, valid_slides, transcript_segments, min_shared=1, duration_s=None, window_s=90.0, start=None):
     """Deterministic citation linter (pure stdlib).
 
     Checks every [HH:MM:SS] / [MM:SS] and [slide N] reference in `text`:
@@ -249,3 +256,178 @@ def verify_citations(
                     })
 
     return warnings
+
+
+# ------------------------------------------------------------------ citations v3 (NG-2)
+# One linter: lint() checks the explicit [mm:ss] / [slide N] references (the deterministic
+# rules above) and, when given a search function over the evidence store, checks each
+# sentence against the passages it retrieves. verify_citations() is lint() without search.
+
+SENT_SPLIT = re.compile(r"(?<=[.!?])[\"')\]]*\s+(?=[\"'(\[\-–]?\s*[A-Z0-9])")
+BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Sentences of an answer, one per bullet or line, then split on end punctuation.
+    Questions (ending '?') are not claims and are left out."""
+    out = []
+    for line in (text or "").splitlines():
+        line = BULLET.sub("", line).strip()
+        if not line or line.startswith("#"):
+            continue
+        for s in SENT_SPLIT.split(line):
+            s = s.strip().lstrip("-– ").strip()
+            if len(norm_words(_RE_BRACKET_TAG.sub(" ", s))) >= 2 and not s.endswith("?"):
+                out.append(s)
+    return out
+
+
+class Checker:
+    """A support check: fn(sentence, passages) -> one probability per passage that the
+    passage supports the sentence. `calibrated` is set only from a passing calibration."""
+
+    def __init__(self, name: str, version: str, threshold: float, fn, calibrated: bool = False):
+        self.name, self.version, self.threshold, self.fn, self.calibrated = name, version, threshold, fn, calibrated
+
+    def card(self) -> dict:
+        return {"name": self.name, "version": self.version, "threshold": self.threshold, "calibrated": self.calibrated}
+
+
+def lexical_support(sentence: str, passages: list[str]) -> list[float]:
+    """Share of the sentence's content words found in each passage (0..1). A relevance
+    signal, not a verification: on its own it never earns 'supported'."""
+    want = norm_words(_RE_BRACKET_TAG.sub(" ", sentence))
+    if not want:
+        return [0.0 for _ in passages]
+    return [round(len(want & norm_words(p)) / len(want), 3) for p in passages]
+
+
+LEXICAL = Checker("lexical-overlap", "1", 0.6, lexical_support)
+
+LLM_CHECK_PROMPT = """CLAIM: {claim}
+
+PASSAGES:
+{passages}
+
+Which passages state or directly imply the CLAIM? A passage that is only on the same topic does not count.
+Reply with JSON only: {{"support": [passage numbers]}}"""
+
+
+def llm_checker(llm, version: str = "1", threshold: float = 0.5) -> Checker:
+    """The main model as checker: one constrained call per sentence over its passages,
+    run by the caller under the interactive slot. Probabilities are 0 or 1."""
+    def fn(sentence, passages):
+        if not passages:
+            return []
+        body = "\n".join(f"[{i}] {p[:700]}" for i, p in enumerate(passages, 1))
+        raw = llm(LLM_CHECK_PROMPT.format(claim=sentence, passages=body))
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        try:
+            ids = {int(x) for x in json.loads(m.group(0)).get("support", [])} if m else set()
+        except (ValueError, TypeError, AttributeError):
+            ids = set()
+        return [1.0 if i in ids else 0.0 for i in range(1, len(passages) + 1)]
+    return Checker("main-model-yesno", version, threshold, fn)
+
+
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    if n == 0:
+        return (0.0, 1.0)
+    p = k / n
+    d = 1 + z * z / n
+    c = p + z * z / (2 * n)
+    r = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5)
+    return (round((c - r) / d, 3), round((c + r) / d, 3))
+
+
+def calibrate(checker: Checker, pairs: list[dict], target: float = 0.85) -> dict:
+    """True-positive and true-negative rates of a checker on labelled sentence-passage
+    pairs ({sentence, passage, label: 1|0}), with Wilson intervals. `passes` needs both
+    point rates at or above the target."""
+    tp = fn_ = tn = fp = 0
+    for p in pairs:
+        pr = checker.fn(p["sentence"], [p["passage"]])
+        yes = bool(pr) and pr[0] >= checker.threshold
+        if int(p["label"]) == 1:
+            tp, fn_ = tp + yes, fn_ + (not yes)
+        else:
+            tn, fp = tn + (not yes), fp + yes
+    pos, neg = tp + fn_, tn + fp
+    tpr, tnr = (tp / pos if pos else 0.0), (tn / neg if neg else 0.0)
+    return {"checker": checker.card() | {"calibrated": None}, "n": len(pairs), "positives": pos, "negatives": neg,
+            "tpr": round(tpr, 3), "tpr_ci": wilson(tp, pos), "tnr": round(tnr, 3), "tnr_ci": wilson(tn, neg),
+            "target": target, "passes": bool(pos and neg and tpr >= target and tnr >= target)}
+
+
+def calibrated(checker: Checker, calibration: dict | None) -> Checker:
+    """The checker with `calibrated` set when a stored calibration for this exact name,
+    version and threshold passed."""
+    c = (calibration or {}).get("checker", {})
+    checker.calibrated = bool(calibration and calibration.get("passes") and c.get("name") == checker.name
+                              and c.get("version") == checker.version and c.get("threshold") == checker.threshold)
+    return checker
+
+
+def _best_lines(sentence: str, lines: list[dict], n: int = 2) -> list[dict]:
+    want = norm_words(sentence)
+    scored = sorted(((len(want & norm_words(l["text"])), -i, l) for i, l in enumerate(lines)), key=lambda x: (-x[0], -x[1]))
+    best = [l for s, _, l in scored[:n] if s > 0] or lines[:1]
+    order = {id(l): i for i, l in enumerate(lines)}
+    return sorted(best, key=lambda l: order[id(l)])
+
+
+def lint(text: str, *, valid_slides=0, transcript_segments=None, duration_s=None, start=None, min_shared: int = 1,
+         window_s: float = 90.0, search=None, lines_of=None, checker: Checker | None = None, k: int = 8,
+         min_related: int = 2, slide_thumb=None, answer_id: str | None = None) -> dict:
+    """The citation linter.
+
+    Always: explicit-reference warnings (out-of-range or ungrounded [mm:ss] and [slide N]).
+    With `search(sentence, k) -> passages` (the evidence store) and `lines_of(line_ids)`:
+    per sentence, the top k passages, each with its best one or two lines as the quote and a
+    support probability from the checker. Status per sentence:
+      supported   - the checker is calibrated and a passage reaches its threshold
+      related     - passages sharing >= min_related content words were found, not verified
+      unsupported - nothing relevant was found, or a calibrated checker rejected them all
+    """
+    warnings = _lint_refs(text, valid_slides, transcript_segments or [], min_shared, duration_s, window_s, start)
+    out = {"answer_id": answer_id or hashlib.sha256((text or "").encode()).hexdigest()[:12],
+           "checker": (checker or LEXICAL).card(), "warnings": warnings, "sentences": []}
+    if search is None:
+        return out
+    ck = checker or LEXICAL
+    for i, s in enumerate(split_sentences(text)):
+        want = norm_words(_RE_BRACKET_TAG.sub(" ", s))
+        hits = [h for h in search(s, k) if len(want & norm_words(h["text"])) >= min_related]
+        probs = ck.fn(s, [h["text"] for h in hits]) if hits else []
+        cits = []
+        for h, p in zip(hits, probs):
+            ls = _best_lines(s, lines_of(h["line_ids"]) if lines_of else [])
+            cits.append({"line_ids": [l["line_id"] for l in ls] or h["line_ids"][:1], "t0": ls[0]["t0"] if ls else h["t0"],
+                         "t_abs": ls[0].get("t_abs") if ls else h.get("t_abs"), "source": h["source"],
+                         "quote": " ".join(l["text"] for l in ls) if ls else h["text"][:300],
+                         "score_lex": h.get("score_lex"), "score_dense": h.get("score_dense"), "support_p": p,
+                         "slide_thumb": slide_thumb(h) if slide_thumb else None})
+        if ck.calibrated:
+            ok = [c for c in cits if c["support_p"] is not None and c["support_p"] >= ck.threshold]
+            status = "supported" if ok else "unsupported"
+            if ok:
+                cits = ok + [c for c in cits if c not in ok]
+        else:
+            status = "related" if cits else "unsupported"
+        out["sentences"].append({"i": i, "text": s, "status": status, "citations": cits})
+    out["metrics"] = alce(out)
+    return out
+
+
+def alce(result: dict) -> dict:
+    """ALCE-style citation recall (sentences with a supporting citation) and precision
+    (citations that support), counted only when the checker is calibrated; otherwise
+    None, with the status counts kept either way."""
+    sents = result.get("sentences", [])
+    counts = {st: sum(1 for s in sents if s["status"] == st) for st in ("supported", "related", "unsupported")}
+    cal = result.get("checker", {}).get("calibrated")
+    thr = result.get("checker", {}).get("threshold", 1.0)
+    cits = [c for s in sents for c in s["citations"]]
+    recall = round(counts["supported"] / len(sents), 3) if cal and sents else None
+    precision = round(sum(1 for c in cits if (c["support_p"] or 0) >= thr) / len(cits), 3) if cal and cits else None
+    return {"sentences": len(sents), **counts, "citation_recall": recall, "citation_precision": precision}

@@ -60,3 +60,6 @@ studio/dist/
 studio/vendor/
 website/static/studio/
 ralph/.logs/
+
+# learner labels and candidate pairs hold lecture text
+eval/golden/

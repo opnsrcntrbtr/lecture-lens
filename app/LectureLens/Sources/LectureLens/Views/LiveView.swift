@@ -98,7 +98,7 @@ struct LiveView: View {
                         HStack(alignment: .top) {
                             Text("\(i + 1). ").font(.scaled(.callout, weight: .bold)) + Text(c.q).font(.scaled(.callout, weight: .semibold))
                             Spacer()
-                            CitationButton(title: c.q, t: c.t, text: c.q + " " + c.answer, sources: c.sources, day: live.day)
+                            CitationButton(title: c.q, t: c.t, text: c.q + " " + c.answer, sources: c.sources, day: live.day, answer: c.answer)
                             copyButton(c.q)
                         }
                         Text("Draft: \(c.answer)\(live.sourceTitles(c.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
@@ -154,7 +154,7 @@ struct LiveView: View {
                 Text(c.part == "later" ? "later · \(c.type): " : "\(c.type): ").font(.scaled(.callout, weight: .semibold))
                     + Text(c.q).font(.scaled(.callout))
                 Spacer()
-                CitationButton(title: c.q, t: c.t, text: c.q + " " + c.answer, sources: c.sources, day: live.day)
+                CitationButton(title: c.q, t: c.t, text: c.q + " " + c.answer, sources: c.sources, day: live.day, answer: c.answer)
                 copyButton(c.q)
             }
             Text("Draft: \(c.answer)\(live.sourceTitles(c.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
@@ -238,7 +238,7 @@ struct LiveView: View {
             HStack(alignment: .top) {
                 Text("Follow-up (\(f.type)): ").font(.scaled(.callout, weight: .semibold)) + Text(f.q).font(.scaled(.callout))
                 Spacer()
-                CitationButton(title: f.q, t: f.t, text: f.q + " " + f.answer, sources: f.sources, day: live.day)
+                CitationButton(title: f.q, t: f.t, text: f.q + " " + f.answer, sources: f.sources, day: live.day, answer: f.answer)
                 copyButton(f.q)
             }
             Text("Draft: \(f.answer)\(live.sourceTitles(f.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
@@ -260,7 +260,7 @@ struct LiveView: View {
                             Text(LiveData.clock(q.t) + "  ").font(.scaled(.caption, weight: .semibold)).foregroundStyle(.secondary)
                             + Text("\(q.type): ").font(.scaled(.callout, weight: .semibold)) + Text(q.q).font(.scaled(.callout))
                             Spacer()
-                            CitationButton(title: q.q, t: q.t, text: q.q + " " + q.answer, sources: q.sources, day: live.day)
+                            CitationButton(title: q.q, t: q.t, text: q.q + " " + q.answer, sources: q.sources, day: live.day, answer: q.answer)
                             copyButton(q.q)
                         }
                         Text("Draft: \(q.answer)\(live.sourceTitles(q.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
