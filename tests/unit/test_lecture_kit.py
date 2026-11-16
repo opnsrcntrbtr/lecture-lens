@@ -217,3 +217,81 @@ def test_keyframe_bench_v2_recovers_every_slide():
     kb = _bench()
     frames = kb.deck("astronomy", n_slides=4, views=2, seed=3)
     assert kb.score(kb.run_rule(frames, kb.production), 4) == {"kept": 4, "recall": 1.0, "precision": 1.0}
+
+
+# --- slide-bounded alignment & slide-boundary chunking ---
+def test_align_segments_partitions_transcript_and_matches_deck():
+    slides = [
+        {"n": 1, "at": "00:01:00", "file": "01.jpg", "screen_text": "Introduction to Retrieval Augmented Generation", "description": None},
+        {"n": 2, "at": "00:03:00", "file": "02.jpg", "screen_text": "Evaluation Metrics Faithfulness Recall", "description": None},
+    ]
+    lines = [
+        "[00:00:20] Welcome everyone.",
+        "[00:01:10] RAG retrieves chunks before generation.",
+        "[00:02:50] Embeddings index the corpus.",
+        "[00:03:15] Faithfulness measures grounding.",
+    ]
+    deck = [
+        {"n": 1, "title": "Retrieval Augmented Generation", "text": "Chunking and embeddings"},
+        {"n": 2, "title": "Evaluation Metrics", "text": "Faithfulness and recall"},
+    ]
+    aligned = k.align_segments(slides, lines, deck=deck, duration_s=300)
+    assert len(aligned) == 3
+    assert aligned[0]["slide_n"] is None and aligned[0]["lines"] == ["[00:00:20] Welcome everyone."]
+    assert aligned[1]["slide_n"] == 1 and len(aligned[1]["lines"]) == 2
+    assert aligned[1]["deck_slide"] == 1
+    assert aligned[2]["slide_n"] == 2 and aligned[2]["deck_slide"] == 2
+    assert deck[0]["active_spans"] == ["01:00–03:00"]
+    assert deck[1]["active_spans"] == ["03:00–05:00"]
+
+
+def test_split_lines_prefers_slide_boundaries():
+    lines = [
+        "[00:00:10] " + "a" * 30,
+        "[00:00:20] " + "b" * 30,
+        "[00:01:00] " + "c" * 30,
+        "[00:01:10] " + "d" * 30,
+    ]
+    parts = k._split_lines(lines, budget=100, boundary_offsets=[60.0])
+    assert len(parts) == 2
+    assert parts[0].splitlines() == lines[:2]
+    assert parts[1].splitlines() == lines[2:]
+
+
+# --- dwell filter, bookmark pinning, and salience-weighted keyframes ---
+def test_keyframes_dwell_filter_and_bookmark_pinning(monkeypatch, tmp_path):
+    t0 = dt.datetime(2026, 10, 3, 4, 0, tzinfo=UTC)
+    bm_file = tmp_path / "bookmarks.jsonl"
+    bm_file.write_text(f'{{"type": "bookmark", "received": "{(t0 + dt.timedelta(seconds=25)).isoformat()}"}}\n')
+
+    # Frame 1 (0s): stable; Frame 2 (10s): transient (<2s) before Frame 3 (11s, stable);
+    # Frame 4 (25s): non-visual_change but bookmark-pinned!
+    frames = [
+        {**frame(0, text="Alpha slide content " * 10), "ts": t0, "id": 1},
+        {**frame(0, text="Transition blur " * 10), "ts": t0 + dt.timedelta(seconds=10), "id": 2},
+        {**frame(0, text="Beta slide content " * 10), "ts": t0 + dt.timedelta(seconds=11), "id": 3},
+        {**frame(0, text="Pinned static frame " * 10, trigger="periodic"), "ts": t0 + dt.timedelta(seconds=25), "id": 4},
+    ]
+    sess = {"start": t0, "end": t0 + dt.timedelta(minutes=5), "frames": frames}
+    monkeypatch.setattr(k, "frame_image", lambda con, f, tmpdir: tmp_path / f"{f['id']}.jpg")
+    monkeypatch.setattr(k, "_hash_and_thumb", lambda img: (None, None))
+    picked = k.keyframes(None, sess, max_frames=10, bookmarks_path=bm_file)
+    ids = [f["id"] for f in picked]
+    assert 2 not in ids          # transient <2s frame skipped
+    assert 1 in ids and 3 in ids # stable frames kept
+    assert 4 in ids              # bookmark-pinned non-visual_change frame kept
+    assert next(f for f in picked if f["id"] == 4)["pinned"] is True
+
+
+def test_select_keyframes_prefers_pinned_and_novel_ocr():
+    t0 = dt.datetime(2026, 10, 3, 4, 0, tzinfo=UTC)
+    picked = [
+        {"id": 1, "ts": t0, "text": "intro overview agenda", "pinned": False},
+        {"id": 2, "ts": t0 + dt.timedelta(seconds=10), "text": "intro overview agenda", "pinned": False},
+        {"id": 3, "ts": t0 + dt.timedelta(seconds=20), "text": "bookmark target", "pinned": True},
+        {"id": 4, "ts": t0 + dt.timedelta(seconds=30), "text": "transformer attention softmax scaling matrix", "pinned": False},
+    ]
+    chosen = k._select_keyframes(picked, max_frames=2, session_end=t0 + dt.timedelta(seconds=90))
+    chosen_ids = [f["id"] for f in chosen]
+    assert 3 in chosen_ids       # pinned bookmark retained
+    assert 4 in chosen_ids       # highest OCR novelty + longest dwell retained

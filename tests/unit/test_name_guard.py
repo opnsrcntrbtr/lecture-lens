@@ -28,10 +28,10 @@ def test_panel_authors_removed_everywhere():
 
 
 def test_unknown_words_are_reviewed_not_removed():
-    lines = ["[00:06:00] The Klarna case and the Klarna metric."]
+    lines = ["[00:06:00] The Plaxo case and the Plaxo metric."]
     out, rep = ng.guard(lines, dictionary=DICT, staff=set())
-    assert out == lines and rep["review"] == {"Klarna": 2}
-    out, rep = ng.guard(lines, dictionary=DICT, allow={"klarna"}, staff=set())
+    assert out == lines and rep["review"] == {"Plaxo": 2}
+    out, rep = ng.guard(lines, dictionary=DICT, allow={"plaxo"}, staff=set())
     assert rep["review"] == {}
 
 
@@ -63,3 +63,76 @@ def test_frequent_capitalised_term_is_reviewed_not_removed():
 def test_names_with_initials_still_count():
     assert ng.looks_like_name("Quillana B.") and ng.looks_like_name("Orrin Vale")
     assert not ng.looks_like_name("PRD") and not ng.looks_like_name("Can we share the deck?")
+
+
+# ---------------------------------------------------------------- v2: roster layer (invented names)
+ROSTER = ["Zorvana Quillamurthy", "Pradyot Vexanta", "Seelan Brahmavar"]
+
+
+def test_roster_catches_asr_spellings_and_keeps_domain_terms():
+    r = ng.Roster(ROSTER, dictionary=DICT)
+    lines = ["[00:01:00] As Zorvanah said, the PRD needs a timestamp.",
+             "[00:02:00] Pradyoth asked about dependencies and the panelists.",
+             "[00:03:00] Shelan mentioned the Klarna case.",
+             "[00:04:00] quilamurti had a follow-up."]
+    out, rep = ng.guard(lines, dictionary=DICT, staff=set(), roster=r)
+    text = "\n".join(out)
+    for w in ("Zorvanah", "Pradyoth", "Shelan"):
+        assert w not in text, w
+    assert "quilamurti" in rep["review"]          # a lower-case spelling match is reviewed, not removed
+    for w in ("PRD", "timestamp", "dependencies", "panelists", "Klarna"):
+        assert w in text, w
+    layers = {e["token"]: e["layer"] for e in rep["entries"] if e["decision"] == "removed"}
+    assert layers["Pradyoth"].startswith("roster-") and rep["guard_version"] == "2"
+
+
+def test_full_roster_name_and_exact_parts_skip_the_frequency_gate():
+    r = ng.Roster(ROSTER, dictionary=DICT)
+    lines = [f"[00:{i:02d}:00] Pradyot Vexanta raised a hand again." for i in range(12)]
+    out, rep = ng.guard(lines, dictionary=DICT, staff=set(), roster=r)
+    assert all("Pradyot" not in l and "Vexanta" not in l for l in out)
+    assert "Pradyot" not in rep["review"]
+
+
+def test_learner_decisions_win_both_ways():
+    r = ng.Roster(ROSTER, dictionary=DICT)
+    lines = ["[00:01:00] Brahmavar and Ombrix were both mentioned twice.", "[00:02:00] Ombrix again, and Brahmavar."]
+    out, rep = ng.guard(lines, dictionary=DICT, staff=set(), roster=r, decisions={"brahmavar": "keep", "ombrix": "remove"})
+    assert "Brahmavar" in out[0] and "Ombrix" not in out[0] and "Ombrix" not in out[1]
+    assert {e["layer"] for e in rep["entries"] if e["token"] == "Ombrix"} == {"learner"}
+
+
+def test_staff_and_dictionary_parts_are_not_matched_alone():
+    r = ng.Roster(["Rose Zentaro"], keep={"zentaro"}, dictionary=DICT | {"rose"})
+    assert len(r) == 0 and r.match("Rose") is None
+    out, _ = ng.guard(["[00:01:00] A rose garden."], dictionary=DICT | {"rose", "a", "garden"}, staff=set(), roster=r)
+    assert out == ["[00:01:00] A rose garden."]
+
+
+def test_close_but_uncertain_spelling_goes_to_review():
+    r = ng.Roster(ROSTER, dictionary=DICT)
+    hit = r.match("Prado")
+    assert hit and hit[0] == "review"
+
+
+def test_roster_and_decisions_files_round_trip(tmp_path):
+    info = ng.update_roster(tmp_path, {"20300101": {"Orrin Vale", "What is a PRD?", "Everyone"}})
+    assert info == {"names": 1, "added": 1}
+    (tmp_path / "attendees.txt").write_text("Quessa Lorimar  # added by hand\n")
+    assert set(ng.load_roster(tmp_path)) == {"Orrin Vale", "Quessa Lorimar"}
+    d = ng.save_decisions(tmp_path, remove=["Ombrix"], keep=["Klarna"])
+    assert d == {"klarna": "keep", "ombrix": "remove"} and ng.load_decisions(tmp_path) == d
+
+
+def test_inflections_places_caps_and_json_escapes():
+    r = ng.Roster(["Meanor Kallad", "Pradyot Vexanta"], dictionary=DICT | {"mean", "call"})
+    lines = ['{"q": "It means a lot.\\nPradyot asked; NVIDIA and Mumbai came up."}', "Called it. Means well."]
+    out, rep = ng.guard(lines, dictionary=DICT | {"mean", "call", "it", "a", "lot", "well"}, staff=set(), roster=r)
+    assert "means" in out[0] and "Means" in out[1] and "Called" in out[1]
+    assert "\\nan attendee asked" in out[0] and "NVIDIA" in out[0] and "Mumbai" in out[0]
+
+
+def test_held_tokens_are_reviewed_not_removed():
+    r = ng.Roster(ROSTER, dictionary=DICT)
+    out, rep = ng.guard(["[00:01:00] Pradyoth spoke."], dictionary=DICT, staff=set(), roster=r, hold={"Pradyoth"})
+    assert "Pradyoth" in out[0] and "Pradyoth" in rep["review"]

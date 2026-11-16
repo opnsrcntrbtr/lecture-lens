@@ -162,3 +162,11 @@ import Testing
     let w = try #require(ClassReminder.window(c))
     #expect(Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "Europe/London")!, from: w.start).hour == 10)
 }
+
+@Test func namesAuditAndCandidatesDecode() throws {
+    let a = try JSONDecoder().decode(NamesAudit.self, from: Data(#"{"ok": true, "guard_version": "2", "files_with_names": 3, "removed_total": 9, "review_total": 4, "held_for_review": 1}"#.utf8))
+    #expect(a.files_with_names == 3 && a.files_rewritten == nil)
+    let rows = try JSONDecoder().decode([NameCandidate].self, from: Data(#"[{"token": "Zorvan", "total": 3, "groups": ["20300101-1000_Garden"], "layer": "roster-phonetic", "score": 0.82, "decision": "review", "held": false, "learner": null}, {"token": "Plaxo", "total": 9, "groups": ["a", "b"], "layer": "capitalised", "score": 0.0, "decision": "review"}]"#.utf8))
+    #expect(rows[0].needsDecision && !rows[1].needsDecision)
+    #expect(NamesReview.decideArgs(["Zorvan": "remove", "Plaxo": "keep"]) == ["names", "decide", "--json", "--remove", "Zorvan", "--keep", "Plaxo"])
+}

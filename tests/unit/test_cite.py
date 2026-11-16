@@ -41,3 +41,36 @@ def test_lecture_segments_from_a_built_lecture(tmp_path):
     segs = cite.lecture_segments(tmp_path, T0 + dt.timedelta(minutes=10))
     assert segs == [{"t": iso(4), "text": "Raised beds drain faster."}]
     assert cite.lecture_segments(tmp_path, T0 + dt.timedelta(hours=3)) == []
+
+
+def test_verify_citations_valid_and_normalized():
+    slides = [
+        {"n": 1, "at": "00:00:30", "title": "KV-Cache Basics", "description": "Explains kv-cache memory reuse."},
+        {"n": 2, "at": "00:05:00", "title": "Unit Economics", "description": "Token pricing and gross margins."},
+    ]
+    segs = [
+        {"at": "00:01:00", "text": "Using a kvcache cuts latency across transformer models."},
+        {"at": "00:05:20", "text": "Gross margin improves when token cost drops."},
+    ]
+    notes = (
+        "- Key-value reuse via kv-cache reduces latency for transformer model inference [00:01:10] [slide 1].\n"
+        "- Token pricing drives gross margin [05:15] [slide 2].\n"
+    )
+    assert cite.verify_citations(notes, slides, segs, duration_s=600) == []
+
+
+def test_verify_citations_catches_out_of_range_and_ungrounded():
+    slides = [{"n": 1, "at": "00:01:00", "title": "Soil", "description": "Mulch retains soil moisture."}]
+    segs = [{"at": "00:01:00", "text": "Mulch retains soil moisture in dry weather."}]
+    notes = (
+        "- Mulch retains moisture [00:01:05] [slide 1].\n"
+        "- Ghost claim beyond end [00:45:00].\n"
+        "- Invalid slide [slide 0] and missing slide [slide 5].\n"
+        "- Quantum entanglement speeds up rockets [00:01:10] [slide 1].\n"
+    )
+    w = cite.verify_citations(notes, slides, segs, duration_s=300)
+    kinds = [x["kind"] for x in w]
+    assert "timestamp_out_of_range" in kinds
+    assert kinds.count("slide_out_of_range") == 2
+    assert "ungrounded_timestamp" in kinds
+    assert "ungrounded_slide" in kinds

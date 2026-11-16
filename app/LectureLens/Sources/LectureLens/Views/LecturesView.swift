@@ -7,6 +7,7 @@ struct LecturesView: View {
     @Bindable var model: AppModel
     @State private var selection: String? = nil
     @State private var filter = ""
+    @State private var showNames = false
 
     private var shown: [Session] {
         let s = model.sessions.sorted { ($0.start ?? "") > ($1.start ?? "") }
@@ -51,9 +52,12 @@ struct LecturesView: View {
         }
         .navigationTitle("Lectures")
         .toolbar {
+            Button("Names review", systemImage: "person.crop.circle.badge.xmark") { showNames = true }
+                .help("Find attendee names in stored lectures and remove them")
             Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.loadSessions() } }
                 .disabled(model.loadingSessions)
         }
+        .sheet(isPresented: $showNames) { NamesReviewSheet(model: model) }
     }
 
     static func day(_ iso: String?) -> String? {
