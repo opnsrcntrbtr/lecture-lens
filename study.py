@@ -77,7 +77,14 @@ class LLMBusy(RuntimeError):
 
 # How long each kind of caller waits for the local model: people waiting on a click wait,
 # background rounds (live follower, auto-curate) skip and let the next round cover it.
-SLOT_WAIT = {"interactive": 120.0, "background": 5.0, "build": 900.0}
+# NG-6 lanes: a waiting caller of higher priority goes first. Batch work ('build') only takes
+# the model when no interactive or time-boxed caller is waiting, so Ask stays responsive
+# during a build; a time-boxed caller (a live round with a deadline) waits until its
+# deadline and is then skipped. The model server itself has no priorities.
+SLOT_WAIT = {"interactive": 120.0, "time_boxed": 60.0, "background": 5.0, "build": 900.0}
+PRIORITY = {"interactive": 3, "time_boxed": 2, "background": 1, "build": 0}
+WAITER_STALE_S = 30.0
+_LAST = {}
 
 
 def _lock_path() -> Path:
@@ -85,48 +92,152 @@ def _lock_path() -> Path:
         os.environ.get("STUDY_LECTURE_DIR", str(HERE / "lectures")), ".llm.lock"))))
 
 
+def _metrics_path() -> Path:
+    return _lock_path().parent / "llm_slot_metrics.jsonl"
+
+
+def _log_slot(row: dict) -> None:
+    try:
+        with _metrics_path().open("a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError:
+        pass
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def waiting(above: int, wait_dir: Path, me: Path | None = None) -> int:
+    """How many live callers of priority higher than `above` are waiting (stale or dead
+    waiters are ignored and cleaned up)."""
+    n = 0
+    now = time.time()
+    for w in wait_dir.glob("*.wait") if wait_dir.exists() else []:
+        if me is not None and w == me:
+            continue
+        try:
+            prio, _kind, pid, _ = w.stem.split("-", 3)
+            fresh = now - w.stat().st_mtime < WAITER_STALE_S
+        except (ValueError, OSError):
+            continue
+        if not fresh or not _alive(int(pid)):
+            w.unlink(missing_ok=True)
+            continue
+        n += int(prio) > above
+    return n
+
+
 @contextlib.contextmanager
-def llm_slot(kind: str | None = None):
+def llm_slot(kind: str | None = None, deadline: float | None = None):
     """One caller at a time on the local model (flock on lectures/.llm.lock). The kind comes
-    from the argument, else $STUDY_LLM_SLOT, else interactive; LLMBusy after its wait."""
+    from the argument, else $STUDY_LLM_SLOT, else interactive; LLMBusy after its wait (for a
+    time-boxed caller, at `deadline`, a time.time() value). Higher-priority waiters go first.
+    Each use is logged to lectures/llm_slot_metrics.jsonl (waited_s, outcome, timings)."""
     kind = kind or os.environ.get("STUDY_LLM_SLOT", "interactive")
+    prio = PRIORITY.get(kind, PRIORITY["interactive"])
     p = _lock_path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    wait_dir = p.parent / ".llm.wait"
+    wait_dir.mkdir(exist_ok=True)
+    me = wait_dir / f"{prio}-{kind}-{os.getpid()}-{os.urandom(3).hex()}.wait"
     f = open(p, "a+")
-    deadline = time.monotonic() + SLOT_WAIT.get(kind, SLOT_WAIT["interactive"])
+    t0 = time.time()
+    if deadline is None:
+        env_dl = os.environ.get("STUDY_LLM_DEADLINE")
+        deadline = float(env_dl) if kind == "time_boxed" and env_dl else t0 + SLOT_WAIT.get(kind, SLOT_WAIT["interactive"])
+    rec = {"t": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "kind": kind}
     try:
+        me.touch()
         while True:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise LLMBusy(f"local model busy ({kind} caller gave up)")
-                time.sleep(0.25)
+            me.touch()
+            if not waiting(prio, wait_dir, me):
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    pass
+            if time.time() >= deadline:
+                me.unlink(missing_ok=True)
+                _log_slot({**rec, "waited_s": round(time.time() - t0, 2),
+                           "outcome": "skipped" if kind in ("background", "time_boxed") else "timeout"})
+                raise LLMBusy(f"local model busy ({kind} caller gave up)")
+            time.sleep(0.25)
+        me.unlink(missing_ok=True)
+        waited = time.time() - t0
+        _LAST.clear()
+        t_run = time.time()
         try:
             yield
+            rec["outcome"] = "ran"
+        except BaseException:
+            rec["outcome"] = "error"
+            raise
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+            total = time.time() - t_run
+            ct = _LAST.get("completion_tokens")
+            pre = _LAST.get("prefill_s")
+            _log_slot({**rec, "waited_s": round(waited, 2), "run_s": round(total, 2), "prefill_s": pre,
+                       "prompt_tokens": _LAST.get("prompt_tokens"), "completion_tokens": ct,
+                       "decode_tps": round(ct / max(1e-3, total - (pre or 0)), 1) if ct else None})
     finally:
+        me.unlink(missing_ok=True)
         f.close()
 
 
-def llm(system, user, max_tokens=2048, temperature=0.3, think=False, slot=None):
-    with llm_slot(slot):
+def llm(system, user, max_tokens=2048, temperature=0.3, think=False, slot=None, deadline=None):
+    with (llm_slot(slot) if deadline is None else llm_slot(slot, deadline=deadline)):
         return _llm(system, user, max_tokens, temperature, think)
 
 
 def _llm(system, user, max_tokens=2048, temperature=0.3, think=False):
+    """One chat completion. With STUDY_LLM_STREAM=1 the reply is streamed so the time to the
+    first token (prefill) is measured; otherwise one plain request. Token counts and timings
+    go to _LAST for the slot metrics."""
     body = {"model": MODEL, "temperature": temperature, "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             # Qwen3-family hint; servers that don't know it ignore it
             "chat_template_kwargs": {"enable_thinking": think}}
+    stream = os.environ.get("STUDY_LLM_STREAM") == "1"
+    if stream:
+        body.update({"stream": True, "stream_options": {"include_usage": True}})
     req = urllib.request.Request(f"{OMLX}/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json",
                                           **({"Authorization": f"Bearer {KEY}"} if KEY else {})})
+    t0 = time.time()
     with _OPENER.open(req, timeout=900) as r:
-        out = json.loads(r.read())["choices"][0]["message"]["content"] or ""
+        if not stream:
+            d = json.loads(r.read())
+            out = d["choices"][0]["message"]["content"] or ""
+            u = d.get("usage") or {}
+        else:
+            parts, u = [], {}
+            for raw in r:
+                line = raw.decode("utf-8", "ignore").strip()
+                if not line.startswith("data:") or line == "data: [DONE]":
+                    continue
+                try:
+                    ev = json.loads(line[5:])
+                except ValueError:
+                    continue
+                for ch in ev.get("choices") or []:
+                    piece = (ch.get("delta") or {}).get("content")
+                    if piece:
+                        if "prefill_s" not in _LAST:
+                            _LAST["prefill_s"] = round(time.time() - t0, 3)
+                        parts.append(piece)
+                u = ev.get("usage") or u
+            out = "".join(parts)
+    _LAST.update({"prompt_tokens": u.get("prompt_tokens"), "completion_tokens": u.get("completion_tokens")})
     return re.sub(r"<think>.*?</think>", "", out, flags=re.S).strip()
+
 
 def embed(texts, model=None):
     """Embeddings from the local server's /embeddings endpoint (OpenAI-compatible)."""

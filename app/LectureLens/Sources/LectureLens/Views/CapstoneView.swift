@@ -116,6 +116,7 @@ struct CapstoneView: View {
                 ReadinessBox(artefacts: status?.artefacts ?? [])
                 drillBox
                 PanelBox()
+                PeerCoachBox()
                 CapProgressBox()
                 askBox
             }

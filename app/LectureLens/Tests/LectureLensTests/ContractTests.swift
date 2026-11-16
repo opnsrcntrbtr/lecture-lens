@@ -287,3 +287,12 @@ import Testing
     let t = try JSONDecoder().decode(TeachBack.self, from: Data(#"{"ok": true, "id": "a", "lecture": "L", "topic": "T", "statements": [{"s_id": "s1", "text": "x", "planted": true, "marked": true, "correct": "y", "why": "z", "t0": "10:00:00"}], "scored": true, "caught": 1, "missed": 1, "false_alarms": 0}"#.utf8))
     #expect(Cornell.score(t) == "Found 1 of 2 planted errors · 0 correct statement(s) marked wrong")
 }
+
+@Test func peerCoachAndLanesContracts() throws {
+    let c = try JSONDecoder().decode(PeerCheck.self, from: Data(#"{"ok": true, "peer_label": "peer_A", "comments": 4, "findings": [{"finding_id": "f", "artefact_id": "peer_A-review", "artefact_sha": "x", "quote": "This is weak.", "criterion_id": "peer_review", "check_id": "vague", "verdict": "fail", "issue": "i", "question_to_learner": "q?", "hint_level": 0, "lecture_refs": [], "evidence_refs": [{"peer_quote": "p"}], "reviewer_view": "general", "confidence": null}], "gated_out": 0, "note": "n"}"#.utf8))
+    #expect(c.findings?.first?.evidence_refs?.first?["peer_quote"] == "p")
+    let k = try JSONDecoder().decode(PeerClusters.self, from: Data(#"{"ok": true, "clusters": [{"cluster_id": "fc1", "name": "Evaluation", "items": ["a"], "artefact_quotes": [{"artefact_id": "prd", "quote": "q"}], "class": null, "plan": null}]}"#.utf8))
+    #expect(k.clusters?.first?.class == nil)
+    let l = try JSONDecoder().decode(Lanes.self, from: Data(#"{"ok": true, "rows": 3, "by_kind": {"interactive": {"calls": 3, "median_wait_s": 0.2, "p95_wait_s": 3.0, "skipped": 0, "errors": 0, "median_prefill_s": 0.1, "median_decode_tps": 66.2}}, "bench": null}"#.utf8))
+    #expect(PeerText.lane("interactive", l.by_kind!["interactive"]!) == "interactive: 3 calls · wait median 0.2 s, p95 3.0 s · 66 tok/s")
+}

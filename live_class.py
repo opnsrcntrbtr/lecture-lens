@@ -756,7 +756,7 @@ def run(a):
     start = dt.datetime.combine(today, dt.time(hh, mm), LOCAL).astimezone(dt.timezone.utc)
     uh, um = map(int, a.until.split(":"))
     until = dt.datetime.combine(today, dt.time(uh, um), LOCAL).astimezone(dt.timezone.utc)
-    os.environ.setdefault("STUDY_LLM_SLOT", "background")   # skip a round rather than queue behind Ask or a build
+    os.environ.setdefault("STUDY_LLM_SLOT", os.environ.get("STUDY_LIVE_SLOT", "background"))   # skip a round rather than queue behind Ask or a build; STUDY_LIVE_SLOT=time_boxed waits up to 60 s, ahead of builds
     out = LECTURES / "live" / today.strftime("%Y%m%d")
     out.mkdir(parents=True, exist_ok=True)
     seg_f, slide_f, side_f, outl_f, state_f, q_f = (out / n for n in
