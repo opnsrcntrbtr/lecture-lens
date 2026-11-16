@@ -66,3 +66,6 @@ eval/golden/
 
 # capstone workspace: learner artefacts and sessions stay private
 capstone/
+
+# attempt-first study sessions hold the learner's own answers
+practice/

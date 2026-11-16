@@ -149,9 +149,10 @@ def test_run_drains_finished_audio_on_exit(tmp_path, monkeypatch):
     monkeypatch.setattr(lc, "transcribe", fake_transcribe)
 
     local_now = dt.datetime.now(lc.LOCAL)
+    midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)   # run() reads HH:MM as today
     args = SimpleNamespace(
-        start=(local_now - dt.timedelta(hours=1)).strftime("%H:%M"),
-        until=(local_now - dt.timedelta(minutes=30)).strftime("%H:%M"),
+        start=max(local_now - dt.timedelta(hours=1), midnight).strftime("%H:%M"),
+        until=max(local_now - dt.timedelta(minutes=30), midnight).strftime("%H:%M"),
         title="Live class",
         every=1,
         whisper_every=300,

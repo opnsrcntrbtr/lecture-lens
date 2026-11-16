@@ -247,3 +247,13 @@ import Testing
     var s = d; s.pile = "self_check"
     #expect(CuratedQuestions.prefix(s) == "self-check · challenge: ")
 }
+
+@Test func practiceAndPrequestionContracts() throws {
+    let v = try JSONDecoder().decode(PracticeView.self, from: Data(#"{"ok": true, "session_id": "s1", "kind": "quiz", "done": false, "index": 0, "of": 2, "stem": "What should they change?", "options": ["a", "b", "c", "d"], "removed": null, "hint_level": 0, "answered": false, "closed_book": false}"#.utf8))
+    #expect(v.key == nil && v.options?.count == 4)
+    #expect(!Practice.canReveal("too short", skip: false) && Practice.canReveal("long enough attempt here", skip: false) && Practice.canReveal("", skip: true))
+    let p = try JSONDecoder().decode(PracticeProgress.self, from: Data(#"{"ok": true, "closed_book_items": 4, "closed_book_accuracy": 0.75, "sure_and_wrong": 1, "skip_rate": 0.25, "assisted_reveals": 4}"#.utf8))
+    #expect(Practice.progressText(p) == "Closed-book: 75% of 4 · 1 sure but wrong · skipped attempts 25%")
+    let q = try JSONDecoder().decode(Prequestions.self, from: Data(#"{"ok": true, "prequestions": [{"pq_id": "pq1", "agenda_item": "Soil", "text": "Why mulch?", "guess": "shade", "guess_t": "x", "late": false, "resolved": {"status": "answered", "line_ids": ["a"], "quote": "Mulch shades soil.", "t": "2030-01-05T05:00:00+00:00"}, "got_it": null, "became_card": true}]}"#.utf8))
+    #expect(q.prequestions?.first?.resolved?.status == "answered")
+}
