@@ -140,6 +140,7 @@ def start_quiz(store: Store, lecture_id: str, items: list[dict], n: int = 5, see
         opts, key_pos, order = quiz.shuffled(it, rng)
         s["items"].append({"item_id": it["item_id"], "stem": it["stem"], "options": opts, "key_pos": key_pos,
                            "explanation": it.get("explanation", ""), "at": it.get("at", ""), "hint_level": 0,
+                           "level": it.get("requested_level"),
                            "answer": None, "confidence": None, "revealed": False, "removed": None})
     store.save(s)
     return view(s)
@@ -186,7 +187,7 @@ def answer(store: Store, sid: str, choice: int, confidence: str) -> dict:
     store.log({"item_id": it["item_id"], "kind": "quiz_item", "attempt_text": it["options"][choice],
                "hint_level": it["hint_level"], "revealed": True, "confidence": confidence,
                "correct": choice == it["key_pos"], "assisted": s["kind"] != "closed_book",
-               "lecture_id": s["lecture_id"], "session_id": sid})
+               "lecture_id": s["lecture_id"], "session_id": sid, "level": it.get("level"), "stem": it["stem"][:200]})
     return {"ok": True, **view(s)}
 
 

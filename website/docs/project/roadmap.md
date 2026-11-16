@@ -43,7 +43,7 @@ The job to be done: *when I attend a class, I want it captured and turned into m
 | Item | Where |
 | --- | --- |
 | Recall-first notes | `notes.md` opens with three questions; answers follow the notes |
-| Card review with a pass/fail log | `./lecture review`, FSRS-5 schedule, `reviews.jsonl` |
+| Card review with a pass/fail log | `./lecture review`, FSRS-6 schedule to a weekly minutes budget, `reviews.jsonl` |
 | Context ranked by relevance for `study ask` | BM25, `bm25-v1` |
 | Citation checks on answers | `citation_warnings` in `study ask --json` |
 

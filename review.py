@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Spaced review of a lecture's flashcards, with a pass/fail log.
+"""FSRS-5 reference for the Studio (studio/src/core/review.js reproduces this file; see
+studio/test/fixtures/review.json). `./lecture review` and the app now schedule with
+spaced.py (FSRS-6, to a weekly minutes budget) over the same per-lecture reviews.jsonl.
+
+Spaced review of a lecture's flashcards, with a pass/fail log.
 
     lecture review                 ask the cards that are due, oldest lecture first
     lecture review --stats         due counts and cards that keep failing

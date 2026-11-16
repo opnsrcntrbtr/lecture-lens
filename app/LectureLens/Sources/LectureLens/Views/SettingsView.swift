@@ -73,6 +73,10 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Privacy") {
+                Text("Checks that models, evals and capture stay on this Mac. Read-only.").font(.scaled(.caption)).foregroundStyle(.secondary)
+                PrivacyCheckBox()
+            }
             Section("Appearance") {
                 LabeledContent("Text size") {
                     HStack(spacing: 10) {

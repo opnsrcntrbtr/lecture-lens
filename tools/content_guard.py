@@ -12,7 +12,10 @@ What it checks, for the files and commit messages being pushed:
    names it must not contain. Text is split into lowercase words; every run of
    1 to 6 words is hashed and compared, and long words are also scanned for
    blocked words embedded inside them.
-2. Your own plaintext list, if .guard/terms.local.txt exists (never committed).
+2. Your own plaintext list, if .guard/terms.local.txt exists (never committed), and
+   hashed roster names in .guard/roster.local.sha256 (never committed), which the
+   private doctor writes (`lecture doctor --privacy --sync-guard`); the guard compares
+   hashes and never reads the private overlay.
 3. Paths that must never be published: captured lectures, notes, feedback,
    slide decks, recordings, .env files.
 4. Secrets: API keys, tokens, private keys.
@@ -41,6 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HASH_FILE = ROOT / "tools" / "guard" / "blocked_terms.sha256"
 ALLOW_FILE = ROOT / "tools" / "guard" / "allow_tokens.txt"
 LOCAL_TERMS = ROOT / ".guard" / "terms.local.txt"
+LOCAL_ROSTER = ROOT / ".guard" / "roster.local.sha256"
 MAX_BYTES = 1_000_000
 MAX_NGRAM = 6
 MIN_EMBEDDED = 5          # shorter blocked words only match as whole words
@@ -91,8 +95,11 @@ def normalise(term: str) -> str:
 class Terms:
     """Blocked terms as hashes, plus an optional local plaintext list."""
 
-    def __init__(self, hash_file: Path = HASH_FILE, allow_file: Path = ALLOW_FILE, local: Path = LOCAL_TERMS):
+    def __init__(self, hash_file: Path = HASH_FILE, allow_file: Path = ALLOW_FILE, local: Path = LOCAL_TERMS,
+                 roster: Path = LOCAL_ROSTER):
         self.hashes: set[str] = set()
+        if roster.exists():   # hashed roster names from the private doctor; same comparison as blocked terms
+            self.hashes |= {l.split()[0] for l in roster.read_text().splitlines() if l.strip() and not l.startswith("#")}
         self.embedded_lengths: set[int] = set()
         if hash_file.exists():
             for line in hash_file.read_text().splitlines():
