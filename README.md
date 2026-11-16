@@ -19,6 +19,7 @@ Lecture Lens is a study toolkit and a small native macOS app. It reads what [lec
 | Ask a question | Answers from your own captures, with sources |
 | Open a lecture's **Practice** tab | Asks you to recall first, then shows the recap with what you missed; quiz items are linted for giveaway flaws and each key is checked against a cited line |
 | Before a live class | Turns the agenda into a few prequestions to guess at; after class, each is answered from what was said, beside your guess |
+| Review cards a few minutes a day | Schedules them with FSRS-6 to fit a weekly minutes budget (class days count half, no streaks), serves an overdue backlog lowest recall first, and shows what you know without help, with "sure but wrong" answers first |
 | Register your own capstone documents | Reviews them with quote-anchored checks, rehearses an incident drill and a text panel defence (one question at a time, follow-ups quote your answer, no concessions without evidence), and checks launch readiness against evidence you point to. It gives feedback and simulation only; it never writes or rewrites a submission |
 | Change a prompt or a model | Runs a local evaluation so you can see whether quality moved |
 

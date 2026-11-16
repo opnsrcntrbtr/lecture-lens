@@ -1618,7 +1618,46 @@ def run_checks(vision_probe=True):
     return out
 
 
+def privacy_checks(sync_to: str | None = None) -> list[dict]:
+    """EP-5: local-only and public-repo assertions (privacy.py); changes nothing except, with
+    sync_to, the public repo's ignored .guard/roster.local.sha256."""
+    import privacy
+    import name_guard
+    env = {**privacy.read_env(HERE / ".env"), **{k: v for k, v in os.environ.items() if k.endswith(("_URL", "_BASE_URL"))
+                                                 or k.startswith(("CONFIDENT", "DEEPEVAL", "SCREENPIPE_SYNC", "DEEPGRAM"))}}
+    pub = Path(os.path.expanduser(sync_to or os.environ.get("LECTURE_LENS_REPO", str(HERE))))
+    roster_files = [PRIVATE / "names_roster.json", PRIVATE / "attendees.txt"]
+    if sync_to:
+        privacy.sync_guard(pub, name_guard.load_roster(PRIVATE), set(name_guard.load_lower_dictionary()))
+    cmd = None
+    try:
+        pid = subprocess.run(["pgrep", "-f", "target/release/screenpipe record"], capture_output=True, text=True).stdout.split()
+        if pid:
+            cmd = subprocess.run(["ps", "-o", "args=", "-p", pid[0]], capture_output=True, text=True).stdout
+    except Exception:
+        pass
+    script = (HERE / "sp-start").read_text() if (HERE / "sp-start").exists() else ""
+    try:
+        lsof = subprocess.run(["lsof", "-nP", "-iTCP:3030,8001,47110", "-sTCP:LISTEN"], capture_output=True, text=True,
+                              timeout=10).stdout
+    except Exception:
+        lsof = ""
+    rows = privacy.run(env, [HERE / ".deepeval" / ".deepeval", Path.home() / ".deepeval" / ".deepeval"], cmd, script,
+                       lsof, pub if pub.exists() else None, roster_files)
+    (LECTURES / "doctor_privacy.json").write_text(json.dumps(rows, indent=1))
+    return rows
+
+
 def cmd_doctor(a):
+    if getattr(a, "privacy", False):
+        rows = privacy_checks(a.sync_guard)
+        ok = all(r["ok"] or r["level"] == "warn" for r in rows)
+        if a.json:
+            print(json.dumps({"ok": ok, "checks": rows}))
+        else:
+            for r in rows:
+                print(f"{r['check']:<20}{'✓' if r['ok'] else ('~' if r['level'] == 'warn' else '✗')} {r['detail']}")
+        sys.exit(0 if ok else 1)
     checks = run_checks(vision_probe=not a.quick)
     ok = all(c["ok"] or c["level"] == "warn" for c in checks)
     if a.json:
@@ -2068,6 +2107,80 @@ def _recap_content(folder: Path) -> tuple[str, str, str]:
                 text = m.group(1) if m else text[:4000]
             return text, kind, score
     return "", "recap", score
+
+
+def cmd_review(a):
+    import spaced
+    rv = spaced.Reviews(STUDY_DIR, LECTURES)
+    out = lambda o: print(json.dumps(o, ensure_ascii=False, default=str))
+    try:
+        if a.action == "settings":
+            days = None
+            if a.class_days is not None:
+                names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+                days = [names.index(d.strip()[:3].lower()) for d in a.class_days.split(",") if d.strip()]
+            rv.set(weekly_minutes=a.minutes, class_weekdays=days, new_per_week=a.new_per_week)
+            return out({"ok": True, "settings": rv.settings(), "plan": rv.plan()})
+        if a.action == "plan":
+            return out({"ok": True, **rv.plan()})
+        if a.action == "stats":
+            return out({"ok": True, **rv.stats()})
+        if a.action == "grade":
+            if not a.card or a.got is None:
+                return out({"ok": False, "error": "need --card and --got y|n"})
+            return out({"ok": True, **rv.grade(a.card, a.got.lower() in ("y", "yes", "1", "true"), a.seconds)})
+        if a.action == "card":
+            if not a.card:
+                return out({"ok": False, "error": "need --card"})
+            kw = {"q": a.q, "a": a.a}
+            if a.suspend: kw["suspended"] = True
+            if a.unsuspend: kw["suspended"] = False
+            if a.delete: kw["deleted"] = True
+            return out({"ok": True, "card_id": a.card, "override": rv.override(a.card, **kw)})
+        if a.stats:
+            return out({"ok": True, **rv.stats()})
+        sess = rv.session()
+        if a.json:
+            return out({"ok": True, **sess})
+        return review_interactive(rv, sess)
+    except (KeyError, ValueError) as e:
+        return out({"ok": False, "error": str(e).strip("'")})
+
+
+def review_interactive(rv, sess) -> None:
+    """Terminal session: answer from memory, see the answer, then pass or fail."""
+    import time
+    cards = sess["cards"]
+    if not cards:
+        print("Nothing due. Come back tomorrow."); return
+    print(f"{len(cards)} card(s), about {sess['planned_minutes']:.0f} min; target recall {sess['retention']:.0%}")
+    done = passed = 0
+    for i, c in enumerate(cards, 1):
+        print(f"\n[{i}/{len(cards)}] {c['q']}")
+        t = time.time()
+        try:
+            input("  (answer from memory, then press Enter) ")
+            print(f"  → {c['a']}" + (f"   ({c['ref']})" if c.get("ref") else ""))
+            ans = ""
+            while ans not in ("p", "f"):
+                ans = input("  pass or fail? [p/f] ").strip().lower()[:1]
+        except (EOFError, KeyboardInterrupt):
+            print("\nStopped; answers so far are saved."); break
+        g = rv.grade(c["card_id"], ans == "p", time.time() - t)
+        done += 1; passed += ans == "p"
+        print(f"  next review in {g['next_in_days']} day(s)")
+    print(f"\n{passed} passed of {done}.")
+
+
+def cmd_mastery(a):
+    import mastery
+    levels = {}
+    for f in sorted(p for p in LECTURES.glob("*") if (p / "manifest.json").exists()):
+        try:
+            levels.update({i["item_id"]: i.get("requested_level") for i in quiz_items(f) if i.get("requested_level")})
+        except Exception:
+            continue
+    print(json.dumps({"ok": True, **mastery.view(STUDY_DIR, LECTURES, levels=levels)}, ensure_ascii=False))
 
 
 def cmd_practice(a):
@@ -2817,7 +2930,20 @@ def main():
     p.add_argument("--no-vision", action="store_true"); p.set_defaults(fn=cmd_watch)
     p = sub.add_parser("doctor"); p.add_argument("--json", action="store_true")
     p.add_argument("--quick", action="store_true", help="skip the vision-model image probe")
+    p.add_argument("--privacy", action="store_true", help="EP-5: local-only and public-repo assertions")
+    p.add_argument("--sync-guard", metavar="PUBLIC_REPO", help="with --privacy: refresh the public guard's roster hashes")
     p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("review", help="spaced review of flashcards to a weekly minutes budget (FSRS-6)")
+    p.add_argument("action", choices=["today", "grade", "stats", "plan", "settings", "card"], nargs="?", default="today")
+    p.add_argument("--card"); p.add_argument("--got"); p.add_argument("--seconds", type=float)
+    p.add_argument("--minutes", type=int); p.add_argument("--class-days", dest="class_days")
+    p.add_argument("--new-per-week", dest="new_per_week", type=int)
+    p.add_argument("--q"); p.add_argument("--a"); p.add_argument("--suspend", action="store_true")
+    p.add_argument("--unsuspend", action="store_true"); p.add_argument("--delete", action="store_true")
+    p.add_argument("--stats", action="store_true", help="same as the stats action")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_review)
+    p = sub.add_parser("mastery", help="unassisted mastery and confidence calibration per module")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_mastery)
     p = sub.add_parser("qa-import", help="use the meeting app's Q&A export: score the live capture, anonymise, feed the build")
     p.add_argument("id"); p.add_argument("export"); p.set_defaults(fn=cmd_qa_import)
     p = sub.add_parser("names", help="attendee names in stored lectures: roster | scan (dry run) | decide | apply")
@@ -2901,7 +3027,6 @@ def main():
     p.add_argument("id", nargs="?", default="last", help="session id, 'last' or 'all'"); p.set_defaults(fn=cmd_finish)
     p = sub.add_parser("ingest", help="after class: use the meeting app's transcript/Q&A export/deck found beside the class")
     p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_ingest)
-    import review; review.add_parser(sub)
     a = ap.parse_args(); a.fn(a)
 
 if __name__ == "__main__":

@@ -69,3 +69,16 @@ def test_the_repository_itself_is_clean():
     if not g.HASH_FILE.exists():
         return
     assert g.scan_all(g.Terms()) == []
+
+
+def test_planted_roster_name_in_a_fixture_fails_the_guard(tmp_path):
+    """EP-5: the private doctor writes hashed roster names into .guard/; the guard compares
+    hashes, so the names are never spelled out in this repository."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    import privacy
+    roster = tmp_path / "roster.local.sha256"
+    roster.write_text("# test\n" + "\n".join(privacy.roster_hashes(["Keelam Varsha"], {"rose"})) + "\n")
+    t = g.Terms(hash_file=tmp_path / "none", allow_file=tmp_path / "none", local=tmp_path / "none", roster=roster)
+    assert t.find("fixture: Keelam Varsha asked about mulch") == ["keelam", "keelam varsha", "varsha"]
+    assert t.find("fixture: an attendee asked about mulch") == []
+    assert g.check_text("q = 'Varsha asked'\n", t, "tests/fixture.py")

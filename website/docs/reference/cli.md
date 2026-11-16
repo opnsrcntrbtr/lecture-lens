@@ -28,8 +28,12 @@ All commands live in the repository root and read `.env`.
 | `./lecture qa-import <id> <export.txt>` | Use a meeting app's Q&A export: anonymise it for the build and score the live capture against it |
 | `./lecture watch [--idle 5]` | Build each session a few minutes after it ends |
 | `./lecture doctor [--quick] [--json]` | Health checks |
-| `./lecture review [--limit 30] [--new 10] [--lecture NAME]` | Ask the cards that are due; pass/fail goes to `reviews.jsonl` in the lecture's folder |
-| `./lecture review --stats [--json]` | Due and new counts, and cards that keep failing |
+| `./lecture review` | Today's cards within the day's share of your weekly minutes, lowest predicted recall first (FSRS-6); pass/fail goes to `reviews.jsonl` in the lecture's folder |
+| `./lecture review stats\|plan [--json]` | Due and new counts, minutes this week, target recall, cards that keep failing; `plan` re-runs the workload simulation |
+| `./lecture review settings --minutes 60 --class-days Sat` | Weekly budget and class days (half share); no streaks |
+| `./lecture review card --card ID [--q ..] [--a ..] [--suspend\|--delete]` | Edit, suspend or delete a card |
+| `./lecture mastery [--json]` | Per module: predicted recall, closed-book accuracy (also at Apply and above), confidence grid, sure-but-wrong items |
+| `./lecture doctor --privacy [--sync-guard REPO]` | Checks that endpoints, evals and capture stay local; refreshes the guard's hashed roster |
 | `./transcript_ref.py <folder> <reference.txt>` | Merge a reference transcript and measure word error rate |
 | `./lecture next [--json]` | The next class in the programme calendar |
 | `./lecture after [<id>\|last] [--json]` | After class in one go: import the meeting app's files, build, check that no removed attendee name is left in the lecture files, rewrite qa.md. Writes `after_class.json`; refuses while capture runs or the judge is loaded |
