@@ -1149,6 +1149,23 @@ def _name_allow(live_dir: Path | None = None) -> set[str]:
     return allow
 
 
+def _used_lowercase(token: str, lines: list[str] | None = None) -> bool:
+    """The token's lower-case form is used as an ordinary word: in these lines or anywhere in
+    the evidence index (case-sensitive match)."""
+    lw = token.lower()
+    if lines and any(re.search(rf"\b{re.escape(lw)}\b", l) for l in lines):
+        return True
+    if INDEX.exists():
+        try:
+            import sqlite3 as _sq
+            con = _sq.connect(str(INDEX))
+            pats = [f"* {lw} *", f"* {lw}.*", f"* {lw},*", f"{lw} *"]
+            return any(con.execute("SELECT 1 FROM lines WHERE text GLOB ? LIMIT 1", (p,)).fetchone() for p in pats)
+        except Exception:
+            return False
+    return False
+
+
 def _name_roster():
     """The private attendee roster (names_roster.json + attendees.txt), loaded once per run."""
     global _ROSTER
@@ -1187,6 +1204,7 @@ def _guard_names(session, lines, report=True):
     out, rep = name_guard.guard(lines, panel_authors=authors, allow=_name_allow(d), roster=_name_roster(),
                                 decisions=name_guard.load_decisions(PRIVATE))
     learned = [e["token"] for e in rep.get("entries", []) if e.get("layer") == "adjacent" and e["decision"] == "removed"]
+    learned = [t for t in learned if not _used_lowercase(t, lines)]   # "online" in any lecture is a word, not a name
     if learned and name_guard.learn_names(PRIVATE, learned):
         global _ROSTER
         _ROSTER = None   # the next guard in this run sees them too
@@ -2589,6 +2607,8 @@ def main():
     p.add_argument("--window", type=float, default=10.0, help="minutes either side")
     p.add_argument("--answer", default="", help="answer text alone, for the sentence check (default: --text)")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_cite)
+    p = sub.add_parser("capstone", help="capstone copilot: feedback and drills only, never authoring (see capstone_cli.py)")
+    p.add_argument("rest", nargs=argparse.REMAINDER); p.set_defaults(fn=lambda a: __import__("capstone_cli").main(a.rest))
     p = sub.add_parser("health", help="capture health: one probe (audio age and level, newest frame) and any alert")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_health)
     p = sub.add_parser("gaps", help="gap ledger for a built lecture (late start, holes) into gaps.json and the manifest")

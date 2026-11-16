@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum Screen: String, CaseIterable, Identifiable {
-    case capture = "Capture", live = "Live", lectures = "Lectures", ask = "Ask", evals = "Evals", settings = "Settings"
+    case capture = "Capture", live = "Live", lectures = "Lectures", ask = "Ask", capstone = "Capstone", evals = "Evals", settings = "Settings"
     var id: String { rawValue }
     var symbol: String {
         switch self {
@@ -9,6 +9,7 @@ enum Screen: String, CaseIterable, Identifiable {
         case .live: "bubble.left.and.text.bubble.right"
         case .lectures: "books.vertical"
         case .ask: "questionmark.bubble"
+        case .capstone: "flag.checkered"
         case .evals: "checkmark.seal"
         case .settings: "gearshape"
         }
@@ -37,6 +38,7 @@ struct MainView: View {
             case .live: LiveView(model: model)
             case .lectures: LecturesView(model: model)
             case .ask: AskView(model: model)
+            case .capstone: CapstoneView(model: model)
             case .evals: EvalsView(model: model)
             case .settings: SettingsView(model: model)
             }

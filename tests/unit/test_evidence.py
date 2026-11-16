@@ -223,3 +223,18 @@ def test_ask_answers_from_built_lectures_when_screenpipe_is_down(tmp_path, monke
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] and out["retrieval"] == "lecture index" and "not running" in out["note"]
     assert out["sources"][0]["src"].startswith("lecture") and "Raised beds drain faster" in asked["user"]
+
+
+def test_wall_clock_timecodes_in_a_merged_transcript(tmp_path):
+    f = make_lecture(tmp_path, transcript="# t\n\n_\n[10:05:00] Mulch keeps soil moist.\n[10:09:30] Water early.\n")
+    import os, time
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"; time.tzset()
+    try:
+        _, recs = evidence.lecture_records(f, lambda ls: ls)
+    finally:
+        if old is None: os.environ.pop("TZ")
+        else: os.environ["TZ"] = old
+        time.tzset()
+    t = [r for r in recs if r["kind"] == "t"]
+    assert t[0]["t_abs"].startswith("2030-01-01T10:05:00") and t[0]["t0"] == (10 * 60 + 5 - 5 * 60) * 60.0

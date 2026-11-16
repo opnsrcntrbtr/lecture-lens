@@ -63,3 +63,6 @@ ralph/.logs/
 
 # learner labels and candidate pairs hold lecture text
 eval/golden/
+
+# capstone workspace: learner artefacts and sessions stay private
+capstone/
