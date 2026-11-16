@@ -20,7 +20,7 @@ Design notes
     traced to a timestamp in the transcript or a keyframe image.
 """
 from __future__ import annotations
-import argparse, datetime as dt, json, math, os, re, shutil, sqlite3, subprocess, sys, urllib.error, urllib.request, urllib.parse
+import argparse, datetime as dt, hashlib, json, math, os, re, shutil, sqlite3, subprocess, sys, urllib.error, urllib.request, urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -1957,10 +1957,48 @@ def cmd_curate(a):
     llm = lambda prompt: study.llm(study.SYS_TUTOR, prompt, max_tokens=1600, temperature=0.3, slot=slot)
     day_start = dt.datetime.strptime(day, "%Y%m%d").replace(hour=12).astimezone()   # the live folder's day, not today
     guard = lambda lines: _guard_names({"start": day_start}, lines, report=False)
+    v2 = os.environ.get("STUDY_CURATE_VERSION", "2") != "1"
+    if v2:
+        sys_q = ("You prepare questions for a learner in a live class from quoted class lines. "
+                 "Follow the requested JSON format exactly. Never answer the questions.")
+        llm = lambda prompt: study.llm(sys_q, prompt, max_tokens=1600, temperature=0.3, slot=slot)
     try:
-        out(curate.run(d, llm, now, title, guard=guard, k=a.k, lookback_min=a.lookback))
+        run = curate.run_v2 if v2 else curate.run
+        out(run(d, llm, now, title, guard=guard, k=a.k, lookback_min=a.lookback))
     except Exception as e:   # the local model may be busy or down: the app shows the reason
         out({"ok": False, "error": f"{type(e).__name__}: {e}"[:300]})
+
+
+def cmd_qlabels(a):
+    """M-7: label a day's questions as would-ask, duplicate and answered-in-class (the NG-5
+    baseline). Labels go to eval/golden/questions_labels_<day>.jsonl (private: they quote class)."""
+    d = LECTURES / "live" / a.day
+    rows = [json.loads(l) for l in (d / "questions.jsonl").read_text().splitlines() if l.strip()] \
+        if (d / "questions.jsonl").exists() else []
+    lf = HERE / "eval" / "golden" / f"questions_labels_{a.day}.jsonl"
+    done = {}
+    if lf.exists():
+        for l in lf.read_text().splitlines():
+            if l.strip():
+                x = json.loads(l)
+                done[x["idx"]] = x
+    if a.action == "label":
+        if not (0 <= a.i < len(rows)):
+            print(json.dumps({"ok": False, "error": "no such question"})); return
+        yn = lambda v: None if v in (None, "") else v.lower() in ("y", "yes", "1", "true")
+        x = {"day": a.day, "idx": a.i, "q_sha": hashlib.sha256(rows[a.i].get("q", "").encode()).hexdigest()[:12],
+             "would_ask": yn(a.would_ask), "duplicate": yn(a.duplicate), "answered_in_class": yn(a.answered),
+             "labelled_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+        done[a.i] = x
+        lf.parent.mkdir(parents=True, exist_ok=True)
+        lf.write_text("".join(json.dumps(v) + "\n" for _, v in sorted(done.items())))
+    todo = [{"i": i, "q": r.get("q", ""), "answer": r.get("answer", ""), "round": r.get("round"),
+             "type": r.get("type"), "t": r.get("t")} for i, r in enumerate(rows) if i not in done]
+    lab = list(done.values())
+    share = lambda k: round(sum(1 for x in lab if x.get(k)) / len(lab), 3) if lab else None
+    print(json.dumps({"ok": True, "day": a.day, "total": len(rows), "labelled": len(lab), "todo": todo[:20],
+                      "would_ask_share": share("would_ask"), "duplicate_share": share("duplicate"),
+                      "answered_share": share("answered_in_class")}, ensure_ascii=False))
 
 
 AFTER_FILES = ("transcript.md", "transcript_merged.md", "digest.md", "notes.md", "slides.md", "qa.md")
@@ -2607,6 +2645,15 @@ def main():
     p.add_argument("--window", type=float, default=10.0, help="minutes either side")
     p.add_argument("--answer", default="", help="answer text alone, for the sentence check (default: --text)")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_cite)
+    p = sub.add_parser("judgecard", help="EP-1: rebuild eval/judge_card.json from the labelled calibration sheets")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=lambda a: __import__("runpy").run_path(str(HERE / "tests" / "evals" / "judge_card.py"),
+                                                             run_name="judge_card_cli")["main"](["--json"] if a.json else []))
+    p = sub.add_parser("qlabels", help="M-7: label a day's questions (would ask, duplicate, answered in class)")
+    p.add_argument("action", choices=["todo", "label"]); p.add_argument("--day", required=True)
+    p.add_argument("--i", type=int, default=-1); p.add_argument("--would-ask", dest="would_ask", default="")
+    p.add_argument("--duplicate", default=""); p.add_argument("--answered", default="")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_qlabels)
     p = sub.add_parser("capstone", help="capstone copilot: feedback and drills only, never authoring (see capstone_cli.py)")
     p.add_argument("rest", nargs=argparse.REMAINDER); p.set_defaults(fn=lambda a: __import__("capstone_cli").main(a.rest))
     p = sub.add_parser("health", help="capture health: one probe (audio age and level, newest frame) and any alert")

@@ -11,6 +11,13 @@ struct CurateResult: Decodable, Sendable {
 
 /// Curated top questions in rounds, and whether each was asked in the Q&A (same words).
 enum CuratedQuestions {
+    /// The label before a curated question: self-check, later, or the type (and level, v2).
+    static func prefix(_ c: Drafted) -> String {
+        if c.pile == "self_check" { return "self-check · \(c.type): " }
+        if c.part == "later" { return "later · \(c.type): " }
+        return c.requested_level.map { "\(c.type) · \($0): " } ?? "\(c.type): "
+    }
+
     static let autoKey = "autoCurateLive"
     static let interval: TimeInterval = 25 * 60
 

@@ -13,11 +13,14 @@ struct EvalsView: View {
     @State private var holdout = CalibrationSheet()
     @State private var checkingHoldout = false
     @State private var labellingPairs = false
+    @State private var labellingQuestions = false
+    @State private var judgeCard: [JudgeCardRow] = []
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 calibrationBox
+                judgeCardBox
                 suites
                 if !model.jobs.jobs.isEmpty { jobs }
                 runs
@@ -27,11 +30,14 @@ struct EvalsView: View {
         }
         .navigationTitle("Evals")
         .toolbar {
+            Button("Question labels", systemImage: "questionmark.bubble") { labellingQuestions = true }
+                .help("Label a past class's questions: the baseline for questions v2")
             Button("Citation labels", systemImage: "checkmark.bubble") { labellingPairs = true }
                 .help("Label sentence and passage pairs so a citation checker can be calibrated")
             Button("Refresh", systemImage: "arrow.clockwise") { model.loadEvalRuns(); feedback = FeedbackStore.load() }
         }
         .sheet(isPresented: $labellingPairs) { SupportPairsSheet() }
+        .sheet(isPresented: $labellingQuestions) { QuestionLabelsSheet() }
         .task { model.loadEvalRuns(); feedback = FeedbackStore.load(); calibration = (try? CalibrationSheet.load()) ?? CalibrationSheet() }
         .sheet(isPresented: $calibrating, onDismiss: { calibration = (try? CalibrationSheet.load()) ?? CalibrationSheet() }) {
             CalibrationView()
@@ -117,6 +123,36 @@ struct EvalsView: View {
     }
 
     // MARK: runs
+    /// EP-1: how far each judged criterion can be trusted (eval/judge_card.json).
+    private var judgeCardBox: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Judge card").font(.scaled(.headline))
+                    Spacer()
+                    Button("Rebuild", systemImage: "arrow.clockwise") {
+                        Task { judgeCard = (try? await ToolRunner.json(JudgeCard.self, "lecture", ["judgecard", "--json"], timeout: 60))?.card ?? judgeCard }
+                    }.controlSize(.small)
+                }
+                if judgeCard.isEmpty { Text("No card yet: Rebuild reads your labelled calibration sheets.").foregroundStyle(.secondary) }
+                ForEach(JudgeCard.best(judgeCard)) { r in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(r.criterion).frame(width: 220, alignment: .leading).lineLimit(1)
+                        Text(r.rubric_version).font(.scaled(.caption, design: .monospaced)).frame(width: 60, alignment: .leading)
+                        Text("n \(r.n_labels)").frame(width: 50, alignment: .leading)
+                        Text(JudgeCard.rate("TPR", r.tpr, r.tpr_ci)).frame(width: 150, alignment: .leading)
+                        Text(JudgeCard.rate("TNR", r.tnr, r.tnr_ci)).frame(width: 150, alignment: .leading)
+                        Text(r.kappa.map { String(format: "κ %.2f", $0) } ?? "κ –").frame(width: 60, alignment: .leading)
+                        Text(r.status).foregroundStyle(r.status == "ok" ? Color.green : Color.orange)
+                    }.font(.scaled(.caption))
+                }
+                Text("Exploratory: fewer than 60 labels or under 95% valid verdicts. Unreliable: TPR or TNR under 0.80. Scores from such criteria are indicative only.")
+                    .font(.scaled(.caption2)).foregroundStyle(.tertiary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task { judgeCard = JudgeCard.load() }
+    }
+
     private var runs: some View {
         GroupBox("Results") {
             if model.evalRuns.isEmpty {
@@ -310,5 +346,35 @@ private struct RunCard: View {
         case .agg(let p, let n, let mean): "\(p)/\(n)" + (mean.map { String(format: " (%.2f)", $0) } ?? "")
         case .other: "–"
         }
+    }
+}
+
+/// One row of eval/judge_card.json (EP-1).
+struct JudgeCardRow: Decodable, Sendable, Identifiable {
+    let criterion: String; let rubric_version: String; let n_labels: Int; let valid_rate: Double?
+    let tpr: Double?; let tpr_ci: [Double]?; let tnr: Double?; let tnr_ci: [Double]?; let kappa: Double?
+    let raw_agreement: Double?; let status: String
+    var id: String { criterion + rubric_version }
+}
+
+struct JudgeCard: Decodable, Sendable {
+    let ok: Bool; let card: [JudgeCardRow]
+
+    static func load(_ url: URL = Paths.study.appendingPathComponent("eval/judge_card.json")) -> [JudgeCardRow] {
+        guard let d = try? Data(contentsOf: url) else { return [] }
+        return (try? JSONDecoder().decode([JudgeCardRow].self, from: d)) ?? []
+    }
+
+    /// One row per criterion: the rubric version with the most labels, then the highest kappa.
+    static func best(_ rows: [JudgeCardRow]) -> [JudgeCardRow] {
+        Dictionary(grouping: rows, by: \.criterion).values.compactMap { g in
+            g.max { ($0.n_labels, $0.kappa ?? -2) < ($1.n_labels, $1.kappa ?? -2) }
+        }.sorted { $0.criterion < $1.criterion }
+    }
+
+    static func rate(_ name: String, _ v: Double?, _ ci: [Double]?) -> String {
+        guard let v else { return "\(name) –" }
+        let c = (ci?.count == 2) ? String(format: " [%.2f–%.2f]", ci![0], ci![1]) : ""
+        return String(format: "\(name) %.2f", v) + c
     }
 }
