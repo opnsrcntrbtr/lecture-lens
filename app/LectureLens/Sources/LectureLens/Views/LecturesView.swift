@@ -75,7 +75,7 @@ func parseISO(_ s: String) -> Date? {
 }
 
 private enum LectureTab: String, CaseIterable, Identifiable {
-    case notes = "Notes", slides = "Slides", transcript = "Transcript", qa = "Q&A", cards = "Cards", practice = "Practice"
+    case notes = "Notes", slides = "Slides", transcript = "Transcript", qa = "Q&A", cards = "Cards", cornell = "Cornell", practice = "Practice"
     var id: String { rawValue }
 }
 
@@ -118,6 +118,7 @@ struct LectureDetail: View {
                                        model: nil, promptVersion: nil)
                 case .cards: CardsPane(url: folder.appendingPathComponent("cards.tsv"), lecture: session.key,
                                        model: manifestString("llm"))
+                case .cornell: CornellPane(lecture: folder.lastPathComponent)
                 case .practice: ScrollView { PracticeBox(model: model, fixedLecture: folder.lastPathComponent).padding(12) }
                 }
             } else {

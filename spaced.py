@@ -122,7 +122,7 @@ def card_id(question: str) -> str:
     return hashlib.sha1(" ".join(question.lower().split()).encode()).hexdigest()[:12]
 
 
-CARD_FILES = ("cards.tsv", "cards_prequestions.tsv", "coach_cards.tsv", "reference/reference_cards.tsv")
+CARD_FILES = ("cards.tsv", "cards_prequestions.tsv", "cards_cues.tsv", "coach_cards.tsv", "reference/reference_cards.tsv")
 
 
 def collect(lectures: Path) -> list[dict]:

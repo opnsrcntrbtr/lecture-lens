@@ -2019,8 +2019,13 @@ def _lecture_lines(folder: Path) -> list[dict]:
     day = dt.datetime.fromisoformat(man["start"].replace("Z", "+00:00")).astimezone().strftime("%Y%m%d")
     _, recs = evidence.lecture_records(folder, _day_guard(day))
     key = evidence.lecture_key(folder.name)
-    return [{"line_id": f"{key}/{r['kind']}/{r['idx']}", "t": (r.get("t_abs") or "")[11:19], "text": r["text"]}
-            for r in recs if r["text"].strip()]
+    def local(ts: str) -> str:   # slide times are stored in UTC, transcript times with an offset
+        try:
+            return dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().strftime("%H:%M:%S")
+        except (ValueError, AttributeError):
+            return ""
+    return [{"line_id": f"{key}/{r['kind']}/{r['idx']}", "t": local(r.get("t_abs") or ""), "t_abs": r.get("t_abs"),
+             "text": r["text"]} for r in recs if r["text"].strip()]
 
 
 def quiz_items(folder: Path) -> list[dict]:
@@ -2252,6 +2257,138 @@ def cmd_prequestions(a):
     return out({"ok": True, "prequestions": pq.load(live)})
 
 
+def _lecture_day(folder: Path) -> str:
+    man = json.loads((folder / "manifest.json").read_text())
+    return dt.datetime.fromisoformat(man["start"].replace("Z", "+00:00")).astimezone().strftime("%Y%m%d")
+
+
+def agenda_map(folder: Path, notes: bool = True) -> dict:
+    """NG-4: map the day's agenda parts onto the lecture as delivered (agenda.py); writes
+    agenda_map.json and, with notes, the 'How the class ran' block at the end of notes.md
+    (the first rewrite keeps notes.md.pre-agenda)."""
+    import agenda
+    day = _lecture_day(folder)
+    ag = LECTURES / "live" / day / "agenda.txt"
+    if not ag.exists():
+        return {"ok": False, "error": f"no agenda for {day}: paste it into live/{day}/agenda.txt"}
+    text = "\n".join(_day_guard(day)(ag.read_text().splitlines()))
+    llm = lambda p: study.llm("You label lecture transcript windows with agenda parts. JSON only.", p, max_tokens=1500,
+                              temperature=0.0, slot="build")
+    m = agenda.build(text, _lecture_lines(folder), llm)
+    if not m.get("ok"):
+        return m
+    m["made"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    m["window_min"] = agenda.WINDOW_MIN
+    (folder / "agenda_map.json").write_text(json.dumps(m, indent=1))
+    nf = folder / "notes.md"
+    if notes and nf.exists():
+        bak = folder / "notes.md.pre-agenda"
+        if not bak.exists():
+            bak.write_text(nf.read_text())
+        nf.write_text(agenda.apply_to_notes(nf.read_text(), agenda.notes_block(m)))
+    return m
+
+
+def skipped_parts(day: str) -> list[str]:
+    """Titles of agenda parts the agenda map marks skipped, for any lecture on `day`."""
+    out = []
+    for f in LECTURES.glob(f"{day}-*/agenda_map.json"):
+        try:
+            out += [r["agenda_item"].split(":", 1)[-1].strip() for r in json.loads(f.read_text())["parts"]
+                    if r["status"] == "skipped"]
+        except (ValueError, KeyError):
+            continue
+    return out
+
+
+def cornell_build(folder: Path) -> dict:
+    """LS-5: extracts from the notes' timed bullets, cue questions per section, cue cards."""
+    import cornell
+    notes = (folder / "notes.md").read_text() if (folder / "notes.md").exists() else ""
+    if not notes:
+        return {"ok": False, "error": "no notes for this lecture"}
+    exs = cornell.extracts(notes, _lecture_lines(folder))
+    if not exs:
+        return {"ok": False, "error": "the notes have no bullets with timecodes"}
+    llm = lambda p: study.llm("You write Cornell cue questions from lecture extracts. JSON only.", p, max_tokens=1500,
+                              temperature=0.3, slot="build")
+    heads = {s["section_id"]: s["heading"] for s in cornell.sections(notes)}
+    cues = cornell.make_cues(exs, heads, llm)
+    cornell.write_jsonl(folder / "extracts.jsonl", exs)
+    cornell.write_jsonl(folder / "cues.jsonl", cues)
+    (folder / "cards_cues.tsv").write_text(cornell.cards_tsv(cues, exs))
+    return {"ok": True, "extracts": len(exs), "cues": len(cues),
+            "by_kind": {k: sum(c["kind"] == k for c in cues) for k in cornell.KINDS}}
+
+
+def cmd_cornell(a):
+    import cornell
+    folder = find_folder(a.id)
+    out = lambda o: print(json.dumps(o, ensure_ascii=False))
+    if a.action == "build":
+        return out(cornell_build(folder))
+    if a.action == "summary":
+        return out({"ok": True, **cornell.save_summary(STUDY_DIR / "summaries", folder.name, a.text or "")})
+    return out({"ok": True, "lecture": folder.name, **cornell.view(folder, STUDY_DIR / "summaries")})
+
+
+def cmd_teachback(a):
+    import cite, cornell, teachback as tb
+    store = tb.Store(STUDY_DIR)
+    out = lambda o: print(json.dumps(o, ensure_ascii=False))
+    if a.action == "start":
+        folder = find_folder(a.lecture)
+        exs = cornell.read_jsonl(folder / "extracts.jsonl")
+        if not exs:
+            notes = (folder / "notes.md").read_text() if (folder / "notes.md").exists() else ""
+            exs = cornell.extracts(notes, _lecture_lines(folder))
+        secs = {s["section_id"]: s["heading"] for s in cornell.sections((folder / "notes.md").read_text())}
+        pick = [e for e in exs if not a.section or e["section_id"] == a.section]
+        if len(pick) < 4:
+            return out({"ok": False, "error": "need at least four timed points in the notes (or that section)"})
+        rng = __import__("random").Random(a.seed)
+        pick = rng.sample(pick, min(8, len(pick)))
+        by_id = {l["line_id"]: l["text"] for l in _lecture_lines(folder)}
+        passages = lambda e: [" ".join(by_id.get(i, "") for i in e.get("line_ids", [])[:12])[:700], e["quote"]]
+        llm = lambda p: study.llm("You write teach-back practice from lecture extracts. JSON only.", p, max_tokens=1500,
+                                  temperature=0.5, slot="interactive")
+        chk_llm = lambda p: study.llm("You check whether passages support a claim. JSON only.", p, max_tokens=200,
+                                      temperature=0.0, slot="interactive")
+        topic = secs.get(a.section, "") if a.section else (json.loads((folder / "manifest.json").read_text()).get("title") or "")
+        gen = tb.generate(topic, pick, passages, llm, cite.llm_checker(chk_llm), seed=a.seed)
+        if not gen["ok"]:
+            return out(gen)
+        return out({"ok": True, **tb.public(store.new(folder.name, gen)), "dropped": len(gen["dropped"])})
+    if a.action == "score":
+        corr = dict(x.split("=", 1) for x in (a.corrections or "").split("|") if "=" in x)
+        return out({"ok": True, **tb.score(store, a.id, [m.strip() for m in (a.marks or "").split(",") if m.strip()], corr)})
+    if a.action == "show":
+        return out({"ok": True, **tb.public(store.load(a.id))})
+    rows = [tb.public(json.loads(p.read_text())) for p in sorted(store.root.glob("*.json"))]
+    return out({"ok": True, "sessions": [{k: r[k] for k in ("id", "lecture", "topic", "scored")} |
+                                         ({k: r[k] for k in ("caught", "missed", "false_alarms")} if r["scored"] else {})
+                                         for r in rows]})
+
+
+def cmd_agenda(a):
+    folder = find_folder(a.id)
+    if a.cached:
+        f = folder / "agenda_map.json"
+        m = json.loads(f.read_text()) if f.exists() else {"ok": False, "error": "not mapped yet"}
+    else:
+        m = agenda_map(folder, notes=not a.no_notes)
+    if a.json:
+        print(json.dumps({k: v for k, v in m.items() if k != "sections"} | {"sections": len(m.get("sections", []))}))
+    elif not m.get("ok"):
+        print(m["error"])
+    else:
+        for r in m["parts"]:
+            span = f"{r['t0'][:5]}–{r['t1'][:5]}" if r["t0"] else "–"
+            print(f"{r['status']:<8} {span:<12} {r['minutes']:>3} min  {r['agenda_item']}")
+        if m["unplanned"]:
+            print(f"unplanned {len(m['unplanned']) * m['window_min']} min")
+
+
 def resolve_prequestions(day: str) -> list[dict]:
     """After class: resolve the day's prequestions over its class lines and write the cards
     into the built lecture folder (cards_prequestions.tsv, read by the Anki export)."""
@@ -2266,7 +2403,7 @@ def resolve_prequestions(day: str) -> list[dict]:
             lines = [l for l in _lecture_lines(folder) if "/t/" in l["line_id"]]
     llm = lambda p: study.llm("You check whether class passages answer questions. JSON only.", p, max_tokens=600,
                               temperature=0.0, slot="build")
-    rows = pq.resolve(live, lines, llm)
+    rows = pq.resolve(live, lines, llm, skipped_parts(day))
     for lid, folder in _index_targets("all"):
         if lid.startswith(day) and not lid.startswith("live/") and (folder / "manifest.json").exists():
             title = json.loads((folder / "manifest.json").read_text()).get("title", "")
@@ -2608,6 +2745,13 @@ def cmd_after(a):
                       "note": f"{sum(left.values())} line(s) still name an attendee in {', '.join(left)}" if left
                       else f"no removed name left; {len(rev.get('review') or {})} word(s) to review"})
         step("qa", ["qa", folder.name], 300)
+        try:
+            if (LECTURES / "live" / day / "agenda.txt").exists():
+                m = agenda_map(folder)
+                steps.append({"name": "agenda", "ok": bool(m.get("ok")), "note": m.get("error") or ", ".join(
+                    f"{r['item_id']} {r['status']}" for r in m["parts"]) + (f"; {len(m['unplanned']) * m['window_min']} min unplanned" if m["unplanned"] else "")})
+        except Exception as e:
+            steps.append({"name": "agenda", "ok": False, "note": f"{type(e).__name__}: {e}"[:200]})
         try:
             pqs = resolve_prequestions(day)
             if pqs:
@@ -2980,6 +3124,18 @@ def main():
     p.add_argument("--session", default=""); p.add_argument("--text", default=""); p.add_argument("--skip", action="store_true")
     p.add_argument("--choice", type=int, default=-1); p.add_argument("--confidence", default="")
     p.add_argument("-n", type=int, default=5); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_practice)
+    p = sub.add_parser("cornell", help="LS-5: Cornell view: notes, cue questions, your summary")
+    p.add_argument("action", choices=["show", "build", "summary"], nargs="?", default="show")
+    p.add_argument("id", nargs="?", default="last"); p.add_argument("--text"); p.set_defaults(fn=cmd_cornell)
+    p = sub.add_parser("teachback", help="LS-6: find the planted errors in a colleague's explanation")
+    p.add_argument("action", choices=["start", "score", "show", "list"], nargs="?", default="list")
+    p.add_argument("--lecture", default="last"); p.add_argument("--section"); p.add_argument("--seed", type=int)
+    p.add_argument("--id"); p.add_argument("--marks"); p.add_argument("--corrections")
+    p.set_defaults(fn=cmd_teachback)
+    p = sub.add_parser("agenda", help="NG-4: agenda parts covered, partial, moved or skipped, as the class ran")
+    p.add_argument("id", nargs="?", default="last"); p.add_argument("--no-notes", action="store_true")
+    p.add_argument("--cached", action="store_true", help="show the saved map without rebuilding")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_agenda)
     p = sub.add_parser("prequestions", help="LS-4: prequestions before class, resolved after it")
     p.add_argument("action", choices=["make", "show", "guess", "mark", "resolve"]); p.add_argument("--day", default="")
     p.add_argument("--id", default=""); p.add_argument("--text", default=""); p.add_argument("--got-it", dest="got_it", default="")
