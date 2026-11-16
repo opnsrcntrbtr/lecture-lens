@@ -115,13 +115,21 @@ def guess(live: Path, pq_id: str, text: str, now: dt.datetime | None = None) -> 
     return r
 
 
-def resolve(live: Path, lines: list[dict], llm) -> list[dict]:
-    """lines: the day's guarded class lines [{line_id, t, text}]."""
+def resolve(live: Path, lines: list[dict], llm, skipped: list[str] | None = None) -> list[dict]:
+    """lines: the day's guarded class lines [{line_id, t, text}]. `skipped`: agenda parts the
+    class did not cover (NG-4); a prequestion on one of them is not_covered without retrieval,
+    because a retrieved line from elsewhere would be a false answer."""
+    import agenda
     rows = load(live)
     if not rows:
         return rows
+    skip_parts = [{"title": t} for t in (skipped or [])]
     cand, blocks = {}, []
     for n, r in enumerate(rows, 1):
+        if skip_parts and agenda.match_part(r["agenda_item"], skip_parts):
+            cand[f"P{n}"] = []
+            r["_skipped"] = True
+            continue
         want = cite.words(r["text"] + " " + r["agenda_item"])
         scored = sorted(((len(want & cite.words(l["text"])), -k, l) for k, l in enumerate(lines)), key=lambda x: (-x[0], x[1]))
         ps = [l for s, _, l in scored[:3] if s >= 2]
@@ -138,7 +146,10 @@ def resolve(live: Path, lines: list[dict], llm) -> list[dict]:
                 continue
             if 1 <= i <= len(cand[f"P{n}"]):
                 hit.append(cand[f"P{n}"][i - 1])
-        if hit:
+        if r.pop("_skipped", False):
+            r["resolved"] = {"status": "not_covered", "line_ids": [], "quote": None, "t": None,
+                             "reason": "skipped in class (agenda map)"}
+        elif hit:
             r["resolved"] = {"status": "answered", "line_ids": [h["line_id"] for h in hit],
                              "quote": " ".join(h["text"] for h in hit[:2])[:600], "t": hit[0].get("t")}
         else:

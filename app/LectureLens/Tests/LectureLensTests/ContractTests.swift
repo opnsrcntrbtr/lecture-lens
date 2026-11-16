@@ -278,3 +278,12 @@ import Testing
     let p = try JSONDecoder().decode(PrivacyReport.self, from: Data(#"{"ok": true, "checks": [{"check": "endpoints_local", "ok": true, "level": "fail", "detail": "2 endpoint settings, all loopback"}]}"#.utf8))
     #expect(p.checks?.count == 1)
 }
+
+@Test func cornellAgendaTeachbackContracts() throws {
+    let c = try JSONDecoder().decode(CornellView.self, from: Data(#"{"ok": true, "lecture": "L", "sections": [{"section_id": "tl-dr", "heading": "TL;DR", "markdown": "* Mulch [10:16:00]", "cues": [{"cue_id": "c1", "section_id": "tl-dr", "kind": "cue", "question": "What does mulch do?", "extract_ids": ["x1"], "times": ["10:16:00"]}]}], "summary": "", "summary_prompt": "In your own words", "built": true}"#.utf8))
+    #expect(c.sections?.first?.cues.first?.times == ["10:16:00"] && c.summary == "")
+    let m = try JSONDecoder().decode(AgendaMap.self, from: Data(#"{"ok": true, "parts": [{"agenda_item": "Part 1: Soil", "item_id": "p1", "runs": [["10:40:00", "11:00:00"]], "planned_min": 40, "status": "moved", "coverage": "covered", "section_ids": [], "t0": "10:40:00", "t1": "11:00:00", "minutes": 20, "mentions_min": 0, "confidence": 0.5, "agreement": 1.0, "uncertain": false}], "sections": 12, "unplanned": ["w00"], "window_min": 5}"#.utf8))
+    #expect(Cornell.agendaLine(m.parts![0]) == "moved · Part 1: Soil · 10:40–11:00")
+    let t = try JSONDecoder().decode(TeachBack.self, from: Data(#"{"ok": true, "id": "a", "lecture": "L", "topic": "T", "statements": [{"s_id": "s1", "text": "x", "planted": true, "marked": true, "correct": "y", "why": "z", "t0": "10:00:00"}], "scored": true, "caught": 1, "missed": 1, "false_alarms": 0}"#.utf8))
+    #expect(Cornell.score(t) == "Found 1 of 2 planted errors · 0 correct statement(s) marked wrong")
+}
