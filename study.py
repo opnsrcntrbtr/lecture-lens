@@ -277,6 +277,30 @@ def bm25_rank(question, rows, k1=1.5, b=0.75):
     return [r for _, r in scored]
 
 
+def retrieve_local(question, start, end, k=14):
+    """Passages from the built lectures' evidence store (lectures/index.sqlite, name-guarded),
+    as Ask source rows. Used when screenpipe is not running or finds nothing: past lectures
+    stay answerable without the capture engine."""
+    import evidence
+    idx = Path(os.path.expanduser(os.environ.get("STUDY_LECTURE_DIR", str(HERE / "lectures")))) / "index.sqlite"
+    if not idx.exists():
+        return []
+    con = evidence.connect(idx)
+    rows = []
+    for h in evidence.search(con, question, k=k * 3):
+        t = h.get("t_abs")
+        try:
+            ts = dt.datetime.fromisoformat(t.replace("Z", "+00:00")) if t else None
+        except ValueError:
+            ts = None
+        if ts is not None and not (start <= ts <= end):
+            continue
+        rows.append({"ts": t or "", "src": "lecture " + h["source"], "where": h["context"], "text": h["text"]})
+        if len(rows) >= k:
+            break
+    return rows
+
+
 def answer_from(question, rows, think=False):
     """Generation step, separated from retrieval so evals can run it on fixed
     context. Returns (answer, ctx_rows_used, source_block_sent_to_model).
@@ -345,13 +369,23 @@ def cmd_ask(a):
     import time
     t0 = time.time()
     start, end = parse_window(a.since, a.date)
+    retrieval, note = "screenpipe", None
     try:
+        _get(f"{SP}/health", timeout=3)   # fail fast, before the keyword call to the model
         queries, rows = retrieve(a.question, start, end, a.app)
     except (urllib.error.URLError, ConnectionError) as e:
-        msg = f"screenpipe is not reachable at {SP} ({getattr(e, 'reason', e)}) — start capture first"
-        if a.json:
-            print(json.dumps({"ok": False, "error": msg})); sys.exit(1)
-        sys.exit(msg)
+        queries, rows = [a.question], []
+        note = f"screenpipe is not running ({getattr(e, 'reason', e)}); answered from built lectures only"
+    if not rows:
+        rows = retrieve_local(a.question, start, end)
+        if rows:
+            retrieval = "lecture index"
+            note = note or "no screen captures matched; answered from built lectures"
+        elif note:
+            msg = note.split(";")[0] + " and no built lecture matched — start capture first"
+            if a.json:
+                print(json.dumps({"ok": False, "error": msg})); sys.exit(1)
+            sys.exit(msg)
     if not rows:
         if a.json:
             print(json.dumps({"ok": False, "error": "no captures matched", "queries": queries})); sys.exit(1)
@@ -363,9 +397,11 @@ def cmd_ask(a):
                           "sources": [{"n": i, "ts": r["ts"], "src": r["src"], "where": r["where"],
                                        "text": r["text"][:1500]} for i, r in enumerate(ctx, 1)],
                           "citation_warnings": warns, "citation_coverage": coverage,
-                          "model": MODEL, "prompt_version": PROMPT_VERSION,
+                          "model": MODEL, "prompt_version": PROMPT_VERSION, "retrieval": retrieval, "note": note,
                           "latency_s": round(time.time() - t0, 2)}))
         return
+    if note:
+        print(f"  ({note})", file=sys.stderr)
     print(f"  (searched {len(queries)} terms → {len(rows)} captures, using {len(ctx)})\n", file=sys.stderr)
     print(ans)
     for w in warns: print(f"  ⚠ citation check: {w}", file=sys.stderr)

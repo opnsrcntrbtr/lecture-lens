@@ -75,3 +75,13 @@ def test_reworded_repeats_and_ungrounded_now_questions_are_dropped(tmp_path):
 
 def test_tidy_drops_tags_and_transcript_wording():
     assert curate.tidy("The transcript mentions mulch [Transcript]. See [slide 3] and (S1).") == "The lecture mentions mulch. See and (S1)."
+
+
+def test_a_replayed_round_never_reads_lines_after_now(tmp_path):
+    d = folder(tmp_path)
+    seen = {}
+    def llm(p):
+        seen["p"] = p
+        return RAW
+    curate.run(d, llm, T0 + dt.timedelta(minutes=20), "Garden class", lookback_min=10)
+    assert "minute 15" in seen["p"] and "minute 25" not in seen["p"] and "minute 39" not in seen["p"]

@@ -148,12 +148,13 @@ def run(live: Path, llm, now: dt.datetime, title: str, guard=lambda lines: lines
     q_f = live / "questions.jsonl"
     rows = load_jsonl(q_f)
     frm = since(rows, now - dt.timedelta(minutes=lookback_min))
-    segs = [s for s in load_jsonl(live / "whisper_segments.jsonl") if (cite.parse_t(s.get("t", "")) or now) >= frm]
+    within = lambda s: frm <= (cite.parse_t(s.get("t", "")) or now) <= now   # never lines after "now" (replays)
+    segs = [s for s in load_jsonl(live / "whisper_segments.jsonl") if within(s)]
     text = " ".join(guard([s["text"] for s in segs]))
     if len(text.split()) < min_words:
         return {"ok": True, "added": 0, "round": None, "note": f"not enough new transcript since {frm.astimezone():%H:%M}"}
     slides = [s["title"] for s in load_jsonl(live / "slides.jsonl")
-              if (cite.parse_t(s.get("t", "")) or now) >= frm and (s.get("kind") or "slide") == "slide"]
+              if within(s) and (s.get("kind") or "slide") == "slide"]
     threads = json.loads((live / "qa_threads.json").read_text()) if (live / "qa_threads.json").exists() else []
     asked = [t.get("q", "") for t in threads]
     earlier = [r["q"] for r in curated(rows)]

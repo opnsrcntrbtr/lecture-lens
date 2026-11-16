@@ -15,6 +15,8 @@ struct LiveView: View {
     @State private var qaSearch = ""
     @State private var syncing: String?
     @State private var syncNote: [String: String] = [:]
+    /// A past class to review (yyyyMMdd); nil follows today's live folder.
+    @State private var pastDay: String?
 
     enum QAFilter: String, CaseIterable, Identifiable {
         case all = "All", mine = "Mine", unanswered = "Unanswered"
@@ -50,10 +52,17 @@ struct LiveView: View {
             .frame(maxWidth: 880, alignment: .leading)      // a readable line length, like a notes app
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle("Live class")
-        .task {
+        .navigationTitle(pastDay.map { "Live class · \(LiveData.dayLabel($0))" } ?? "Live class")
+        .toolbar {
+            Picker("Day", selection: $pastDay) {
+                Text("Today").tag(String?.none)
+                ForEach(LiveData.pastDays(), id: \.self) { d in Text(LiveData.dayLabel(d)).tag(Optional(d)) }
+            }
+            .help("Review a past class: its curated questions, Q&A and citations")
+        }
+        .task(id: pastDay) {
             while !Task.isCancelled {
-                live = await LiveData.load()
+                live = await LiveData.load(day: pastDay.flatMap(LiveData.date) ?? Date())
                 try? await Task.sleep(for: .seconds(5))
             }
         }
@@ -136,7 +145,7 @@ struct LiveView: View {
                 if model.curateRunning { ProgressView().controlSize(.small) }
                 Toggle("Every 25 min", isOn: $model.autoCurate).toggleStyle(.checkbox).controlSize(.small)
                     .help("While the follower is running, curate a round every 25 minutes (uses the local model)")
-                Button("Curate now", systemImage: "sparkles") { model.curateNow() }
+                Button("Curate now", systemImage: "sparkles") { model.curateNow() }.disabled(pastDay != nil)
                     .controlSize(.small).disabled(model.curateRunning || live.state == nil)
             }
         }
@@ -279,7 +288,7 @@ struct LiveView: View {
             Spacer()
             if let n = syncNote[what] { Text(n).font(.scaled(.caption)).foregroundStyle(.secondary) }
             if syncing == what { ProgressView().controlSize(.small) }
-            Button("Sync now", systemImage: "arrow.triangle.2.circlepath") { requestSync(what) }
+            Button("Sync now", systemImage: "arrow.triangle.2.circlepath") { requestSync(what) }.disabled(pastDay != nil)
                 .controlSize(.small)
                 .disabled(syncing != nil || !live.isFresh)
                 .help(live.isFresh ? "Ask the live follower to update this now" : "The live follower isn't running")
@@ -410,6 +419,25 @@ struct LiveData {
 
     /// The live folder's day (yyyymmdd), for `lecture cite --day`.
     var day: String { folder.lastPathComponent }
+
+    /// Past live-class folders (yyyyMMdd), newest first, today excluded.
+    static func pastDays(root: URL = Paths.lectures.appendingPathComponent("live"), today: Date = Date()) -> [String] {
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd"
+        let t = f.string(from: today)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        return names.filter { $0.count == 8 && $0.allSatisfy(\.isNumber) && $0 != t }.sorted(by: >)
+    }
+
+    static func date(_ day: String) -> Date? {
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd"; f.locale = Locale(identifier: "en_US_POSIX")
+        return f.date(from: day)
+    }
+
+    static func dayLabel(_ day: String) -> String {
+        guard let d = date(day) else { return day }
+        let f = DateFormatter(); f.dateFormat = "EEE d MMM"
+        return f.string(from: d)
+    }
 
     func sourceTitles(_ ids: [String]) -> String {
         let t = ids.compactMap { evidence[$0] }

@@ -16,15 +16,25 @@ enum ClassReminder {
         return (s, e)
     }
 
-    /// Which reminder is due now, if any: "soon" from 5 minutes before the start, "late"
-    /// from 2 minutes after it until the class ends, each once, and none while Live capture runs.
+    /// Which reminder is due now, if any: "soon" once from 5 minutes before the start; "late"
+    /// from 1 minute after it, every minute for 10 minutes (CT-1), while capture is not running.
     static func due(_ c: NextClass, now: Date, liveRunning: Bool, sent: Set<String>) -> Stage? {
         guard !liveRunning, let w = window(c) else { return nil }
-        let late = now >= w.start.addingTimeInterval(120) && now < w.end
-        let soon = now >= w.start.addingTimeInterval(-300) && now < w.start
-        let stage: Stage? = late ? .late : (soon ? .soon : nil)
-        guard let st = stage, !sent.contains(key(c, st)) else { return nil }
-        return st
+        if now >= w.start.addingTimeInterval(-300) && now < w.start {
+            return sent.contains(key(c, .soon)) ? nil : .soon
+        }
+        let since = now.timeIntervalSince(w.start)
+        guard since >= lateFirst, since <= lateUntil, now < w.end else { return nil }
+        return sent.contains(lateKey(c, now: now)) ? nil : .late
+    }
+
+    static let lateFirst: TimeInterval = 60, lateEvery: TimeInterval = 60, lateUntil: TimeInterval = 600
+
+    /// One key per minute slot, so the late reminder repeats each minute and never twice in one.
+    static func lateKey(_ c: NextClass, now: Date) -> String {
+        guard let w = window(c) else { return key(c, .late) }
+        let slot = Int((now.timeIntervalSince(w.start) - lateFirst) / lateEvery)
+        return "\(key(c, .late))-\(slot)"
     }
 
     static func key(_ c: NextClass, _ s: Stage) -> String { "\(c.date)-\(c.start)-\(s.rawValue)" }
@@ -32,18 +42,29 @@ enum ClassReminder {
     static func text(_ c: NextClass, _ s: Stage) -> (title: String, body: String) {
         switch s {
         case .soon: return ("Class at \(c.start): start Live capture", c.title)
-        case .late: return ("Live capture is not running", "\(c.title) started at \(c.start). Open Capture and press Start (Live).")
+        case .late: return ("Capture is not running", "\(c.title) started at \(c.start). Start capture now so the class is not lost.")
         }
     }
 
     /// Posts a local notification; does nothing outside an app bundle (swift run, tests).
-    static func post(_ c: NextClass, _ s: Stage) {
+    static func post(_ c: NextClass, _ s: Stage, now: Date = Date()) {
         let t = text(c, s)
-        notify(id: key(c, s), title: t.title, body: t.body)
+        // one notification id per class and stage: a repeat replaces the last one instead of piling up
+        notify(id: key(c, s), title: t.title, body: t.body, category: s == .late ? startCategory : nil)
+    }
+
+    /// The notification category whose one action starts capture from the app.
+    static let startCategory = "CAPTURE_LATE", startAction = "START_CAPTURE"
+
+    static func registerCategories() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let start = UNNotificationAction(identifier: startAction, title: "Start capture", options: [.foreground])
+        UNUserNotificationCenter.current().setNotificationCategories([
+            UNNotificationCategory(identifier: startCategory, actions: [start], intentIdentifiers: [])])
     }
 
     /// A local notification; nothing outside an app bundle (swift run, tests).
-    static func notify(id: String, title: String, body: String) {
+    static func notify(id: String, title: String, body: String, category: String? = nil) {
         guard Bundle.main.bundleIdentifier != nil else { return }
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
@@ -52,6 +73,7 @@ enum ClassReminder {
             content.title = title
             content.body = body
             content.sound = .default
+            if let category { content.categoryIdentifier = category }
             center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
         }
     }

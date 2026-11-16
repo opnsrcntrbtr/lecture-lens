@@ -26,6 +26,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import cite   # deterministic citation grounding & verification
+import capture_health  # CT-1: probe, alerts, gap ledger
 import study  # shared config + llm() + oMLX plumbing
 import course_calendar  # programme calendar (data in lectures/calendar.json, gitignored)
 sys.path.insert(0, str(HERE / "eval"))
@@ -1185,6 +1186,10 @@ def _guard_names(session, lines, report=True):
     _AUTHORS[str(d)] = authors = authors or set()
     out, rep = name_guard.guard(lines, panel_authors=authors, allow=_name_allow(d), roster=_name_roster(),
                                 decisions=name_guard.load_decisions(PRIVATE))
+    learned = [e["token"] for e in rep.get("entries", []) if e.get("layer") == "adjacent" and e["decision"] == "removed"]
+    if learned and name_guard.learn_names(PRIVATE, learned):
+        global _ROSTER
+        _ROSTER = None   # the next guard in this run sees them too
     seen = _NAMES_SEEN.setdefault(str(d), set())
     seen.update(rep["removed"])
     if seen - set(rep["removed"]):   # names found in the transcript also leave slide text
@@ -1446,6 +1451,25 @@ def window_session(con, start, end, title=None):
             "frames": fr, "title": title or (title_of(fr) if fr else "Untitled lecture"),
             "id": start.astimezone().strftime("%Y%m%d-%H%M")}
 
+def _manifest_window(con, ident):
+    """A lecture built for an explicit window (a calendar slot or --from/--to) has no
+    matching detected session: rebuild it from the window its manifest recorded."""
+    for d in LECTURES.iterdir() if LECTURES.exists() else []:
+        if not (d.name == ident or d.name.startswith(f"{ident}_")) or not (d / "manifest.json").exists():
+            continue
+        try:
+            m = json.loads((d / "manifest.json").read_text())
+            start = dt.datetime.fromisoformat(m["start"].replace("Z", "+00:00"))
+            end = dt.datetime.fromisoformat(m["end"].replace("Z", "+00:00")) if m.get("end") else \
+                start + dt.timedelta(minutes=float(m["minutes"]))
+        except (KeyError, ValueError, TypeError):
+            continue
+        s = window_session(con, start, end, m.get("title"))
+        if s["id"] == ident.split("_", 1)[0]:
+            return [s]
+    return []
+
+
 def cmd_build(a):
     con = db()
     if a.start:
@@ -1462,6 +1486,8 @@ def cmd_build(a):
     if not ss: sys.exit("no lecture sessions in that window")
     targets = ss[-1:] if a.id in ("last", None) else [s for s in ss if s["id"] == a.id]
     if a.id == "all": targets = ss
+    if not targets and a.id not in ("last", "all", None):
+        targets = _manifest_window(con, a.id)
     if not targets: sys.exit(f"no session with id {a.id} (try: lecture list)")
     for s in targets:
         print(f"building {s['id']} — {s['title']} ({s['minutes']} min)", file=sys.stderr)
@@ -1545,6 +1571,32 @@ def run_checks(vision_probe=True):
     else:
         chk("vision", True, f"{VL_MODEL} (probe skipped)", level="warn")
     chk("vault", True, str(VAULT) + ("" if VAULT.exists() else " (will be created)"), level="ok" if VAULT.exists() else "warn")
+    # CT-1, read-only: the audio-usage key in the compiled app, and whether the newest chunk is all zeros
+    app_plist = Path(os.path.expanduser(os.environ.get("STUDY_APP", "~/Applications/Lecture Lens.app"))) / "Contents" / "Info.plist"
+    if app_plist.exists():
+        import plistlib
+        try:
+            keys = plistlib.loads(app_plist.read_bytes())
+        except Exception:
+            keys = {}
+        need = [k for k in ("NSAudioCaptureUsageDescription", "NSMicrophoneUsageDescription", "NSScreenCaptureUsageDescription")
+                if k in keys]
+        chk("usage_keys", "NSAudioCaptureUsageDescription" in keys,
+            f"Info.plist usage descriptions: {', '.join(need) or 'none'}",
+            None if "NSAudioCaptureUsageDescription" in keys else
+            "the app's Info.plist lacks NSAudioCaptureUsageDescription: audio taps return silence without it "
+            f"(macOS permission to inspect: {PRIVACY})", level=None if "NSAudioCaptureUsageDescription" in keys else "warn")
+    newest = capture_health.newest_chunks(SP_DATA)
+    chunk_t = max((t for _, t in newest.values()), default=None)
+    if newest:
+        recent = [p for p, t in newest.values() if (chunk_t - t).total_seconds() < 120]
+        lv = capture_health.combined_level([capture_health.level_db(p) for p in recent])
+        silent = lv is not None and lv <= capture_health.SILENCE_DB
+        age = (dt.datetime.now(dt.timezone.utc) - chunk_t).total_seconds() / 60 if chunk_t else None
+        chk("audio_level", not silent,
+            f"newest audio chunk ({age:.0f} min old): peak {lv if lv is not None else '?'} dB" + (" — digital silence" if silent else ""),
+            None if not silent else f"all-zero audio usually means the tap was refused: check {PRIVACY} for Lecture Lens",
+            level=None if not silent else "warn")
     return out
 
 
@@ -1688,10 +1740,9 @@ def build_index(which="all", say=print) -> dict:
     import evidence, name_guard
     embed, model = _embedder()
     con = evidence.connect(INDEX)
-    done = []
-    for lecture_id, folder in _index_targets(which):
-        day = re.search(r"(\d{8})", lecture_id)[1]
-        guard = _day_guard(day)
+
+    def index_one(lecture_id, folder):
+        guard = _day_guard(re.search(r"(\d{8})", lecture_id)[1])
         if lecture_id.startswith("live/"):
             title, recs = evidence.live_records(folder, guard)
             bounds = [r["t0"] for r in recs if r["kind"] == "s"]
@@ -1703,19 +1754,35 @@ def build_index(which="all", say=print) -> dict:
                     else [r["t0"] for r in recs if r["kind"] == "s"]
             except Exception:
                 bounds = [r["t0"] for r in recs if r["kind"] == "s"]
-        rep = evidence.index_lecture(con, lecture_id, title, recs, bounds, embed=embed, embed_model=model,
-                                     guard_version=getattr(name_guard, "GUARD_VERSION", None))
+        return evidence.index_lecture(con, lecture_id, title, recs, bounds, embed=embed, embed_model=model,
+                                      guard_version=getattr(name_guard, "GUARD_VERSION", None))
+
+    def left_in(lecture_id):
+        texts = [r[0] for r in con.execute("SELECT text FROM lines WHERE lecture_id=? ORDER BY rowid", (lecture_id,))]
+        again = _day_guard(re.search(r"(\d{8})", lecture_id)[1])(texts)
+        return sum(1 for x, y in zip(texts, again) if x != y)
+
+    targets = _index_targets(which)
+    done = []
+    for lecture_id, folder in targets:
+        rep = index_one(lecture_id, folder)
         done.append(rep)
         say(f"  {evidence.lecture_key(lecture_id)}: {rep['chunks']} passages, {rep['lines']} lines"
             + (f", {rep['embedded']} embedded" if model else ""))
-    # the name check: the guard run again over what the index holds changes nothing
-    left = 0
-    for lecture_id, _ in _index_targets(which):
-        texts = [r[0] for r in con.execute("SELECT text FROM lines WHERE lecture_id=? ORDER BY rowid", (lecture_id,))]
-        again = _day_guard(re.search(r"(\d{8})", lecture_id)[1])(texts)
-        left += sum(1 for x, y in zip(texts, again) if x != y)
-    con.execute("INSERT OR REPLACE INTO meta VALUES('names_left', ?)", (str(left),)); con.commit()
-    return {"ok": True, "index": str(INDEX.name), "lectures": done, "embed_model": model or None, "names_left": left}
+    # the name check: the guard run again over what the index holds changes nothing. Names
+    # learned from a later lecture (the rest of a full name) can reach an earlier one, so
+    # lectures that still change are indexed again, at most twice.
+    left = {i: left_in(i) for i, _ in targets}
+    for _ in range(2):
+        again = [(i, f) for i, f in targets if left[i]]
+        if not again:
+            break
+        for i, f in again:
+            index_one(i, f)
+        left.update({i: left_in(i) for i, _ in again})
+    total = sum(left.values())
+    con.execute("INSERT OR REPLACE INTO meta VALUES('names_left', ?)", (str(total),)); con.commit()
+    return {"ok": True, "index": str(INDEX.name), "lectures": done, "embed_model": model or None, "names_left": total}
 
 
 def cmd_index(a):
@@ -1895,6 +1962,217 @@ def names_left(folder: Path, names: list[str], vault_note: Path | None = None) -
     return out
 
 
+# ------------------------------------------------------------- capture health (CT-1)
+SP_DATA = Path(os.path.expanduser(os.environ.get("SCREENPIPE_DATA", "~/.screenpipe/data")))
+MEETING_PROCS = ("zoom.us", "CptHost")
+
+
+def _mode_state() -> dict:
+    try:
+        r = subprocess.run([str(HERE / "sp-mode"), "--json"], capture_output=True, text=True, timeout=15)
+        return json.loads(r.stdout or "{}")
+    except Exception:
+        return {}
+
+
+def _meeting_running() -> bool:
+    for p in MEETING_PROCS:
+        try:
+            if subprocess.run(["pgrep", "-x", p], capture_output=True, timeout=5).returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _newest_frame_t():
+    try:
+        row = db().execute("SELECT max(timestamp) AS t FROM frames").fetchone()
+        return capture_health.parse_t(row["t"] if hasattr(row, "keys") else row[0])
+    except Exception:
+        return None
+
+
+def health_probe(now=None) -> dict:
+    """One CT-1 probe from the engine's outputs; appends to the day's capture_health.jsonl
+    while capture runs or a class is scheduled now, and returns {record, alert}."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    mode = _mode_state()
+    running = bool(mode.get("running"))
+    newest = capture_health.newest_chunks(SP_DATA)
+    chunk_t = max((t for _, t in newest.values()), default=None)
+    fresh = [p for p, t in newest.values() if (now - t).total_seconds() < 120]   # devices still writing
+    level = capture_health.combined_level([capture_health.level_db(p) for p in fresh]) if running and fresh else None
+    sp = {}
+    if running:
+        try:
+            sp = json.loads(urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+                "http://127.0.0.1:3030/health", timeout=3).read())
+        except Exception:
+            sp = {}
+    expected = running and (_meeting_running() or mode.get("mode") == "live")
+    rec = capture_health.probe(now, running, chunk_t, level, _newest_frame_t() if running else None,
+                               expected, drm_paused=bool(sp.get("drm_content_paused")))
+    day = now.astimezone().strftime("%Y%m%d")
+    cal = course_calendar.session_on(now.astimezone().date())
+    in_class = False
+    if cal:
+        try:
+            s, e = course_calendar._bounds(cal)
+            in_class = s - dt.timedelta(minutes=15) <= now <= e + dt.timedelta(hours=1)
+        except Exception:
+            in_class = False
+    rows = [rec]
+    if running or in_class:
+        rows = capture_health.append(LECTURES / "live" / day / "capture_health.jsonl", rec)
+    recent = [r for r in rows if (now - capture_health.parse_t(r["t"])).total_seconds() <= 600]
+    return {"ok": True, "record": rec, "alert": capture_health.alert(recent), "mode": mode.get("mode"),
+            "in_class": in_class}
+
+
+def cmd_health(a):
+    rep = health_probe()
+    if a.json:
+        print(json.dumps(rep)); return
+    r = rep["record"]
+    print(f"capture {r['status']}: audio chunk {r['audio_chunk_age_s']} s old at {r['audio_level_db']} dB, "
+          f"newest frame {r['frame_age_s']} s old" + (f"\n  ALERT: {rep['alert']['message']}" if rep["alert"] else ""))
+
+
+def lecture_gaps(folder: Path) -> list[dict]:
+    """The gap ledger for a built lecture: calendar window vs audio chunks and health records.
+    Writes gaps.json in the day's live folder and the manifest's `gaps` field."""
+    man = json.loads((folder / "manifest.json").read_text())
+    start = dt.datetime.fromisoformat(man["start"].replace("Z", "+00:00"))
+    cal = course_calendar.session_at(start)
+    if cal:
+        cs, ce = course_calendar._bounds(cal)
+    else:
+        cs = start
+        ce = dt.datetime.fromisoformat(man["end"].replace("Z", "+00:00")) if man.get("end") else \
+            start + dt.timedelta(minutes=float(man.get("minutes") or 0))
+    day = cs.astimezone().strftime("%Y%m%d")
+    live = LECTURES / "live" / day
+    hf = live / "capture_health.jsonl"
+    health = [json.loads(l) for l in hf.read_text().splitlines() if l.strip()] if hf.exists() else []
+    filled = man.get("gap_filled") or []
+    filled = filled if isinstance(filled, list) else [filled]
+    g = capture_health.gaps(cs, ce, capture_health.chunk_times(SP_DATA, cs - dt.timedelta(hours=1)), health, filled)
+    live.mkdir(parents=True, exist_ok=True)
+    (live / "gaps.json").write_text(json.dumps(g, indent=1))
+    man["gaps"] = g
+    (folder / "manifest.json").write_text(json.dumps(man, indent=1, ensure_ascii=False))
+    return g
+
+
+def cmd_gaps(a):
+    g = lecture_gaps(find_folder(a.id))
+    if a.json:
+        print(json.dumps({"ok": True, "gaps": g})); return
+    for x in g or [{"from": "-", "to": "-", "cause": "none", "minutes": 0}]:
+        print(f"{x['from']} → {x['to']}  {x['minutes']} min  {x['cause']}")
+
+
+# ------------------------------------------------------------- regression gates (EP-2)
+TIMECODE = re.compile(r"\[\d{1,2}:\d{2}(?::\d{2})?\]")
+DOES_NOT_SPECIFY = re.compile(r"\b(?:does not|doesn't|did not|didn't) (?:specify|say|mention|cover)\b|\bnot specified\b", re.I)
+
+
+def gate_notes_timecodes(notes: str) -> int:
+    """Notes paragraphs and bullets of substance (60+ characters, outside headings, the
+    'open questions' section and quoted source lists) with no timecode."""
+    n, skip = 0, False
+    for block in re.split(r"\n\s*\n|\n(?=\s*[-*]\s)", notes):
+        b = block.strip()
+        if not b:
+            continue
+        if b.startswith("#"):
+            head = b.splitlines()[0].lower()
+            skip = any(w in head for w in ("open question", "review", "sources", "further reading"))
+            rest = "\n".join(b.splitlines()[1:]).strip()
+            if not rest:
+                continue
+            b = rest
+        if skip or b.startswith("_") or b.startswith(">") or b.startswith("|") or len(b) < 60:
+            continue
+        if not TIMECODE.search(b):
+            n += 1
+    return n
+
+
+def gate_title(title: str, candidates: list[str]) -> bool:
+    norm = lambda s: re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+    t = norm(title)
+    return bool(t) and any(t == norm(c) or (norm(c) and (t in norm(c) or norm(c) in t)) for c in candidates if c)
+
+
+def gate_quiz(quiz: list[dict]) -> float | None:
+    """Share of quiz items that pass the linter: a question, 3+ distinct options, and an
+    answer that is one of them."""
+    if not quiz:
+        return None
+    ok = 0
+    for q in quiz:
+        opts = [str(o).strip().lower() for o in (q.get("options") or q.get("choices") or [])]
+        ans = q.get("answer")
+        ans_ok = (isinstance(ans, int) and 0 <= ans < len(opts)) or \
+            (isinstance(ans, str) and (ans.strip().lower() in opts or (len(ans.strip()) == 1 and
+                                       0 <= ord(ans.strip().lower()) - 97 < len(opts))))
+        if (q.get("q") or q.get("question")) and len(opts) >= 3 and len(set(opts)) == len(opts) and ans_ok:
+            ok += 1
+    return round(ok / len(quiz), 3)
+
+
+def regression_gates(folder: Path, names_left_n: int) -> list[dict]:
+    """Model-free checks with fixed thresholds; each {name, value, threshold, ok}."""
+    import cite
+    man = json.loads((folder / "manifest.json").read_text())
+    notes = (folder / "notes.md").read_text() if (folder / "notes.md").exists() else ""
+    gates = [{"name": "names_left", "value": names_left_n, "threshold": 0, "ok": names_left_n == 0}]
+    n = gate_notes_timecodes(notes)
+    gates.append({"name": "notes_without_timecode", "value": n, "threshold": 0, "ok": n == 0})
+    start = dt.datetime.fromisoformat(man["start"].replace("Z", "+00:00"))
+    live = LECTURES / "live" / start.astimezone().strftime("%Y%m%d")
+    drafts = []
+    for f in ("questions.jsonl", "qa_followups.jsonl"):
+        p = live / f
+        drafts += [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+    dns = sum(1 for d in drafts if DOES_NOT_SPECIFY.search(str(d.get("answer") or "")))
+    gates.append({"name": "drafts_does_not_specify", "value": dns, "threshold": 0, "ok": dns == 0})
+    cal = course_calendar.session_at(start)
+    slides = [l for l in (folder / "slides.md").read_text().splitlines() if l.strip() and not l.startswith(("#", "!"))][:1] \
+        if (folder / "slides.md").exists() else []
+    cands = [cal.get("title") if cal else None, man.get("portal_title")] + slides
+    gates.append({"name": "title_from_candidates", "value": man.get("title"), "threshold": "calendar|portal|first slide",
+                  "ok": gate_title(man.get("title", ""), cands)})
+    qf = folder / "practice_quiz.json"
+    if qf.exists():
+        try:
+            qd = json.loads(qf.read_text())
+            items = qd if isinstance(qd, list) else qd.get("questions") or qd.get("items") or []
+        except ValueError:
+            items = []
+        rate = gate_quiz(items)
+        gates.append({"name": "quiz_lint_pass_rate", "value": rate, "threshold": 1.0, "ok": rate is None or rate >= 1.0})
+    segs = [{"at": m[1], "text": m[2]} for m in (re.match(r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.*)", l)
+            for l in ((folder / ("transcript_merged.md" if (folder / "transcript_merged.md").exists() else "transcript.md"))
+                      .read_text().splitlines() if (folder / "transcript.md").exists() else [])) if m]
+    n_slides = int(man.get("slides") or 0)
+    warn = cite.verify_citations(notes, n_slides, segs, duration_s=float(man.get("minutes") or 0) * 60 or None)
+    gates.append({"name": "notes_citation_warnings", "value": len(warn), "threshold": 0, "ok": not warn})
+    return gates
+
+
+def cmd_gates(a):
+    folder = find_folder(a.id)
+    g = regression_gates(folder, 0)
+    if a.json:
+        print(json.dumps({"ok": True, "lecture": folder.name, "gates": g, "needs_review": any(not x["ok"] for x in g)}))
+        return
+    for x in g:
+        print(f"{'✓' if x['ok'] else '✗'} {x['name']:<26} {x['value']!s:<40} (threshold {x['threshold']})")
+
+
 def after_blockers() -> list[str]:
     """Why After class should not run now: capture still on, or an eval's judge loaded."""
     why = []
@@ -1933,7 +2211,10 @@ def cmd_after(a):
         try:
             r = subprocess.run(me + args, capture_output=True, text=True, timeout=timeout)
             ok = r.returncode == 0
-            note = ((r.stderr if not ok else r.stdout) or r.stderr).strip().splitlines()[-1:] or [""]
+            # the last line that says something: JSON output ends with a lone "}"
+            lines = [l for l in ((r.stderr if not ok else r.stdout) or r.stderr).strip().splitlines()
+                     if re.search(r"[A-Za-z0-9]", l)]
+            note = lines[-1:] or [""]
             steps.append({"name": name, "ok": ok, "note": note[0][:200]})
             return ok, r.stdout
         except subprocess.TimeoutExpired:
@@ -1965,8 +2246,22 @@ def cmd_after(a):
                       "note": f"{sum(left.values())} line(s) still name an attendee in {', '.join(left)}" if left
                       else f"no removed name left; {len(rev.get('review') or {})} word(s) to review"})
         step("qa", ["qa", folder.name], 300)
+    gates = []
+    if folder and (folder / "manifest.json").exists():
+        try:
+            g = lecture_gaps(folder)
+            steps.append({"name": "gaps", "ok": True, "note": f"{len(g)} gap(s)" + (": " + ", ".join(
+                f"{x['minutes']} min {x['cause']}" for x in g) if g else "")})
+        except Exception as e:
+            steps.append({"name": "gaps", "ok": False, "note": f"{type(e).__name__}: {e}"[:200]})
+        try:
+            left_n = next((int(re.match(r"(\d+)", s_["note"])[1]) for s_ in steps if s_["name"] == "names" and not s_["ok"]), 0)
+            gates = regression_gates(folder, left_n)
+        except Exception as e:
+            gates = [{"name": "gates", "value": f"{type(e).__name__}: {e}"[:200], "threshold": None, "ok": False}]
     report = {"ok": all(s["ok"] for s in steps), "lecture": folder.name if folder else None,
-              "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "steps": steps}
+              "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "steps": steps,
+              "gates": gates, "needs_review": any(not g_["ok"] for g_ in gates)}
     if folder:
         (folder / "after_class.json").write_text(json.dumps(report, indent=1))
     out(report)
@@ -2294,6 +2589,12 @@ def main():
     p.add_argument("--window", type=float, default=10.0, help="minutes either side")
     p.add_argument("--answer", default="", help="answer text alone, for the sentence check (default: --text)")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_cite)
+    p = sub.add_parser("health", help="capture health: one probe (audio age and level, newest frame) and any alert")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_health)
+    p = sub.add_parser("gaps", help="gap ledger for a built lecture (late start, holes) into gaps.json and the manifest")
+    p.add_argument("id", nargs="?", default="last"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_gaps)
+    p = sub.add_parser("gates", help="the After-class regression gates for a built lecture (model-free)")
+    p.add_argument("id", nargs="?", default="last"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_gates)
     p = sub.add_parser("index", help="build the evidence store (lectures/index.sqlite) from guarded text")
     p.add_argument("which", nargs="?", default="all", help="lecture id, its date-time prefix, live/<day>, or all")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_index)

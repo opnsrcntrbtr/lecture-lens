@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 
 REPLACEMENT = "an attendee"
-GUARD_VERSION = "2"
+GUARD_VERSION = "2.1"
 # Roster thresholds, fixed by the M-9 benchmark (tools/name_guard_bench.py)
 THRESHOLDS = {"phonetic": 0.80, "edit": 0.90, "review": 0.78, "min_len": 5}
 CAP = r"[A-Z][a-z]{2,}"
@@ -43,7 +43,12 @@ NOT_NAMES = {"kirana", "mandi", "mandis", "aadhaar", "aadhar", "lakh", "lakhs", 
              "hinglish", "tanglish", "whatsapp", "paytm", "upi", "ondc", "zomato", "swiggy", "flipkart",
              "myntra", "nykaa", "meesho", "makemytrip", "sarvam", "jugalbandi", "nvidia", "coursera", "klarna",
              "waymo", "tesla", "openai", "anthropic", "gemini", "qwen", "llama", "copilot", "autopilot", "firefly",
-             "figma", "jira", "asana", "notion", "canva", "razorpay", "phonepe", "zerodha", "ola", "uber"}
+             "figma", "jira", "asana", "notion", "canva", "razorpay", "phonepe", "zerodha", "ola", "uber",
+             "google", "microsoft", "amazon", "apple", "meta", "linkedin", "gartner", "salesforce", "netflix",
+             "spotify", "youtube", "chatgpt", "claude", "perplexity", "github", "slack", "zoom", "excel", "python",
+             "deepseek", "mistral", "hugging", "openai", "azure", "aws", "oracle", "ibm", "adobe", "airbnb", "stripe",
+             "duolingo", "grammarly", "cursor", "replit", "lovable", "mckinsey", "deloitte", "accenture", "infosys",
+             "wipro", "tcs", "hdfc", "icici", "sbi", "airtel", "jio", "reliance", "tata", "mahindra", "byju", "unacademy"}
 # chat lines read "<name> to Everyone" / "<name> to Me"
 CHAT_TO = re.compile(r"\s+to\s+(everyone|me|you)\b.*$", re.I)
 WORD = re.compile(rf"\b{CAP}\b")
@@ -53,6 +58,20 @@ WORD = re.compile(rf"\b{CAP}\b")
 def load_dictionary(path: str = "/usr/share/dict/words") -> frozenset[str]:
     p = Path(os.environ.get("STUDY_DICT", path))
     return frozenset(w.strip().lower() for w in p.read_text(errors="ignore").splitlines()) if p.exists() else frozenset()
+
+
+_LOWER_DICT: dict[str, frozenset] = {}
+
+
+def load_lower_dictionary(path: str = "/usr/share/dict/words") -> frozenset[str]:
+    """Only the entries written in lower case: common words. The full word list also holds
+    proper names ("Rhodes", many surnames), which must not shield the rest of a name."""
+    p = Path(os.environ.get("STUDY_DICT", path))
+    key = str(p)
+    if key not in _LOWER_DICT:
+        _LOWER_DICT[key] = frozenset(w.strip() for w in p.read_text(errors="ignore").splitlines()
+                                     if w.strip() and w.strip().islower()) if p.exists() else frozenset()
+    return _LOWER_DICT[key]
 
 
 def load_allow(path: Path | None) -> set[str]:
@@ -190,7 +209,9 @@ class Roster:
     def __init__(self, names, keep: set[str] | None = None, dictionary=None, thresholds: dict | None = None):
         self.t = dict(THRESHOLDS, **(thresholds or {}))
         keep = {k.lower() for k in (keep or set())}
-        dictionary = load_dictionary() if dictionary is None else dictionary
+        # common (lower-case) words only: the full list also holds proper names, which are
+        # exactly what a roster part may be
+        dictionary = load_lower_dictionary() if dictionary is None else dictionary
         self.full: set[str] = set()
         self.parts: dict[str, str] = {}
         self.by_key: dict[str, set[str]] = {}
@@ -282,6 +303,27 @@ def update_roster(private_dir: Path, authors_by_day: dict[str, set[str]]) -> dic
     return {"names": len(rows), "added": added}
 
 
+def learn_names(private_dir: Path, tokens, source: str = "adjacent") -> int:
+    """Add name parts learned in one text (the rest of a full name) to names_roster.json so
+    every later guard removes them, in any lecture. Learner 'keep' decisions win. Returns
+    how many were new (count only)."""
+    import datetime as _dt
+    import json
+    private_dir = Path(private_dir)
+    f = private_dir / "names_roster.json"
+    rows = json.loads(f.read_text()) if f.exists() else []
+    known = {r["name"].lower() for r in rows}
+    keep = {t for t, d in load_decisions(private_dir).items() if d == "keep"}
+    new = [t for t in sorted(set(tokens)) if t.lower() not in known and t.lower() not in keep]
+    if not new:
+        return 0
+    day = _dt.date.today().strftime("%Y%m%d")
+    rows += [{"name": t, "source": source, "first_seen": day} for t in new]
+    private_dir.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(rows, indent=1, ensure_ascii=False))
+    return len(new)
+
+
 def load_decisions(private_dir: Path | None) -> dict[str, str]:
     """The learner's review decisions: {token (lower case): 'remove' | 'keep'}."""
     if not private_dir:
@@ -333,11 +375,45 @@ def review_candidates(lines: list[str], dictionary: set[str], keep: set[str], mi
     return {w: c for w, c in sorted(counts.items(), key=lambda x: -x[1]) if c >= min_count}
 
 
+_NAMEWORD = r"[A-Z][a-z][A-Za-z'-]+"
+ADJ_AFTER = re.compile(rf"{REPLACEMENT}[ \t]+({_NAMEWORD})\b")
+ADJ_BEFORE = re.compile(rf"(?:(?<=\\[ntr])|\b)({_NAMEWORD})[ \t]+{REPLACEMENT}")
+DOUBLE = re.compile(rf"{REPLACEMENT}(?:[ \t]+{REPLACEMENT})+")
+# "an attendee Rose." — a capitalised ordinary word right after a removed name and right before
+# punctuation is the end of that name; only that occurrence goes (the word stays elsewhere)
+ADJ_END = re.compile(rf"({REPLACEMENT})[ \t]+([A-Z][a-z][A-Za-z'-]+)(?=[.,;:!?]|\s*$)")
+TITLES = {"professor", "prof", "sir", "madam", "maam", "ma'am", "doctor", "dr", "mr", "mrs", "ms", "team",
+          "everyone", "all", "guys", "folks", "here", "there", "please", "thanks", "thank", "too", "also", "again"}
+
+
+def _name_like(w: str, keep: set[str], dictionary: set[str]) -> bool:
+    lw = w.lower()
+    return not (lw in keep or lw in COMMON or lw in NOT_NAMES or in_dictionary(lw, dictionary)
+                or lw in ("an", "attendee") or len(w) < 3 or len(w) > 12 or "-" in w or "'" in w)
+
+
+def full_name_rest(lines: list[str], name_like) -> set[str]:
+    """Capitalised words directly before or after a redaction placeholder that pass
+    `name_like`: the other half of a full name whose first half was removed."""
+    found: set[str] = set()
+    for l in lines:
+        if REPLACEMENT not in l:
+            continue
+        for m in ADJ_AFTER.finditer(l):
+            if name_like(m.group(1)):
+                found.add(m.group(1))
+        for m in ADJ_BEFORE.finditer(l):
+            if name_like(m.group(1)):
+                found.add(m.group(1))
+    return found
+
+
 def guard(lines: list[str], panel_authors: set[str] | None = None, dictionary: set[str] | None = None,
           allow: set[str] | None = None, staff: set[str] | None = None, roster: "Roster | None" = None,
           decisions: dict[str, str] | None = None, hold: set[str] | None = None) -> tuple[list[str], dict]:
     """Redacted lines and a report {removed: {token: count}, review: {token: count},
     entries: [{token, count, layer, score, decision}], guard_version}."""
+    strict = load_lower_dictionary() if dictionary is None else dictionary   # for the full-name rule
     dictionary = load_dictionary() if dictionary is None else dictionary
     decisions = decisions or {}
     keep = (allow or set()) | (staff_names() if staff is None else staff) | {REPLACEMENT.split()[-1]}
@@ -359,7 +435,7 @@ def guard(lines: list[str], panel_authors: set[str] | None = None, dictionary: s
                     continue
                 seen.add(w)
                 lw = w.lower()
-                if lw in keep or lw in COMMON or lw in NOT_NAMES or in_dictionary(lw, dictionary) or \
+                if lw in keep or lw in COMMON or lw in NOT_NAMES or in_dictionary(lw, strict) or \
                         (w.isupper() and len(w) > 1):
                     continue
                 hit = roster.match(w)
@@ -407,6 +483,37 @@ def guard(lines: list[str], panel_authors: set[str] | None = None, dictionary: s
             counts[n] = len(hit)
     red = redactor(set(counts))
     out = [red(l) for l in lines]
+    # the rest of a full name: a capitalised word right next to a removed name ("an attendee
+    # Okafor", "Tamsin an attendee") that is no dictionary word, term or allowed name is the
+    # other half of that name; it is removed everywhere, and its neighbours are checked again
+    # a word the text itself also uses in lower case is an ordinary word, not a name
+    lower_used = {w for l in out for w in re.findall(r"\b[a-z][a-z'-]{2,}\b", l)}
+    name_like = lambda w: _name_like(w, keep, strict) and w.lower() not in lower_used
+    adjacent = full_name_rest(out, name_like)
+    if adjacent:
+        red2 = redactor(adjacent)
+        for _ in range(3):
+            out = [red2(l) for l in out]
+            more = full_name_rest(out, name_like) - adjacent
+            if not more:
+                break
+            adjacent |= more
+            red2 = redactor(adjacent)
+        for w in adjacent:
+            n = sum(1 for l in lines if re.search(rf"(?:(?<=\\[ntr])|\b){re.escape(w)}\b", l))
+            counts[w] = max(n, 1)
+            layer.setdefault(w, ("adjacent", 1.0))
+    ended = 0
+
+    def end_of_name(m):
+        nonlocal ended
+        w = m.group(2).lower()
+        if w in keep or w in COMMON or w in NOT_NAMES or w in TITLES:
+            return m.group(0)
+        ended += 1
+        return m.group(1)
+    out = [ADJ_END.sub(end_of_name, l) for l in out]
+    out = [DOUBLE.sub(REPLACEMENT, l) for l in out]   # "an attendee an attendee" reads as one
     review = review_candidates(out, dictionary, keep)
     review.update(review_extra)
     for w, (lay, sc) in roster_review.items():
@@ -419,4 +526,5 @@ def guard(lines: list[str], panel_authors: set[str] | None = None, dictionary: s
         lay, sc = roster_review.get(t) or (("frequency-gate", layer[t][1]) if t in review_extra else ("capitalised", 0.0))
         entries.append({"token": t, "count": c, "layer": lay, "score": sc, "decision": "review"})
     return out, {"removed": dict(sorted(counts.items())), "review": dict(sorted(review.items(), key=lambda x: -x[1])),
-                 "entries": sorted(entries, key=lambda e: (e["decision"], -e["count"])), "guard_version": GUARD_VERSION}
+                 "entries": sorted(entries, key=lambda e: (e["decision"], -e["count"])), "guard_version": GUARD_VERSION,
+                 "name_ends_removed": ended}
