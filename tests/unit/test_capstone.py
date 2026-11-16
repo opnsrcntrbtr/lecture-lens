@@ -277,9 +277,14 @@ def test_findings_carry_exploratory_until_measured(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(cli, "ROOT", tmp_path / "cap")
     monkeypatch.setattr(cli, "HERE", tmp_path)
     monkeypatch.setattr(cli, "capture_running", lambda: False)
-    assert set(cli.checker_card().values()) == {"exploratory"}
+    ws = cs.Workspace(tmp_path / "cap").init()
+    assert set(cli.checker_card(ws).values()) == {"exploratory"}
     (tmp_path / "eval" / "results").mkdir(parents=True)
     (tmp_path / "eval" / "results" / "20300101-000000-capstone-m11.json").write_text(json.dumps(
         {"card": [{"check_id": "stop_condition", "status": "ok"}]}))
-    card = cli.checker_card()
+    assert cli.checker_card(ws)["stop_condition"] == "exploratory"    # bench alone is not enough (CC-6)
+    rows = [{"finding_id": f"f{i}", "check_id": "stop_condition", "verdict": "fail", "valid": i % 10 != 0,
+             "specific": True} for i in range(60)]
+    (ws.root / "eval" / "finding_labels.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    card = cli.checker_card(ws)
     assert card["stop_condition"] == "ok" and card["moat_base_model"] == "exploratory"

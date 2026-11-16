@@ -163,3 +163,15 @@ def test_spread_covers_start_and_end_of_a_long_lecture():
     rows = [f"[L{i}] line {i} " + "x" * 90 for i in range(1, 1001)]
     s = quiz.spread(rows, budget=6000, windows=6)
     assert len(s) <= 6200 and "[L1] " in s and "[L834] " in s and "[L1000] " not in s.split("...")[0]
+
+
+def test_recap_is_scored_on_tldr_points_not_the_whole_sheet(tmp_path):
+    store = practice.Store(tmp_path / "p")
+    tldr = ("* Trust architecture decides what the model may do and who has the final say [10:19:04–10:21:31].\n"
+            "* Autonomy runs from copilot to autopilot and must match the cost of a mistake [slide 6].")
+    s = practice.start_recap(store, "L1", "Trust", "a long cheat sheet\n- point one\n- point two\n- point three",
+                             "cheat_sheet", score_from=tldr)
+    practice.attempt(store, s["session_id"], "copilot to autopilot depends on the cost of a mistake")
+    r = practice.reveal_recap(store, s["session_id"])
+    assert [p["missed"] for p in r["points"]] == [True, False]
+    assert "10:19" not in r["points"][0]["text"] and r["content"].startswith("a long cheat sheet")

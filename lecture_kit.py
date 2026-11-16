@@ -2049,7 +2049,16 @@ def cmd_quiz_lint(a):
     print(json.dumps({"ok": True, **rep}))
 
 
-def _recap_content(folder: Path) -> tuple[str, str]:
+def _tldr(notes: str) -> str:
+    """The bullets under the notes' TL;DR heading (the five points a recap is scored on)."""
+    m = re.search(r"(?ms)^#+\s*TL;DR\s*$(.*?)(?=^#+\s|\Z)", notes)
+    return "\n".join(l for l in (m.group(1) if m else "").splitlines() if re.match(r"\s*(?:[-*•]|\d+[.)])\s", l))
+
+
+def _recap_content(folder: Path) -> tuple[str, str, str]:
+    """(text shown after reveal, kind, text the attempt is scored on)."""
+    notes = (folder / "notes.md").read_text() if (folder / "notes.md").exists() else ""
+    score = _tldr(notes)
     for name, kind in (("cheat_sheet.md", "cheat_sheet"), ("notes.md", "recap")):
         p = folder / name
         if p.exists():
@@ -2057,8 +2066,8 @@ def _recap_content(folder: Path) -> tuple[str, str]:
             if kind == "recap":   # the notes' TL;DR and key concepts are the recap
                 m = re.search(r"(?s)(TL;DR.*?)(?=\n#+\s*(?:Frameworks|Examples|How this|Open questions)|\Z)", text)
                 text = m.group(1) if m else text[:4000]
-            return text, kind
-    return "", "recap"
+            return text, kind, score
+    return "", "recap", score
 
 
 def cmd_practice(a):
@@ -2072,10 +2081,11 @@ def cmd_practice(a):
             folder = find_folder(a.lecture)
             man = json.loads((folder / "manifest.json").read_text())
             if a.kind == "recap":
-                content, kind = _recap_content(folder)
+                content, kind, score = _recap_content(folder)
                 if not content:
                     return out({"ok": False, "error": "no notes or cheat sheet for this lecture"})
-                return out({"ok": True, **practice.start_recap(store, folder.name, man["title"], content, kind)})
+                return out({"ok": True, **practice.start_recap(store, folder.name, man["title"], content, kind,
+                                                               score or None)})
             items = quiz_items(folder)
             if not items:
                 return out({"ok": False, "error": "no practice quiz yet: build one first"})

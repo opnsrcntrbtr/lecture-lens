@@ -42,19 +42,29 @@ def key_points(markdown: str) -> list[str]:
     pts = []
     for line in markdown.splitlines():
         t = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+        t = re.sub(r"\s*\[[^\]]*\d[^\]]*\](?:,\s*)?", " ", t).strip(" ,")   # timecode and slide citations
         t = re.sub(r"[*_`#>|]", "", t).strip()
         if len(cite.norm_words(t)) >= 3 and not line.lstrip().startswith("#"):
             pts.append(t)
     return pts
 
 
-def missed(points: list[str], attempt: str, cover: float = 0.4) -> list[bool]:
-    """For each point, True when the attempt shares under `cover` of its content words."""
-    have = cite.norm_words(attempt or "")
+STOP = set("""a an the and or but of to in on for with by from as at is are was were be been being it its this that
+these those there their they them we you your our can could should would will may might must not no do does did has have
+had so such than then also only very more most less into over under about between which who whom what when where why how
+all any each other some""".split())
+
+
+def missed(points: list[str], attempt: str, cover: float = 0.25, enough: int = 3) -> list[bool]:
+    """For each point, True when the attempt shares fewer than `enough` of its content words
+    and under `cover` of them (stop words ignored): a recap point is a paraphrase target,
+    not a sentence to reproduce."""
+    have = cite.norm_words(attempt or "") - STOP
     out = []
     for p in points:
-        w = cite.norm_words(p)
-        out.append(not w or len(w & have) / len(w) < cover)
+        w = cite.norm_words(p) - STOP
+        k = len(w & have)
+        out.append(not w or (k < enough and k / len(w) < cover))
     return out
 
 
@@ -84,9 +94,12 @@ class Store:
 
 
 # ------------------------------------------------------------------ sessions
-def start_recap(store: Store, lecture_id: str, title: str, content: str, kind: str = "recap") -> dict:
+def start_recap(store: Store, lecture_id: str, title: str, content: str, kind: str = "recap",
+                score_from: str | None = None) -> dict:
+    """`content` is shown after reveal; the attempt is scored against `score_from` (the notes'
+    TL;DR bullets) when given, else against every point of `content`."""
     s = {"session_id": uuid.uuid4().hex[:10], "kind": kind, "lecture_id": lecture_id, "title": title,
-         "content": content, "attempt": None, "revealed": False, "closed_book": [], "started": now_iso()}
+         "content": content, "score_from": score_from, "attempt": None, "revealed": False, "closed_book": [], "started": now_iso()}
     store.save(s)
     return {"session_id": s["session_id"], "kind": kind, "prompt": f"Write what you remember about {title}.",
             "reveal_enabled": False}
@@ -103,7 +116,7 @@ def reveal_recap(store: Store, sid: str, skip: bool = False) -> dict:
     s = store.load(sid)
     if not can_reveal(s.get("attempt"), skip):
         return {"ok": False, "error": f"write at least {MIN_ATTEMPT} characters first, or choose Just show me"}
-    pts = key_points(s["content"])
+    pts = key_points(s.get("score_from") or s["content"])
     miss = missed(pts, s.get("attempt") or "")
     s["revealed"] = True
     store.save(s)
