@@ -1,4 +1,5 @@
 import SwiftUI
+@preconcurrency import UserNotifications
 
 @main
 struct LectureLensApp: App {
@@ -10,6 +11,8 @@ struct LectureLensApp: App {
         _model = State(initialValue: m)
         // Poll from launch so the menu-bar light is live before any view appears.
         Task { @MainActor in m.start() }
+        NotificationActions.shared.model = m
+        NotificationActions.shared.install()
     }
 
     var body: some Scene {
@@ -131,5 +134,32 @@ struct FeedbackBar: View {
                 correction: correction.isEmpty ? nil : correction, model: model, prompt_version: promptVersion))
             saved = true; error = nil
         } catch { self.error = "not saved: \(error.localizedDescription)" }
+    }
+}
+
+
+/// Handles the "Start capture" action on the late-start reminder: capture still starts from
+/// this app, on the learner's click.
+final class NotificationActions: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+    static let shared = NotificationActions()
+    weak var model: AppModel?
+
+    func install() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        UNUserNotificationCenter.current().delegate = self
+        ClassReminder.registerCategories()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard response.actionIdentifier == ClassReminder.startAction else { return }
+        await MainActor.run { [weak self] in
+            guard let m = self?.model else { return }
+            Task { await m.startCapture() }
+        }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
     }
 }

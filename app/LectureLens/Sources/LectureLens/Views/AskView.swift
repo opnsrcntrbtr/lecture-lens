@@ -119,6 +119,9 @@ private struct TurnView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         MarkdownText(answer)
+                        if let n = r.note {
+                            Label(n, systemImage: "info.circle").font(.scaled(.caption)).foregroundStyle(.secondary)
+                        }
                         HStack(spacing: 10) {
                             if let m = r.model { Text(m).font(.scaled(.caption2, design: .monospaced)) }
                             if let l = r.latency_s { Text(String(format: "%.1fs", l)).font(.scaled(.caption2)) }

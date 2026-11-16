@@ -202,3 +202,24 @@ def test_checker_label_moves_a_pair_from_todo_to_labelled(tmp_path, capsys):
     assert json.loads(done.read_text())["label"] == 1 and json.loads(done.read_text())["sentence"] == "s1"
     k.cmd_checker(ns(i=9))
     assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
+def test_ask_answers_from_built_lectures_when_screenpipe_is_down(tmp_path, monkeypatch, capsys):
+    import argparse
+    import study
+    con, f, _ = build(tmp_path)
+    con.close()
+    monkeypatch.setenv("STUDY_LECTURE_DIR", str(tmp_path))
+    monkeypatch.setattr(study, "SP", "http://127.0.0.1:9")          # nothing listens there
+    asked = {}
+    def fake_llm(system, user, **kw):
+        asked["user"] = user
+        return "Water raised beds more often [1]."
+    monkeypatch.setattr(study, "llm", fake_llm)
+    monkeypatch.setattr(study, "parse_window", lambda since, date: (T0 - dt.timedelta(days=1), T0 + dt.timedelta(days=1)))
+    a = argparse.Namespace(question="how often should raised beds be watered", since="100000d", date=None,
+                           app=None, think=False, json=True, show_sources=False)
+    study.cmd_ask(a)
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] and out["retrieval"] == "lecture index" and "not running" in out["note"]
+    assert out["sources"][0]["src"].startswith("lecture") and "Raised beds drain faster" in asked["user"]

@@ -55,7 +55,58 @@ struct AfterClassReport: Decodable, Sendable {
     let error: String?
     let at: String?
     let steps: [Step]
+    /// EP-2 regression gates (model-free); any failure marks the lecture "needs review".
+    let gates: [Gate]?
+    let needs_review: Bool?
     struct Step: Decodable, Sendable, Identifiable { let name: String; let ok: Bool; let note: String; var id: String { name } }
+    struct Gate: Decodable, Sendable, Identifiable {
+        let name: String; let value: GateValue?; let threshold: GateValue?; let ok: Bool
+        var id: String { name }
+    }
+    /// A gate's value or threshold: a number, a string, or null.
+    enum GateValue: Decodable, Sendable, CustomStringConvertible {
+        case number(Double), text(String)
+        init(from d: Decoder) throws {
+            let c = try d.singleValueContainer()
+            if let n = try? c.decode(Double.self) { self = .number(n) } else { self = .text((try? c.decode(String.self)) ?? "") }
+        }
+        var description: String {
+            switch self {
+            case .number(let n): n == n.rounded() ? String(Int(n)) : String(n)
+            case .text(let t): t
+            }
+        }
+    }
+}
+
+/// `lecture health --json` (CT-1): one probe of the engine's outputs and any alert.
+struct CaptureHealth: Decodable, Sendable {
+    let ok: Bool
+    let record: Record
+    let alert: Alert?
+    struct Record: Decodable, Sendable {
+        let t: String; let capture_running: Bool; let audio_chunk_age_s: Double?; let audio_level_db: Double?
+        let frame_age_s: Double?; let frames_expected: Bool?; let status: String
+    }
+    struct Alert: Decodable, Sendable { let status: String; let since: String; let lasted_s: Int; let message: String }
+
+    static func label(_ status: String) -> String {
+        switch status {
+        case "silent_audio": "silent audio"
+        case "audio_stalled": "audio stopped"
+        case "no_frames": "no screen frames"
+        case "stopped": "not capturing"
+        default: "ok"
+        }
+    }
+
+    static func detail(_ r: Record) -> String {
+        var parts: [String] = []
+        if let a = r.audio_chunk_age_s { parts.append("audio \(Int(a)) s ago") }
+        if let l = r.audio_level_db { parts.append(String(format: "%.0f dB", l)) }
+        if r.frames_expected == true, let f = r.frame_age_s { parts.append("frame \(Int(f)) s ago") }
+        return parts.isEmpty ? label(r.status) : label(r.status) + " · " + parts.joined(separator: " · ")
+    }
 }
 
 struct ModeState: Decodable, Sendable {
@@ -94,6 +145,9 @@ struct AskResult: Decodable, Sendable {
     let model: String?
     let prompt_version: String?
     let latency_s: Double?
+    /// Where the sources came from ("screenpipe" or "lecture index"), and why when not screenpipe.
+    let retrieval: String?
+    let note: String?
     struct Source: Decodable, Sendable, Identifiable, Hashable {
         let n: Int
         let ts: String

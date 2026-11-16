@@ -83,7 +83,7 @@ def test_roster_catches_asr_spellings_and_keeps_domain_terms():
     for w in ("PRD", "timestamp", "dependencies", "panelists", "Klarna"):
         assert w in text, w
     layers = {e["token"]: e["layer"] for e in rep["entries"] if e["decision"] == "removed"}
-    assert layers["Pradyoth"].startswith("roster-") and rep["guard_version"] == "2"
+    assert layers["Pradyoth"].startswith("roster-") and rep["guard_version"] == ng.GUARD_VERSION
 
 
 def test_full_roster_name_and_exact_parts_skip_the_frequency_gate():
@@ -136,3 +136,37 @@ def test_held_tokens_are_reviewed_not_removed():
     r = ng.Roster(ROSTER, dictionary=DICT)
     out, rep = ng.guard(["[00:01:00] Pradyoth spoke."], dictionary=DICT, staff=set(), roster=r, hold={"Pradyoth"})
     assert "Pradyoth" in out[0] and "Pradyoth" in rep["review"]
+
+
+def test_rest_of_a_full_name_goes_with_the_removed_half():
+    """Invented names: the roster knows the first name only; the surname next to it, and an
+    ASR variant of the first name next to the surname, are removed too."""
+    roster = ng.Roster(["Zorvanel"], keep=set(), dictionary=set())
+    lines = ["[00:01:00] Zorvanel Quistrom, your question please.",
+             "[00:02:00] Yes, Quistrom asked about evals.",
+             "[00:03:00] Zorvanell Quistrom. A/B testing.",
+             "[00:04:00] An attendee Professor said Waymo uses remote help."]
+    out, rep = ng.guard(lines, dictionary={"your", "question", "please", "yes", "asked", "about", "evals",
+                                           "testing", "professor", "said", "uses", "remote", "help"},
+                        allow={"waymo"}, staff=set(), roster=roster)
+    joined = " ".join(out)
+    assert "Quistrom" not in joined and "Zorvanel" not in joined
+    assert "an attendee an attendee" not in joined
+    assert "Professor" in out[3] and "Waymo" in out[3]
+    assert rep["removed"].get("Quistrom") and rep["guard_version"] == "2.1"
+
+
+def test_learned_name_parts_join_the_roster_unless_kept(tmp_path):
+    ng.save_decisions(tmp_path, remove=[], keep=["Plaxo"])
+    assert ng.learn_names(tmp_path, ["Quistrom", "Plaxo", "Quistrom"]) == 1
+    assert ng.learn_names(tmp_path, ["Quistrom"]) == 0
+    assert "Quistrom" in ng.load_roster(tmp_path) and "Plaxo" not in ng.load_roster(tmp_path)
+
+
+def test_an_ordinary_word_ending_a_name_goes_only_there():
+    roster = ng.Roster(["Zorvanel"], keep=set(), dictionary=set())
+    d = {"rose", "the", "price", "professor", "said", "yes"}
+    out, rep = ng.guard(["[00:01:00] Zorvanel Rose.", "[00:02:00] The price rose.", "[00:03:00] Zorvanel Professor said yes."],
+                        dictionary=d, allow=set(), staff=set(), roster=roster)
+    assert out[0] == "[00:01:00] an attendee." and out[1] == "[00:02:00] The price rose."
+    assert "Professor" in out[2] and rep["name_ends_removed"] == 1

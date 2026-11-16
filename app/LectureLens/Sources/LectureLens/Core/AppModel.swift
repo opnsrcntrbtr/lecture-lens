@@ -51,7 +51,8 @@ final class AppModel {
             Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                 Task { @MainActor in await self?.refreshDoctor(probeVision: false); self?.checkAutoCurate() } },
             Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.checkAutoImport(); self?.checkClassStart(); self?.checkClassEnded() } },
+                Task { @MainActor in
+                    self?.checkAutoImport(); self?.checkClassStart(); self?.checkClassEnded(); self?.checkCaptureHealth() } },
         ]
     }
 
@@ -123,10 +124,31 @@ final class AppModel {
     /// A notification when today's class starts without Live capture (ClassReminder).
     func checkClassStart(now: Date = .now) {
         guard let c = nextClass else { return }
-        let live = mode.running && mode.mode == "live"
-        guard let stage = ClassReminder.due(c, now: now, liveRunning: live, sent: remindersSent) else { return }
-        remindersSent.insert(ClassReminder.key(c, stage))
-        ClassReminder.post(c, stage)
+        guard let stage = ClassReminder.due(c, now: now, liveRunning: mode.running, sent: remindersSent) else { return }
+        remindersSent.insert(stage == .late ? ClassReminder.lateKey(c, now: now) : ClassReminder.key(c, stage))
+        ClassReminder.post(c, stage, now: now)
+    }
+
+    /// The newest capture-health probe (`lecture health`, CT-1) and the alert last notified.
+    var captureHealth: CaptureHealth?
+    private var healthNotified: String?
+
+    /// Every 30 s while capture runs or a class is on: probe, show the chip, notify once per
+    /// failure. Nothing is restarted here: the learner decides.
+    func checkCaptureHealth(now: Date = .now) {
+        let classOn = nextClass.flatMap(ClassReminder.window).map {
+            now >= $0.start.addingTimeInterval(-900) && now <= $0.end.addingTimeInterval(3600) } ?? false
+        guard mode.running || classOn else { captureHealth = nil; return }
+        Task {
+            guard let h = try? await ToolRunner.json(CaptureHealth.self, "lecture", ["health", "--json"], timeout: 40) else { return }
+            captureHealth = h
+            if let a = h.alert, healthNotified != a.since {
+                healthNotified = a.since
+                ClassReminder.notify(id: "capture-health", title: "Capture problem: \(CaptureHealth.label(a.status))", body: a.message)
+            } else if h.alert == nil {
+                healthNotified = nil
+            }
+        }
     }
 
     func refreshAll(probeVision: Bool) async {
@@ -181,8 +203,16 @@ final class AppModel {
         } else {
             s.append(Signal(id: "screen", label: "Screen",
                             state: frameLive ? .ok : (frames?.ok == true ? .warn : (mode.running ? .down : .unknown)),
-                            detail: frameLive ? "frames arriving" : (frames?.message ?? "no data yet"),
+                            // screenpipe reports frames it captured, not frames it kept: windows outside
+                            // Zoom and the allowed sites are dropped by design, so say so
+                            detail: frameLive ? "watching · saves frames from Zoom and allowed sites only" : (frames?.message ?? "no data yet"),
                             fix: frames?.fix))
+        }
+        if let h = captureHealth, h.record.capture_running {
+            let a = h.alert
+            s.append(Signal(id: "health", label: "Health",
+                            state: a == nil ? (h.record.status == "ok" ? .ok : .warn) : .down,
+                            detail: a?.message ?? CaptureHealth.detail(h.record), fix: nil))
         }
         // Accessibility: AXIsProcessTrusted() is live. Screen recording: the app's own
         // CGPreflightScreenCaptureAccess() is cached by macOS for the life of the process

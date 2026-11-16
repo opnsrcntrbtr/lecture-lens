@@ -104,11 +104,17 @@ import Testing
     let w = try #require(ClassReminder.window(c))
     #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(-600), liveRunning: false, sent: []) == nil)
     #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(-120), liveRunning: false, sent: []) == .soon)
-    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(60), liveRunning: false, sent: []) == nil)
-    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(600), liveRunning: false, sent: []) == .late)
-    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(600), liveRunning: true, sent: []) == nil)
-    let sent: Set<String> = [ClassReminder.key(c, .late)]
-    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(900), liveRunning: false, sent: sent) == nil)
+    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(30), liveRunning: false, sent: []) == nil)
+    // late: first within two minutes, then once a minute for ten minutes (CT-1)
+    var sent: Set<String> = [], fired: [Int] = []
+    for sec in stride(from: 0, through: 900, by: 30) {
+        let now = w.start.addingTimeInterval(TimeInterval(sec))
+        if ClassReminder.due(c, now: now, liveRunning: false, sent: sent) == .late {
+            sent.insert(ClassReminder.lateKey(c, now: now)); fired.append(sec)
+        }
+    }
+    #expect(fired.first! <= 120 && fired.count == 10 && fired.last! <= 600 && fired[1] - fired[0] == 60)
+    #expect(ClassReminder.due(c, now: w.start.addingTimeInterval(180), liveRunning: true, sent: []) == nil)
     #expect(ClassReminder.due(c, now: w.end.addingTimeInterval(60), liveRunning: false, sent: []) == nil)
 }
 
@@ -187,4 +193,28 @@ import Testing
     let r = try JSONDecoder().decode(SupportPairs.self, from: Data(#"{"ok": true, "labelled": 3, "target": 100, "remaining": 2, "todo": [{"i": 0, "sentence": "Mulch keeps soil moist.", "passage": "Mulch keeps soil moist through dry weeks."}]}"#.utf8))
     #expect(r.labelled == 3 && r.todo?.first?.i == 0)
     #expect(SupportPairs.labelArgs(i: 4, supports: false) == ["checker", "label", "--json", "--i", "4", "--label", "0"])
+}
+
+@Test func liveDayPickerListsPastFolders() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("live-\(UUID().uuidString)")
+    for n in ["20300101", "20300108", "20300115", "notes"] {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(n), withIntermediateDirectories: true)
+    }
+    let today = try #require(LiveData.date("20300115"))
+    #expect(LiveData.pastDays(root: root, today: today) == ["20300108", "20300101"])
+    #expect(LiveData.dayLabel("20300108").hasSuffix("8 Jan"))
+}
+
+@Test func askResultCarriesRetrievalNote() throws {
+    let r = try JSONDecoder().decode(AskResult.self, from: Data(#"{"ok": true, "question": "q", "answer": "a [1]", "sources": [], "model": "m", "prompt_version": "ask-v1", "latency_s": 1.2, "retrieval": "lecture index", "note": "screenpipe is not running; answered from built lectures only"}"#.utf8))
+    #expect(r.retrieval == "lecture index" && r.note?.hasPrefix("screenpipe is not running") == true)
+}
+
+@Test func decodesCaptureHealthAndGates() throws {
+    let h = try JSONDecoder().decode(CaptureHealth.self, from: Data(#"{"ok": true, "record": {"t": "2030-01-05T04:31:30+00:00", "capture_running": true, "audio_chunk_age_s": 12.0, "audio_level_db": -120.0, "frame_age_s": 4.0, "frames_expected": true, "status": "silent_audio"}, "alert": {"status": "silent_audio", "since": "2030-01-05T04:30:00+00:00", "lasted_s": 90, "message": "Audio is digital silence"}, "mode": "live", "in_class": true}"#.utf8))
+    #expect(h.alert?.status == "silent_audio" && CaptureHealth.label("no_frames") == "no screen frames")
+    #expect(CaptureHealth.detail(h.record).hasPrefix("silent audio · audio 12 s ago"))
+    let r = try JSONDecoder().decode(AfterClassReport.self, from: Data(#"{"ok": true, "steps": [], "gates": [{"name": "names_left", "value": 0, "threshold": 0, "ok": true}, {"name": "title_from_candidates", "value": "Garden", "threshold": "calendar|portal|first slide", "ok": false}, {"name": "quiz_lint_pass_rate", "value": null, "threshold": 1.0, "ok": true}], "needs_review": true}"#.utf8))
+    #expect(r.needs_review == true && r.gates?.count == 3 && r.gates?[1].value?.description == "Garden")
+    #expect(r.gates?[0].value?.description == "0")
 }

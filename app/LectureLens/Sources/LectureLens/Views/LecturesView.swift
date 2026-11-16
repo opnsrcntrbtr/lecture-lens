@@ -446,6 +446,12 @@ struct AfterClassChips: View {
                         .font(.scaled(.caption2)).foregroundStyle(s.ok ? Color.green : Color.orange)
                         .help(s.note)
                 }
+                if r.needs_review == true, let g = r.gates {
+                    Label("needs review", systemImage: "flag.fill")
+                        .font(.scaled(.caption2)).foregroundStyle(.orange)
+                        .help(g.filter { !$0.ok }.map { "\($0.name): \($0.value?.description ?? "–") (limit \($0.threshold?.description ?? "–"))" }
+                            .joined(separator: "\n"))
+                }
             }
         }
     }

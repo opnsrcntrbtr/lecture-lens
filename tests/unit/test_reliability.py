@@ -64,3 +64,29 @@ def test_names_left_counts_lines_without_printing_names(tmp_path):
     left = lk.names_left(f, ["Zorvan"], vault)
     assert left == {"notes.md": 1, "v.md": 1}
     assert lk.names_left(f, [], vault) == {}
+
+
+def test_build_falls_back_to_the_manifest_window(tmp_path, monkeypatch):
+    """A lecture built for a calendar slot has no detected session with its id; rebuilding
+    it (After class, Rebuild) uses the window its manifest recorded."""
+    import json as _json
+    import lecture_kit as k
+    d = tmp_path / "20300101-1000_Garden-Class"
+    d.mkdir()
+    (d / "manifest.json").write_text(_json.dumps({"title": "Garden Class", "start": "2030-01-01T04:30:00+00:00",
+                                                  "end": "2030-01-01T08:00:00+00:00", "minutes": 210}))
+    monkeypatch.setattr(k, "LECTURES", tmp_path)
+    seen = {}
+    def fake_window(con, start, end, title=None):
+        seen.update(start=start, end=end, title=title)
+        return {"id": start.astimezone().strftime("%Y%m%d-%H%M"), "start": start, "end": end, "title": title,
+                "frames": [], "minutes": 210}
+    monkeypatch.setattr(k, "window_session", fake_window)
+    monkeypatch.setenv("TZ", "Asia/Kolkata")
+    import time; time.tzset()
+    try:
+        got = k._manifest_window(None, "20300101-1000")
+        assert len(got) == 1 and seen["title"] == "Garden Class" and (seen["end"] - seen["start"]).seconds == 12600
+        assert k._manifest_window(None, "20300101-1100") == []
+    finally:
+        monkeypatch.delenv("TZ"); time.tzset()
