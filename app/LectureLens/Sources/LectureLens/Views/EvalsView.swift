@@ -21,6 +21,7 @@ struct EvalsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 calibrationBox
                 judgeCardBox
+                LanesBox()
                 suites
                 if !model.jobs.jobs.isEmpty { jobs }
                 runs

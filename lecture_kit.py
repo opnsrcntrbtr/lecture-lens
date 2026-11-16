@@ -2370,6 +2370,35 @@ def cmd_teachback(a):
                                          for r in rows]})
 
 
+def lane_summary(rows: list[dict], last: int = 500) -> dict:
+    """NG-6: per caller kind over the newest rows of llm_slot_metrics.jsonl: calls, median and
+    p95 wait, skipped or timed out, median prefill and decode speed."""
+    rows = rows[-last:]
+    med = lambda xs: sorted(xs)[len(xs) // 2] if xs else None
+    p95 = lambda xs: sorted(xs)[min(len(xs) - 1, int(round(0.95 * (len(xs) - 1))))] if xs else None
+    out = {}
+    for k in ("interactive", "time_boxed", "background", "build"):
+        rs = [r for r in rows if r.get("kind") == k]
+        if not rs:
+            continue
+        w = [r["waited_s"] for r in rs if r.get("waited_s") is not None]
+        out[k] = {"calls": len(rs), "median_wait_s": med(w), "p95_wait_s": p95(w),
+                  "skipped": sum(r.get("outcome") in ("skipped", "timeout") for r in rs),
+                  "errors": sum(r.get("outcome") == "error" for r in rs),
+                  "median_prefill_s": med([r["prefill_s"] for r in rs if r.get("prefill_s")]),
+                  "median_decode_tps": med([r["decode_tps"] for r in rs if r.get("decode_tps")])}
+    return {"rows": len(rows), "by_kind": out}
+
+
+def cmd_lanes(a):
+    f = LECTURES / "llm_slot_metrics.jsonl"
+    rows = [json.loads(l) for l in f.read_text().splitlines() if l.strip()] if f.exists() else []
+    rep = lane_summary(rows)
+    benches = sorted((HERE / "eval" / "results").glob("*-lanes.json"))
+    rep["bench"] = json.loads(benches[-1].read_text()) if benches else None
+    print(json.dumps({"ok": True, **rep}))
+
+
 def cmd_agenda(a):
     folder = find_folder(a.id)
     if a.cached:
@@ -3132,6 +3161,8 @@ def main():
     p.add_argument("--lecture", default="last"); p.add_argument("--section"); p.add_argument("--seed", type=int)
     p.add_argument("--id"); p.add_argument("--marks"); p.add_argument("--corrections")
     p.set_defaults(fn=cmd_teachback)
+    p = sub.add_parser("lanes", help="NG-6: waits and timings per model caller kind (llm_slot_metrics.jsonl)")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_lanes)
     p = sub.add_parser("agenda", help="NG-4: agenda parts covered, partial, moved or skipped, as the class ran")
     p.add_argument("id", nargs="?", default="last"); p.add_argument("--no-notes", action="store_true")
     p.add_argument("--cached", action="store_true", help="show the saved map without rebuilding")

@@ -10,6 +10,8 @@
   panel start [--type panel|leadership] [--pressure P] [--minutes N] [--seed N] | next | answer --text T
         | finish | self --scores c=3,... | critique | show | metrics
   label --finding ID --valid y|n --specific y|n | progress
+  peer add [--consent] | consent --peer P --yes|--no | list | doc --peer P --path F | review --peer P --path F
+       | check --peer P | feedback --text T | classify --cluster C --class K --plan T | clusters | overlap
 Everything except init, status and register refuses while capture runs.
 """
 from __future__ import annotations
@@ -30,6 +32,7 @@ import capstone_sim as sim      # noqa: E402
 import capstone_eval as ce      # noqa: E402
 import capstone_panel as cp     # noqa: E402
 import capstone_readiness as rd  # noqa: E402
+import capstone_peer as cpeer   # noqa: E402
 
 ROOT = Path(os.path.expanduser(os.environ.get("STUDY_CAPSTONE_DIR", str(HERE / "capstone"))))
 SAMPLES = HERE / "capstone_samples"
@@ -84,6 +87,16 @@ def latest_findings(ws: cs.Workspace) -> list[dict]:
     return out
 
 
+def name_guard():
+    """The roster name guard used for lectures, applied to peer documents and pasted feedback."""
+    try:
+        import datetime as _dt
+        import lecture_kit as lk
+        return lk._day_guard(_dt.date.today().strftime("%Y%m%d"))
+    except Exception:
+        return lambda lines: lines
+
+
 def bench_report() -> dict | None:
     """The newest M-11 report (tools/capstone_bench.py), if any."""
     reports = sorted((HERE / "eval" / "results").glob("*-capstone-m11.json"))
@@ -133,6 +146,12 @@ def main(argv=None):
     p = sub.add_parser("label"); p.add_argument("--finding", required=True); p.add_argument("--valid", required=True)
     p.add_argument("--specific", required=True)
     sub.add_parser("progress")
+    p = sub.add_parser("peer"); p.add_argument("action", choices=["add", "consent", "list", "doc", "review", "check",
+                                                                  "feedback", "classify", "clusters", "overlap"])
+    p.add_argument("--peer"); p.add_argument("--path"); p.add_argument("--text"); p.add_argument("--file")
+    p.add_argument("--consent", action="store_true"); p.add_argument("--yes", action="store_true")
+    p.add_argument("--no", action="store_true"); p.add_argument("--cluster"); p.add_argument("--class", dest="klass")
+    p.add_argument("--plan")
     a = ap.parse_args(argv)
 
     def out(obj):
@@ -284,6 +303,34 @@ def main(argv=None):
             return out({"ok": True, "label": ce.label_finding(ws, a.finding, yn(a.valid), yn(a.specific))})
         except KeyError as e:
             return out({"ok": False, "error": str(e)})
+    if a.cmd == "peer":
+        pr = cpeer.Peer(ws, name_guard())
+        judge = lambda p: llm_fn()("You check peer-review comments. JSON only.", p)
+        try:
+            if a.action == "add":
+                return out({"ok": True, "peer": pr.add(a.consent)})
+            if a.action == "consent":
+                return out({"ok": True, "peer": pr.set_consent(a.peer, a.yes and not a.no)})
+            if a.action == "doc":
+                return out({"ok": True, **pr.load_doc(a.peer, Path(a.path))})
+            if a.action == "review":
+                return out({"ok": True, **pr.set_review(a.peer, Path(a.path))})
+            if a.action == "check":
+                return out({"ok": True, **pr.check_review(a.peer, judge)})
+            if a.action == "feedback":
+                text = Path(a.file).expanduser().read_text() if a.file else (a.text or "")
+                return out({"ok": True, **pr.feedback(text, judge)})
+            if a.action == "classify":
+                return out({"ok": True, "cluster": pr.classify(a.cluster, a.klass, a.plan)})
+            if a.action == "clusters":
+                return out({"ok": True, "clusters": pr.clusters()})
+            if a.action == "overlap":
+                return out({"ok": True, **pr.overlap()})
+        except (KeyError, StopIteration):
+            return out({"ok": False, "error": "no such peer or cluster"})
+        except (PermissionError, ValueError, FileNotFoundError) as e:
+            return out({"ok": False, "error": str(e)})
+        return out({"ok": True, "peers": pr.peers()})
     if a.cmd == "progress":
         return out({"ok": True, **ce.progress(ws, bench_report(), list(cr.CHECKERS))})
     if a.cmd == "sim":

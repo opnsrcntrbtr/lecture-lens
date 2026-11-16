@@ -33,6 +33,8 @@ All commands live in the repository root and read `.env`.
 | `./lecture review settings --minutes 60 --class-days Sat` | Weekly budget and class days (half share); no streaks |
 | `./lecture review card --card ID [--q ..] [--a ..] [--suspend\|--delete]` | Edit, suspend or delete a card |
 | `./lecture mastery [--json]` | Per module: predicted recall, closed-book accuracy (also at Apply and above), confidence grid, sure-but-wrong items |
+| `./lecture lanes [--json]` | How long each kind of model caller waited (interactive, time-boxed, background, build), from `lectures/llm_slot_metrics.jsonl` |
+| `./lecture capstone peer add\|consent\|review\|doc\|check\|feedback\|classify\|overlap` | Peer review coach: checks the reviews you write and sorts feedback you receive; never writes a comment |
 | `./lecture agenda [ID] [--no-notes] [--cached] [--json]` | Agenda parts covered, partial, moved or skipped as the class ran; adds a "How the class ran" block to the notes |
 | `./lecture cornell show\|build\|summary ID [--text ..]` | Cornell view: cue questions from the notes' timed points (also as cards), your own summary |
 | `./lecture teachback start --lecture ID [--section S]` / `score --id X --marks s1,s3` | Find the planted errors; scored against the hidden key |
