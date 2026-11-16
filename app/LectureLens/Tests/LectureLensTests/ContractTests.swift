@@ -162,3 +162,29 @@ import Testing
     let w = try #require(ClassReminder.window(c))
     #expect(Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "Europe/London")!, from: w.start).hour == 10)
 }
+
+@Test func namesAuditAndCandidatesDecode() throws {
+    let a = try JSONDecoder().decode(NamesAudit.self, from: Data(#"{"ok": true, "guard_version": "2", "files_with_names": 3, "removed_total": 9, "review_total": 4, "held_for_review": 1}"#.utf8))
+    #expect(a.files_with_names == 3 && a.files_rewritten == nil)
+    let rows = try JSONDecoder().decode([NameCandidate].self, from: Data(#"[{"token": "Zorvan", "total": 3, "groups": ["20300101-1000_Garden"], "layer": "roster-phonetic", "score": 0.82, "decision": "review", "held": false, "learner": null}, {"token": "Plaxo", "total": 9, "groups": ["a", "b"], "layer": "capitalised", "score": 0.0, "decision": "review"}]"#.utf8))
+    #expect(rows[0].needsDecision && !rows[1].needsDecision)
+    #expect(NamesReview.decideArgs(["Zorvan": "remove", "Plaxo": "keep"]) == ["names", "decide", "--json", "--remove", "Zorvan", "--keep", "Plaxo"])
+}
+
+@Test func decodesCitationsV3() throws {
+    let json = #"{"ok": true, "t": "2030-01-01T05:05:00+00:00", "sources": [], "moments": [], "slide": null, "answer_id": "a1b2c3", "checker": {"name": "lexical-overlap", "version": "1", "threshold": 0.6, "calibrated": false}, "sentences": [{"i": 0, "text": "Raised beds drain faster.", "status": "related", "citations": [{"line_ids": ["20300101-0500.6bf7/t/4"], "t0": 340.0, "t_abs": "2030-01-01T05:05:40+00:00", "source": "transcript", "quote": "Raised beds drain faster, so water raised beds more often.", "score_lex": 3.2, "score_dense": null, "support_p": 0.75, "slide_thumb": null}]}, {"i": 1, "text": "Penguins migrate.", "status": "unsupported", "citations": []}]}"#
+    let c = try JSONDecoder().decode(Citation.self, from: Data(json.utf8))
+    #expect(c.answerId == "a1b2c3" && c.checker?.calibrated == false)
+    #expect(c.sentences?.map(\.status) == ["related", "unsupported"])
+    #expect(c.sentences?[0].citations[0].lineIds == ["20300101-0500.6bf7/t/4"])
+    #expect(CitationStatus.label("supported").0 == "Supported" && CitationStatus.label("unsupported").0 == "No support found")
+    let ev = Citation.Cited(lineIds: ["x/e/S1"], t0: nil, tAbs: nil, source: "evidence", quote: "q", supportP: nil, slideThumb: nil)
+    #expect(CitationStatus.when(ev) == "source")
+    #expect(Citation.args(t: "x", text: "q a", sources: [], day: nil, answer: "a").suffix(2) == ["--answer", "a"])
+}
+
+@Test func decodesSupportPairs() throws {
+    let r = try JSONDecoder().decode(SupportPairs.self, from: Data(#"{"ok": true, "labelled": 3, "target": 100, "remaining": 2, "todo": [{"i": 0, "sentence": "Mulch keeps soil moist.", "passage": "Mulch keeps soil moist through dry weeks."}]}"#.utf8))
+    #expect(r.labelled == 3 && r.todo?.first?.i == 0)
+    #expect(SupportPairs.labelArgs(i: 4, supports: false) == ["checker", "label", "--json", "--i", "4", "--label", "0"])
+}

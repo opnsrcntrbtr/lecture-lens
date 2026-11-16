@@ -12,6 +12,7 @@ struct EvalsView: View {
     @State private var calibration = CalibrationSheet()
     @State private var holdout = CalibrationSheet()
     @State private var checkingHoldout = false
+    @State private var labellingPairs = false
 
     var body: some View {
         ScrollView {
@@ -26,8 +27,11 @@ struct EvalsView: View {
         }
         .navigationTitle("Evals")
         .toolbar {
+            Button("Citation labels", systemImage: "checkmark.bubble") { labellingPairs = true }
+                .help("Label sentence and passage pairs so a citation checker can be calibrated")
             Button("Refresh", systemImage: "arrow.clockwise") { model.loadEvalRuns(); feedback = FeedbackStore.load() }
         }
+        .sheet(isPresented: $labellingPairs) { SupportPairsSheet() }
         .task { model.loadEvalRuns(); feedback = FeedbackStore.load(); calibration = (try? CalibrationSheet.load()) ?? CalibrationSheet() }
         .sheet(isPresented: $calibrating, onDismiss: { calibration = (try? CalibrationSheet.load()) ?? CalibrationSheet() }) {
             CalibrationView()

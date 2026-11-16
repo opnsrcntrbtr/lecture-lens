@@ -10,13 +10,32 @@ struct Citation: Decodable, Sendable {
     let sources: [Source]?
     let moments: [Moment]?
     let slide: Slide?
+    /// Citations v3 (NG-2): each answer sentence checked against the evidence store.
+    let answerId: String?
+    let checker: Checker?
+    let sentences: [Sentence]?
+    struct Checker: Decodable, Sendable { let name: String; let version: String; let threshold: Double; let calibrated: Bool? }
+    struct Sentence: Decodable, Sendable, Identifiable {
+        let i: Int; let text: String; let status: String; let citations: [Cited]
+        var id: Int { i }
+    }
+    struct Cited: Decodable, Sendable, Identifiable {
+        let lineIds: [String]; let t0: Double?; let tAbs: String?; let source: String?; let quote: String
+        let supportP: Double?; let slideThumb: String?
+        var id: String { lineIds.joined(separator: ",") }
+        enum CodingKeys: String, CodingKey {
+            case lineIds = "line_ids", t0, tAbs = "t_abs", source, quote, supportP = "support_p", slideThumb = "slide_thumb"
+        }
+    }
+    enum CodingKeys: String, CodingKey { case ok, error, t, sources, moments, slide, answerId = "answer_id", checker, sentences }
     struct Source: Decodable, Sendable, Identifiable { let id: String; let title: String; let fact: String?; let url: String?; let date: String? }
     struct Moment: Decodable, Sendable, Identifiable { let t: String; let text: String; let shared: [String]; var id: String { t + text } }
     struct Slide: Decodable, Sendable { let t: String; let title: String }
 
     /// Arguments for `lecture cite`, as an argv array (never a shell string).
-    static func args(t: String, text: String, sources: [String], day: String?) -> [String] {
+    static func args(t: String, text: String, sources: [String], day: String?, answer: String? = nil) -> [String] {
         var a = ["cite", "--json", "--t", t, "--text", text]
+        if let ans = answer, !ans.isEmpty { a += ["--answer", ans] }
         if !sources.isEmpty { a += ["--sources", sources.joined(separator: ",")] }
         if let d = day, !d.isEmpty { a += ["--day", d] }
         return a
@@ -30,6 +49,7 @@ struct CitationButton: View {
     let text: String
     var sources: [String] = []
     var day: String? = nil
+    var answer: String? = nil
     @State private var open = false
 
     var body: some View {
@@ -38,7 +58,7 @@ struct CitationButton: View {
         }
         .buttonStyle(.borderless).controlSize(.small).font(.scaled(.caption))
         .help("Sources this answer names and the lecture moments that support it")
-        .sheet(isPresented: $open) { CitationSheet(title: title, t: t, text: text, sources: sources, day: day) }
+        .sheet(isPresented: $open) { CitationSheet(title: title, t: t, text: text, sources: sources, day: day, answer: answer) }
     }
 }
 
@@ -48,6 +68,7 @@ struct CitationSheet: View {
     let text: String
     let sources: [String]
     let day: String?
+    var answer: String? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var result: Citation?
     @State private var error: String?
@@ -77,7 +98,7 @@ struct CitationSheet: View {
         .frame(minWidth: 560, idealWidth: 640, minHeight: 360, idealHeight: 480)
         .task {
             do {
-                let r = try await ToolRunner.json(Citation.self, "lecture", Citation.args(t: t, text: text, sources: sources, day: day), timeout: 60)
+                let r = try await ToolRunner.json(Citation.self, "lecture", Citation.args(t: t, text: text, sources: sources, day: day, answer: answer), timeout: 60)
                 if r.ok { result = r } else { error = r.error ?? "No citations" }
             } catch { self.error = "\(error)" }
         }
@@ -91,6 +112,9 @@ struct CitationBody: View {
     var body: some View {
         let srcs = result.sources ?? [], ms = result.moments ?? []
         VStack(alignment: .leading, spacing: 14) {
+            if let ss = result.sentences, !ss.isEmpty {
+                SentenceCheck(sentences: ss, calibrated: result.checker?.calibrated == true)
+            }
             GroupBox("Public sources") {
                 VStack(alignment: .leading, spacing: 10) {
                     if srcs.isEmpty { Text("This answer names no source from the evidence bank: it rests on the lecture alone.").foregroundStyle(.secondary) }
@@ -131,6 +155,63 @@ struct CitationBody: View {
             Text("Matched by shared words within 10 minutes of the question; check the lecture before relying on a draft.")
                 .font(.scaled(.caption2)).foregroundStyle(.tertiary)
         }
+    }
+}
+
+/// Each answer sentence with its status and the lecture lines found for it. "Supported" is
+/// shown only when the checker passed its calibration; otherwise lines are "related".
+struct SentenceCheck: View {
+    let sentences: [Citation.Sentence]
+    let calibrated: Bool
+
+    var body: some View {
+        GroupBox("Sentence by sentence") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(sentences) { s in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            CitationStatus.badge(s.status)
+                            Text(s.text).font(.scaled(.callout)).textSelection(.enabled)
+                        }
+                        ForEach(s.citations.prefix(3)) { c in
+                            HStack(alignment: .top, spacing: 6) {
+                                if let p = c.slideThumb, let img = NSImage(contentsOfFile: p) {
+                                    Image(nsImage: img).resizable().scaledToFit().frame(width: 72)
+                                }
+                                Text(CitationStatus.when(c) + "  " + c.quote)
+                                    .font(.scaled(.caption)).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+                            }
+                            .padding(.leading, 22)
+                        }
+                    }
+                }
+                Text(calibrated ? "Checked by a support checker that passed calibration on your labels."
+                                : "Not verified: lines are related by words; label pairs in Evals to calibrate a checker.")
+                    .font(.scaled(.caption2)).foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Status labels and times for the sentence check, outside any view.
+enum CitationStatus {
+    static func label(_ status: String) -> (String, String) {
+        switch status {
+        case "supported": return ("Supported", "checkmark.seal")
+        case "related": return ("Related", "link")
+        default: return ("No support found", "questionmark.circle")
+        }
+    }
+    @MainActor static func badge(_ status: String) -> some View {
+        let (t, icon) = label(status)
+        return Label(t, systemImage: icon).labelStyle(.iconOnly).help(t)
+            .foregroundStyle(status == "supported" ? Color.green : status == "related" ? Color.secondary : Color.orange)
+    }
+    static func when(_ c: Citation.Cited) -> String {
+        if let a = c.tAbs { return LiveData.clock(a) }
+        if let t = c.t0 { let s = Int(t); return String(format: "%02d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60) }
+        return c.source == "evidence" ? "source" : ""
     }
 }
 

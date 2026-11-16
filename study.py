@@ -48,6 +48,7 @@ def browser_mode() -> bool:
 SP = os.environ.get("SCREENPIPE_URL", "http://localhost:3030").rstrip("/")
 NOTES = Path(os.path.expanduser(os.environ.get("STUDY_NOTES_DIR", str(HERE / "notes"))))
 CTX = int(os.environ.get("STUDY_CTX_CHARS", "60000"))
+EMBED_MODEL = os.environ.get("STUDY_EMBED_MODEL", "")   # off unless set; pin it in the server
 
 # ---------------------------------------------------------------- http helpers
 # Every call is to this Mac, so ignore any HTTP(S)_PROXY settings (they can turn localhost calls into 403s).
@@ -126,6 +127,16 @@ def _llm(system, user, max_tokens=2048, temperature=0.3, think=False):
     with _OPENER.open(req, timeout=900) as r:
         out = json.loads(r.read())["choices"][0]["message"]["content"] or ""
     return re.sub(r"<think>.*?</think>", "", out, flags=re.S).strip()
+
+def embed(texts, model=None):
+    """Embeddings from the local server's /embeddings endpoint (OpenAI-compatible)."""
+    body = {"model": model or EMBED_MODEL, "input": list(texts)}
+    req = urllib.request.Request(f"{OMLX}/embeddings", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json",
+                                          **({"Authorization": f"Bearer {KEY}"} if KEY else {})})
+    with _OPENER.open(req, timeout=300) as r:
+        data = json.loads(r.read())["data"]
+    return [d["embedding"] for d in sorted(data, key=lambda d: d.get("index", 0))]
 
 # ---------------------------------------------------------------- time parsing
 def parse_window(since=None, date=None):

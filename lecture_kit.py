@@ -20,11 +20,12 @@ Design notes
     traced to a timestamp in the transcript or a keyframe image.
 """
 from __future__ import annotations
-import argparse, datetime as dt, json, os, re, shutil, sqlite3, subprocess, sys, urllib.error, urllib.request, urllib.parse
+import argparse, datetime as dt, json, math, os, re, shutil, sqlite3, subprocess, sys, urllib.error, urllib.request, urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import cite   # deterministic citation grounding & verification
 import study  # shared config + llm() + oMLX plumbing
 import course_calendar  # programme calendar (data in lectures/calendar.json, gitignored)
 sys.path.insert(0, str(HERE / "eval"))
@@ -430,40 +431,140 @@ def _hash_and_thumb(path):
         return None, None
 
 
-def keyframes(con, session, max_frames=40, distance=12):
+def _bookmark_times(session, bookmarks_path=None):
+    """Return aware bookmark datetimes falling within the session window.
+
+    Bookmarks are optional: one JSON object per line with an ISO time in
+    "at" (or "received"), e.g. written by a hotkey while you watch.
+    """
+    path = Path(bookmarks_path) if bookmarks_path is not None else (LECTURES / "bookmarks.jsonl")
+    if not path.exists():
+        return []
+    start, end = session.get("start"), session.get("end")
+    out = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            e = json.loads(line)
+            t = cite.parse_t(e.get("received") or e.get("at") or "")
+        except Exception:
+            continue
+        if t is None:
+            continue
+        if (start is None or t >= start) and (end is None or t <= end):
+            out.append(t)
+    return out
+
+
+def _select_keyframes(picked, max_frames, session_end=None):
+    """Information-density greedy selection when len(picked) > max_frames.
+
+    Always retains bookmark-pinned frames (up to max_frames), then greedily picks
+    frames maximizing OCR token novelty + dwell duration coverage + temporal spread.
+    """
+    if len(picked) <= max_frames:
+        return picked
+    n = len(picked)
+    toks = [_text_tokens(f.get("text") or "") for f in picked]
+    dwells = []
+    for i, f in enumerate(picked):
+        if i + 1 < n:
+            dwells.append(max(0.0, (picked[i + 1]["ts"] - f["ts"]).total_seconds()))
+        elif session_end is not None and session_end > f["ts"]:
+            dwells.append((session_end - f["ts"]).total_seconds())
+        else:
+            dwells.append(60.0)
+
+    selected_idx = [i for i, f in enumerate(picked) if f.get("pinned")]
+    if len(selected_idx) >= max_frames:
+        step = len(selected_idx) / max_frames
+        chosen = [picked[selected_idx[int(i * step)]] for i in range(max_frames)]
+        return sorted(chosen, key=lambda f: f["ts"])
+
+    selected_set = set(selected_idx)
+    covered = set()
+    for i in selected_idx:
+        covered |= toks[i]
+
+    while len(selected_idx) < max_frames and len(selected_set) < n:
+        best_i, best_score = None, -1.0
+        for i in range(n):
+            if i in selected_set:
+                continue
+            novelty = len(toks[i] - covered)
+            dur_score = math.log1p(dwells[i])
+            if selected_idx:
+                gap_s = min(abs((picked[i]["ts"] - picked[j]["ts"]).total_seconds()) for j in selected_idx)
+                gap_score = math.log1p(gap_s)
+            else:
+                gap_score = 0.0
+            score = (novelty * 2.0) + dur_score + gap_score
+            if score > best_score:
+                best_score, best_i = score, i
+        if best_i is None:
+            break
+        selected_set.add(best_i)
+        selected_idx.append(best_i)
+        covered |= toks[best_i]
+
+    return sorted((picked[i] for i in selected_idx), key=lambda f: f["ts"])
+
+
+def keyframes(con, session, max_frames=40, distance=12, bookmarks_path=None):
     """Pick visually distinct frames — the slide changes, not every tick.
 
     Prefers frames screenpipe captured because the screen changed
     (capture_trigger='visual_change'), which during video playback is exactly a
-    slide or scene change. Falls back to text-difference when image hashing is
-    unavailable.
+    slide or scene change. Skips transient frames (<2 s, followed within 5 s by a
+    stable one), always keeps frames nearest an optional bookmark, and when there
+    are more candidates than max_frames picks by on-screen-text novelty, dwell
+    and spread rather than by even spacing. Falls back to text-difference when
+    image hashing is unavailable.
     """
     import tempfile
-    cands = session["frames"]
-    preferred = [f for f in cands if (f["capture_trigger"] or "") == "visual_change"] or cands
+    cands = sorted(session["frames"], key=lambda f: f["ts"])
+    pinned_ids = set()
+    for bm_t in _bookmark_times(session, bookmarks_path):
+        if not cands:
+            continue
+        nearest = min(cands, key=lambda f: abs((f["ts"] - bm_t).total_seconds()))
+        if abs((nearest["ts"] - bm_t).total_seconds()) <= 60.0:
+            pinned_ids.add(nearest["id"])
+    preferred = [f for f in cands if (f.get("capture_trigger") or "") == "visual_change"
+                 or f["id"] in pinned_ids] or cands
+    dwells = [(preferred[i + 1]["ts"] - preferred[i]["ts"]).total_seconds() if i + 1 < len(preferred)
+              else float("inf") for i in range(len(preferred))]
+    stable = []
+    for i, f in enumerate(preferred):
+        if f["id"] not in pinned_ids and dwells[i] < 2.0 and any(
+                dwells[j] >= 2.0 and (preferred[j]["ts"] - f["ts"]).total_seconds() <= 5.0
+                for j in range(i + 1, len(preferred))):
+            continue
+        stable.append(f)
     tmpdir = tempfile.mkdtemp(prefix="lecture-kf-")
     picked, seen_text = [], set()
     state = {"hashes": [], "thumbs": [], "texts": []}
-    for f in preferred:
+    for f in stable:
         img = frame_image(con, f, tmpdir)
         if img is None:
             continue
-        f = {**f, "image": img}
+        is_pinned = f["id"] in pinned_ids
+        f = {**f, "image": img, "pinned": is_pinned}
         h, thumb = _hash_and_thumb(img)
         if h is not None:
             # Slides from one deck share a template, so a coarse image hash calls two
             # different slides the same. Structural similarity and on-screen text decide.
-            if keyframe_step(state, h, _text_tokens(f["text"]), thumb, distance):
+            if keyframe_step(state, h, _text_tokens(f["text"]), thumb, distance) and not is_pinned:
                 continue
         else:
             key = re.sub(r"\W+", " ", (f["text"] or ""))[:400]
-            if key in seen_text: continue
+            if not is_pinned and key in seen_text: continue
             seen_text.add(key)
         picked.append(f)
         if len(picked) >= max_frames * 6: break
-    if len(picked) > max_frames:   # long sessions: spread the picks over the whole session
-        step = len(picked) / max_frames
-        picked = [picked[int(i * step)] for i in range(max_frames)]
+    if len(picked) > max_frames:   # long sessions: keep the most informative spread
+        picked = _select_keyframes(picked, max_frames, session_end=session.get("end"))
     return picked
 
 # ------------------------------------------------------------- vision model
@@ -617,14 +718,154 @@ def strip_recall_first(md):
     return md.split("\n\n---\n\n## Answers to the opening questions\n", 1)[0]
 
 
-def _split_lines(lines, budget):
-    """Pack transcript lines into consecutive parts of at most `budget` characters."""
-    parts, cur, size = [], [], 0
+def mmss(delta_s):
+    m, s = divmod(max(0, int(delta_s)), 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def _line_offset_s(line):
+    m = re.match(r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]", line)
+    if not m:
+        return None
+    sec, ok = cite.parse_timecode_s(m.group(1))
+    return sec if ok else None
+
+
+def align_segments(slides, transcript_lines, deck=None, duration_s=None):
+    """Partition transcript lines into deterministic slide-bounded windows W_i = [t_i, t_{i+1}).
+
+    When `deck` is provided, matches each slide keyframe to its best deck slide via
+    token Jaccard and annotates deck entries with `active_spans`.
+    """
+    parsed_lines = []
+    max_line_s = 0.0
+    for ln in transcript_lines:
+        off = _line_offset_s(ln)
+        if off is not None and off > max_line_s:
+            max_line_s = off
+        parsed_lines.append((off, ln))
+
+    timed_slides = []
+    for s in slides or []:
+        sec, ok = cite.parse_timecode_s(str(s.get("at") or ""))
+        if ok and sec is not None:
+            timed_slides.append((sec, s))
+    timed_slides.sort(key=lambda x: x[0])
+
+    if not timed_slides:
+        end_s = max(float(duration_s or 0.0), max_line_s)
+        return [{
+            "slide_n": None,
+            "start_s": 0.0,
+            "end_s": end_s,
+            "start_at": "00:00:00",
+            "end_at": hhmmss(end_s),
+            "lines": [ln for _, ln in parsed_lines],
+        }]
+
+    deck_toks = [(_text_tokens(f"{d.get('title', '')} {d.get('text', '')}"), d) for d in (deck or [])]
+    windows = []
+    first_t = timed_slides[0][0]
+    pre_lines = [ln for off, ln in parsed_lines if (off is None or off < first_t)]
+    if pre_lines:
+        windows.append({
+            "slide_n": None,
+            "start_s": 0.0,
+            "end_s": first_t,
+            "start_at": "00:00:00",
+            "end_at": hhmmss(first_t),
+            "lines": pre_lines,
+        })
+
+    for i, (t_i, sl) in enumerate(timed_slides):
+        t_next = timed_slides[i + 1][0] if i + 1 < len(timed_slides) else max(t_i, float(duration_s or 0.0), max_line_s)
+        if i + 1 < len(timed_slides):
+            w_lines = [ln for off, ln in parsed_lines if off is not None and t_i <= off < t_next]
+        else:
+            w_lines = [ln for off, ln in parsed_lines if off is None or off >= t_i]
+            # lines with off is None before first_t were already placed in pre_lines
+            if pre_lines:
+                w_lines = [ln for off, ln in parsed_lines if off is not None and off >= t_i]
+        seg = {
+            "slide_n": sl.get("n"),
+            "start_s": t_i,
+            "end_s": t_next,
+            "start_at": hhmmss(t_i),
+            "end_at": hhmmss(t_next),
+            "file": sl.get("file"),
+            "pinned": bool(sl.get("pinned")),
+            "lines": w_lines,
+        }
+        if deck_toks:
+            s_toks = _text_tokens(f"{sl.get('screen_text') or ''} {sl.get('description') or ''}")
+            if s_toks:
+                best_sim, best_d = 0.0, None
+                for d_toks, d in deck_toks:
+                    sim = _jaccard(s_toks, d_toks)
+                    if sim > best_sim:
+                        best_sim, best_d = sim, d
+                if best_d is not None and best_sim > 0.0:
+                    seg["deck_slide"] = best_d.get("n")
+                    seg["deck_title"] = best_d.get("title", "")
+                    best_d.setdefault("active_spans", []).append(f"{mmss(t_i)}–{mmss(t_next)}")
+        windows.append(seg)
+    return windows
+
+
+def _split_lines(lines, budget, boundary_offsets=None):
+    """Pack transcript lines into consecutive parts of at most `budget` characters.
+
+    When `boundary_offsets` (sorted slide start times in seconds) is provided,
+    prefers splitting at slide boundaries so visual and spoken context stay together.
+    """
+    def _pack_raw(raw_lines):
+        parts, cur, size = [], [], 0
+        for ln in raw_lines:
+            if cur and size + len(ln) + 1 > budget:
+                parts.append("\n".join(cur)); cur, size = [], 0
+            cur.append(ln); size += len(ln) + 1
+        if cur: parts.append("\n".join(cur))
+        return parts
+
+    if not boundary_offsets or not lines:
+        return _pack_raw(lines)
+
+    bounds = sorted(set(float(b) for b in boundary_offsets))
+    blocks, cur_block, cur_idx = [], [], -1
     for ln in lines:
-        if cur and size + len(ln) + 1 > budget:
+        off = _line_offset_s(ln)
+        if off is None:
+            b_idx = cur_idx
+        else:
+            b_idx = 0
+            for b in bounds:
+                if off >= b:
+                    b_idx += 1
+                else:
+                    break
+        if cur_block and b_idx != cur_idx:
+            blocks.append(cur_block)
+            cur_block = []
+        cur_block.append(ln)
+        cur_idx = b_idx
+    if cur_block:
+        blocks.append(cur_block)
+
+    parts, cur, size = [], [], 0
+    for blk in blocks:
+        blk_text = "\n".join(blk)
+        blk_len = len(blk_text)
+        if blk_len > budget:
+            if cur:
+                parts.append("\n".join(cur)); cur, size = [], 0
+            parts.extend(_pack_raw(blk))
+            continue
+        if cur and size + blk_len + 1 > budget:
             parts.append("\n".join(cur)); cur, size = [], 0
-        cur.append(ln); size += len(ln) + 1
-    if cur: parts.append("\n".join(cur))
+        cur.extend(blk)
+        size += blk_len + (1 if size else 0)
+    if cur:
+        parts.append("\n".join(cur))
     return parts
 
 
@@ -886,6 +1127,36 @@ def finish(folder):
 
 
 
+PRIVATE = LECTURES / ".private"   # attendee roster, review decisions, backups: never published, never printed
+_ROSTER = None
+
+
+def _name_allow(live_dir: Path | None = None) -> set[str]:
+    """Words that look like names but are not: lectures/name_allow.txt, lectures/glossary.txt and
+    the day's slide titles (deck headings name products and cases, not attendees)."""
+    import name_guard
+    allow = name_guard.load_allow(LECTURES / "name_allow.txt") | name_guard.load_allow(LECTURES / "glossary.txt")
+    f = live_dir / "slides.jsonl" if live_dir else None
+    if f and f.exists():
+        for l in f.read_text().splitlines():
+            try:
+                t = json.loads(l)
+            except ValueError:
+                continue
+            if (t.get("kind") or "slide") == "slide":
+                allow |= {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", t.get("title", ""))}
+    return allow
+
+
+def _name_roster():
+    """The private attendee roster (names_roster.json + attendees.txt), loaded once per run."""
+    global _ROSTER
+    if _ROSTER is None:
+        import name_guard
+        _ROSTER = name_guard.Roster(name_guard.load_roster(PRIVATE), keep=_name_allow() | name_guard.staff_names())
+    return _ROSTER
+
+
 _AUTHORS: dict[str, set] = {}
 _NAMES_SEEN: dict[str, set] = {}   # live folder -> names removed from its transcript this run
 
@@ -912,7 +1183,8 @@ def _guard_names(session, lines, report=True):
                 if a not in staff and not live_qa.YOU.search(a) and not a.lower().startswith("anonymous"):
                     authors.add(a)
     _AUTHORS[str(d)] = authors = authors or set()
-    out, rep = name_guard.guard(lines, panel_authors=authors, allow=name_guard.load_allow(LECTURES / "name_allow.txt"))
+    out, rep = name_guard.guard(lines, panel_authors=authors, allow=_name_allow(d), roster=_name_roster(),
+                                decisions=name_guard.load_decisions(PRIVATE))
     seen = _NAMES_SEEN.setdefault(str(d), set())
     seen.update(rep["removed"])
     if seen - set(rep["removed"]):   # names found in the transcript also leave slide text
@@ -989,6 +1261,7 @@ def build(session, con, describe=True, cards=20, quiet=False):
                 desc = desc_cache[key] = vl_describe(dest, session["title"])
                 cache_file.write_text(json.dumps(desc_cache))
         slides.append({"n": i, "at": stamp, "file": dest.name,
+                       "pinned": bool(f.get("pinned")),
                        "screen_text": _guard_names(session, [re.sub(r"\s+", " ", f["text"] or "")[:1500]], report=False)[0],
                        "description": desc})
     (folder / "slides.md").write_text(
@@ -1020,7 +1293,12 @@ def build(session, con, describe=True, cards=20, quiet=False):
         src_lines = _guard_names(session, [l for l in merged.read_text().splitlines()[3:] if l.strip()], report=False)
         say(f"  using merged reference transcript ({len(src_lines)} lines)")
     transcript_src = "\n".join(src_lines)
-    parts = [] if browser else _split_lines(src_lines, PART_CHARS) if len(transcript_src) + len(slide_src) > study.CTX else []
+    dur_s = float(session["minutes"]) * 60.0
+    aligned = align_segments(slides, src_lines, deck=deck, duration_s=dur_s)
+    (folder / "aligned_segments.json").write_text(json.dumps(aligned, indent=2, ensure_ascii=False))
+    boundary_offsets = [w["start_s"] for w in aligned if w.get("slide_n") is not None]
+    parts = [] if browser else _split_lines(src_lines, PART_CHARS, boundary_offsets=boundary_offsets) \
+        if len(transcript_src) + len(slide_src) > study.CTX else []
     if browser:
         job = studio_job(session, src_lines, deck_src, qa_src, cards,
                          "merged" if merged.exists() else transcript_source)
@@ -1067,6 +1345,22 @@ def build(session, con, describe=True, cards=20, quiet=False):
             f"{c['q'].replace(chr(9),' ')}\t{c['a'].replace(chr(9),' ')}\t{session['title']} {c.get('at','')}"
             for c in card_rows) + "\n")
 
+    seg_dicts = []
+    for ln in src_lines:
+        m_ln = re.match(r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.*)", ln)
+        if m_ln:
+            seg_dicts.append({"at": m_ln.group(1), "text": m_ln.group(2)})
+    citation_warnings = cite.verify_citations(notes, slides, seg_dicts, duration_s=dur_s)
+    if card_rows:
+        card_text = "\n".join(
+            f"{c.get('q', '')} {c.get('a', '')} [{c.get('at', '')}]" if c.get("at") else f"{c.get('q', '')} {c.get('a', '')}"
+            for c in card_rows
+        )
+        for w in cite.verify_citations(card_text, slides, seg_dicts, duration_s=dur_s):
+            citation_warnings.append({**w, "source": "cards.tsv"})
+    if citation_warnings:
+        say(f"  citation warnings: {len(citation_warnings)} (see manifest.json)")
+
     cal_s = course_calendar.session_at(session["start"])   # programme calendar (gitignored)
     module = course_calendar.module_label(cal_s) if cal_s else ""
     # 4. Obsidian note (links, not copies — the vault points at the artefacts)
@@ -1083,7 +1377,8 @@ def build(session, con, describe=True, cards=20, quiet=False):
                 "deck_slides": len(deck),
                 "transcript_segments": len(audio), "transcript_parts": len(parts) or 1, "slides": len(slides),
                 "slides_described": sum(1 for s in slides if s["description"]),
-                "cards": len(card_rows), "vl_model": None if browser else VL_MODEL or None,
+                "cards": len(card_rows), "citation_warnings": citation_warnings,
+                "vl_model": None if browser else VL_MODEL or None,
                 "llm": "Lecture Lens Studio (pending)" if browser else study.MODEL,
                 "source": source_url,
                 "player_box": list(box) if box else None,
@@ -1339,8 +1634,223 @@ def cmd_cite(a):
             m["text"] = c
     bank = json.loads((d / "evidence.json").read_text()) if (d / "evidence.json").exists() else []
     ids = [x.strip() for x in (a.sources or "").split(",") if x.strip()]
-    print(json.dumps({"ok": True, "t": at.isoformat(), "sources": cite.sources(ids, bank), "moments": found,
-                      "slide": cite.slide_at(load(d / "slides.jsonl"), at)}))
+    out = {"ok": True, "t": at.isoformat(), "sources": cite.sources(ids, bank), "moments": found,
+           "slide": cite.slide_at(load(d / "slides.jsonl"), at)}
+    try:
+        v3 = cite_v3(a.answer or a.text, d.name, at, a.window)
+    except Exception as e:   # the sheet still shows sources and moments
+        v3 = None; out["v3_error"] = f"{type(e).__name__}: {e}"[:200]
+    if v3:
+        out.update({k: v3[k] for k in ("answer_id", "checker", "sentences", "metrics") if k in v3})
+    print(json.dumps(out, ensure_ascii=False))
+
+
+# ------------------------------------------------------------- evidence store (NG-1)
+INDEX = LECTURES / "index.sqlite"
+CHECKER_CAL = HERE / "eval" / "results" / "checker_calibration.json"
+CITE_LOG = HERE / "eval" / "results" / "citations.jsonl"
+
+
+def _index_targets(which: str = "all") -> list[tuple[str, Path]]:
+    """(lecture_id, folder) pairs: built lecture folders and live-class day folders."""
+    out = []
+    for f in sorted(LECTURES.iterdir()) if LECTURES.exists() else []:
+        if f.is_dir() and re.match(r"\d{8}-\d{4}_", f.name) and (
+                (f / "transcript.md").exists() or (f / "transcript_merged.md").exists() or (f / "slides.md").exists()):
+            out.append((f.name, f))
+    for f in sorted((LECTURES / "live").iterdir()) if (LECTURES / "live").exists() else []:
+        if f.is_dir() and re.fullmatch(r"\d{8}", f.name) and (f / "whisper_segments.jsonl").exists():
+            out.append((f"live/{f.name}", f))
+    if which in ("", "all"):
+        return out
+    return [(i, f) for i, f in out if i == which or i.startswith(which) or evidence_key(i) == which]
+
+
+def evidence_key(lecture_id):
+    import evidence
+    return evidence.lecture_key(lecture_id)
+
+
+def _embedder():
+    """(embed, model) when STUDY_EMBED_MODEL names an embedding model on the local server;
+    (None, None) otherwise. The model must be pinned in the server so loading it never
+    evicts the main model."""
+    model = getattr(study, "EMBED_MODEL", "") or ""
+    return (study.embed, model) if model and hasattr(study, "embed") else (None, None)
+
+
+def _day_guard(day: str):
+    day_start = dt.datetime.strptime(day, "%Y%m%d").replace(hour=12).astimezone()
+    return lambda lines: _guard_names({"start": day_start}, lines, report=False)
+
+
+def build_index(which="all", say=print) -> dict:
+    import evidence, name_guard
+    embed, model = _embedder()
+    con = evidence.connect(INDEX)
+    done = []
+    for lecture_id, folder in _index_targets(which):
+        day = re.search(r"(\d{8})", lecture_id)[1]
+        guard = _day_guard(day)
+        if lecture_id.startswith("live/"):
+            title, recs = evidence.live_records(folder, guard)
+            bounds = [r["t0"] for r in recs if r["kind"] == "s"]
+        else:
+            title, recs = evidence.lecture_records(folder, guard)
+            al = folder / "aligned_segments.json"
+            try:
+                bounds = [w["start_s"] for w in json.loads(al.read_text()) if w.get("slide_n") is not None] if al.exists() \
+                    else [r["t0"] for r in recs if r["kind"] == "s"]
+            except Exception:
+                bounds = [r["t0"] for r in recs if r["kind"] == "s"]
+        rep = evidence.index_lecture(con, lecture_id, title, recs, bounds, embed=embed, embed_model=model,
+                                     guard_version=getattr(name_guard, "GUARD_VERSION", None))
+        done.append(rep)
+        say(f"  {evidence.lecture_key(lecture_id)}: {rep['chunks']} passages, {rep['lines']} lines"
+            + (f", {rep['embedded']} embedded" if model else ""))
+    # the name check: the guard run again over what the index holds changes nothing
+    left = 0
+    for lecture_id, _ in _index_targets(which):
+        texts = [r[0] for r in con.execute("SELECT text FROM lines WHERE lecture_id=? ORDER BY rowid", (lecture_id,))]
+        again = _day_guard(re.search(r"(\d{8})", lecture_id)[1])(texts)
+        left += sum(1 for x, y in zip(texts, again) if x != y)
+    con.execute("INSERT OR REPLACE INTO meta VALUES('names_left', ?)", (str(left),)); con.commit()
+    return {"ok": True, "index": str(INDEX.name), "lectures": done, "embed_model": model or None, "names_left": left}
+
+
+def cmd_index(a):
+    import contextlib, io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf) if a.json else contextlib.nullcontext():
+        rep = build_index(a.which, say=(lambda *_: None) if a.json else print)
+    if a.json:
+        print(json.dumps(rep))
+    else:
+        print(f"index: {len(rep['lectures'])} lecture(s); names left: {rep['names_left']}")
+
+
+def _search_fn(con, lectures=None, near=None, sources=("transcript", "slide", "evidence")):
+    import evidence
+    embed, model = _embedder()
+    return lambda q, k=8: evidence.search(con, q, k=k, lectures=lectures, near=near, sources=sources,
+                                          embed=embed, embed_model=model)
+
+
+def cmd_search(a):
+    import evidence
+    if not INDEX.exists():
+        print(json.dumps({"ok": False, "error": "no index yet: run `lecture index all`"})); return
+    con = evidence.connect(INDEX)
+    lectures = [i for i, _ in _index_targets(a.lecture)] if a.lecture else None
+    hits = _search_fn(con, lectures)(a.query, a.k)
+    if a.json:
+        print(json.dumps([{k: h[k] for k in ("chunk_id", "lecture_id", "line_ids", "t0", "context", "text",
+                                              "score_lex", "score_dense", "score_rerank")} for h in hits], ensure_ascii=False))
+    else:
+        for h in hits:
+            print(f"{h['chunk_id']}  {h['context']}\n    {h['text'][:200]}")
+
+
+def _checker(slot="interactive"):
+    import cite
+    cal = json.loads(CHECKER_CAL.read_text()) if CHECKER_CAL.exists() else None
+    if os.environ.get("STUDY_CITE_CHECKER", "lexical") == "llm":
+        ck = cite.llm_checker(lambda p: study.llm("You check whether passages support a claim. Reply with JSON only.",
+                                                   p, max_tokens=80, temperature=0.0, slot=slot))
+    else:
+        ck = cite.LEXICAL
+    return cite.calibrated(ck, cal)
+
+
+def cite_v3(answer: str, day: str, at: dt.datetime | None, window_min: float = 10.0) -> dict | None:
+    """Sentence-by-sentence check of an answer against the evidence store (NG-2); None when
+    no index exists. Passages come from the day's lectures, near the answer's time."""
+    import cite, evidence
+    if not INDEX.exists():
+        return None
+    con = evidence.connect(INDEX)
+    lectures = [i for i, _ in _index_targets("all") if day in i]
+    if not lectures:
+        return None
+    near = (at, window_min * 60) if at else None
+    folders = dict(_index_targets("all"))
+
+    def thumb(h):
+        if h["source"] != "slide" or h["lecture_id"].startswith("live/"):
+            return None
+        f = folders.get(h["lecture_id"])
+        n = h["chunk_id"].rsplit("/", 1)[-1]
+        hit = sorted((f / "slides").glob(f"{int(n):02d}_*.jpg")) if f and n.isdigit() and (f / "slides").exists() else []
+        return str(hit[0]) if hit else None
+
+    words_fn, other_fn = (_search_fn(con, lectures, near, ("transcript",)),
+                          _search_fn(con, lectures, near, ("slide", "evidence")))
+    # short slide and source records outrank long transcript passages in BM25, so the top
+    # eight are mixed: six transcript passages, then two slides or sources
+    mixed = lambda q, k=8: words_fn(q, k - 2) + other_fn(q, 2)
+    res = cite.lint(answer, search=mixed, lines_of=lambda ids: evidence.lines_of(con, ids),
+                    checker=_checker(), slide_thumb=thumb)
+    try:   # ALCE-style metrics per answer for the eval store: counts and ids, never text
+        CITE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with CITE_LOG.open("a") as f:
+            f.write(json.dumps({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                                "answer_id": res["answer_id"], "day": day, "checker": res["checker"],
+                                **res.get("metrics", {})}) + "\n")
+    except OSError:
+        pass
+    return res
+
+
+def cmd_checker(a):
+    """Calibrate the support checker on learner-labelled pairs (M-5), or write unlabelled
+    candidate pairs to label."""
+    import cite, evidence
+    if a.action == "calibrate":
+        pairs = [json.loads(l) for l in Path(a.pairs).read_text().splitlines() if l.strip()]
+        pairs = [p for p in pairs if p.get("label") in (0, 1)]
+        ck = _checker(slot="background")
+        rep = cite.calibrate(ck, pairs)
+        rep["at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        CHECKER_CAL.parent.mkdir(parents=True, exist_ok=True)
+        CHECKER_CAL.write_text(json.dumps(rep, indent=1))
+        print(json.dumps(rep))
+        return
+    todo = Path(a.out)
+    labelled = Path(a.pairs)
+    if a.action in ("todo", "label"):
+        rows = [json.loads(l) for l in todo.read_text().splitlines() if l.strip()] if todo.exists() else []
+        if a.action == "label":
+            if not (0 <= a.i < len(rows)) or a.label not in (0, 1):
+                print(json.dumps({"ok": False, "error": "need --i within the list and --label 0 or 1"})); return
+            r = rows.pop(a.i)
+            r["label"] = a.label
+            r["labelled_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+            labelled.parent.mkdir(parents=True, exist_ok=True)
+            with labelled.open("a") as f:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            todo.write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in rows))
+        done = sum(1 for l in labelled.read_text().splitlines() if l.strip()) if labelled.exists() else 0
+        print(json.dumps({"ok": True, "labelled": done, "target": 100,
+                          "todo": [{"i": i, "sentence": r["sentence"], "passage": r["passage"]} for i, r in enumerate(rows[:50])],
+                          "remaining": len(rows)}, ensure_ascii=False))
+        return
+    # pairs: sentences from the day's curated answers against their top passages
+    d = LECTURES / "live" / a.day
+    rows = [json.loads(l) for l in (d / "questions.jsonl").read_text().splitlines() if l.strip()] if (d / "questions.jsonl").exists() else []
+    con = evidence.connect(INDEX)
+    lectures = [i for i, _ in _index_targets("all") if a.day in i]
+    out, guard = [], _day_guard(a.day)
+    for r in rows:
+        at = cite.parse_t(r.get("t", ""))
+        for s in cite.split_sentences(r.get("answer", "")):
+            for h in evidence.search(con, s, k=2, lectures=lectures, near=(at, 600) if at else None):
+                out.append({"sentence": guard([s])[0], "passage": h["text"][:700], "line_ids": h["line_ids"], "label": None})
+        if len(out) >= a.n:
+            break
+    dest = Path(a.out)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n".join(json.dumps(p, ensure_ascii=False) for p in out[: a.n]) + "\n")
+    print(json.dumps({"ok": True, "pairs": len(out[: a.n]), "file": str(dest)}))
 
 
 def cmd_curate(a):
@@ -1460,6 +1970,157 @@ def cmd_after(a):
     if folder:
         (folder / "after_class.json").write_text(json.dumps(report, indent=1))
     out(report)
+
+
+# ---------------------------------------------------------------- names backfill (EP-4)
+NAMES_RAW = {"whisper_segments.jsonl", "whisper_segments.jsonl.raw", "side_windows_raw.jsonl", "portal_transcript.txt",
+             "wispr_transcript.txt", "state.json", "sync_done.json", "sync_request.json", "evidence.json",
+             "names_review.json", "agenda.txt", "preread.txt"}
+NAMES_EXT = {".md", ".tsv", ".mmd", ".json", ".jsonl", ".txt"}
+
+
+def _names_files() -> list[tuple[str, Path]]:
+    """Every stored artefact that may quote a transcript, as (group, path): each lecture folder
+    (superseded ones too), each live folder's derived files, the recaps and the Anki export,
+    and the vault's lecture notes. Raw captures and imports (live transcripts, Q&A panel
+    snapshots, platform transcripts, resources/) are inputs and are not rewritten."""
+    out = []
+    roots = [d for d in LECTURES.iterdir() if d.is_dir() and re.match(r"\d{8}-\d{4}_", d.name)]
+    sup = LECTURES / "_superseded"
+    roots += [d for d in sup.iterdir() if d.is_dir()] if sup.exists() else []
+    for d in sorted(roots):
+        for f in sorted(d.rglob("*")):
+            rel = f.relative_to(d)
+            if f.is_file() and (f.suffix in NAMES_EXT or f.name == ".descriptions.json") and rel.parts[0] != "resources" \
+                    and f.name not in NAMES_RAW and f.name != "names_audit.json":
+                out.append((d.name, f))
+    live = LECTURES / "live"
+    for d in sorted(live.iterdir()) if live.exists() else []:
+        if d.is_dir():
+            for f in sorted(d.iterdir()):
+                if f.is_file() and f.suffix in NAMES_EXT and f.name not in NAMES_RAW:
+                    out.append((f"live/{d.name}", f))
+    for f in sorted((LECTURES / "recaps").glob("*.md")) if (LECTURES / "recaps").exists() else []:
+        out.append(("recaps", f))
+    if (LECTURES / "anki_import.txt").exists():
+        out.append(("anki", LECTURES / "anki_import.txt"))
+    vault = VAULT / VAULT_SUB
+    for f in sorted(vault.rglob("*.md")) if vault.exists() else []:
+        out.append(("vault", f))
+    return out
+
+
+HOLD_TOTAL, HOLD_GROUPS = 40, 4   # a spelling match this frequent is more likely staff or a term: review it
+
+
+def _names_scan(apply: bool = False, hold: set[str] | None = None) -> dict:
+    """Dry-run (or apply) the name guard over every artefact. Returns the audit (counts only)
+    and the private candidate list (tokens) for the review sheet. A first pass finds spelling
+    or cue matches that occur very often across the corpus; those are held for review."""
+    import name_guard
+    if hold is None:
+        _names_scan(apply=False, hold=set())
+        cand = json.loads((PRIVATE / "names_candidates.json").read_text())
+        hold = {c["token"] for c in cand if c["decision"] == "removed" and c["layer"] not in ("roster-exact", "learner")
+                and (c["total"] > HOLD_TOTAL or len(c["groups"]) > HOLD_GROUPS)}
+    roster, decisions = _name_roster(), name_guard.load_decisions(PRIVATE)
+    allow = _name_allow() | name_guard.staff_names()
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = PRIVATE / "names-backup" / stamp
+    groups: dict[str, list] = {}
+    cand: dict[str, dict] = {}
+    changed = 0
+    for group, f in _names_files():
+        try:
+            text = f.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        lines = text.split("\n")
+        out, rep = name_guard.guard(lines, roster=roster, decisions=decisions, allow=allow, hold=hold)
+        rem, rev = sum(rep["removed"].values()), sum(rep["review"].values())
+        if not rem and not rev:
+            continue
+        groups.setdefault(group, []).append({"path": str(f), "removed_count": rem, "review_count": rev})
+        for e in rep["entries"]:
+            c = cand.setdefault(e["token"], {"token": e["token"], "total": 0, "groups": [], "layer": e["layer"],
+                                             "score": e["score"], "decision": e["decision"],
+                                             "held": e["token"] in hold, "learner": decisions.get(e["token"].lower())})
+            if e["decision"] == "removed":    # a token removed anywhere is shown as removed
+                c["decision"], c["layer"], c["score"] = "removed", e["layer"], e["score"]
+            c["total"] += e["count"]
+            if group not in c["groups"]:
+                c["groups"].append(group)
+        if apply and rem:
+            dest = backup / f.relative_to(f.anchor)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dest)
+            f.write_text("\n".join(out))
+            changed += 1
+    audit = {"guard_version": name_guard.GUARD_VERSION, "scanned_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+             "roster_names": len(roster), "lectures": [{"lecture_id": g, "files": v} for g, v in sorted(groups.items())],
+             "files_with_names": sum(1 for v in groups.values() for x in v if x["removed_count"]),
+             "files_with_review": sum(1 for v in groups.values() for x in v if x["review_count"]),
+             "removed_total": sum(x["removed_count"] for v in groups.values() for x in v),
+             "review_total": sum(x["review_count"] for v in groups.values() for x in v), "held_for_review": len(hold)}
+    if apply:
+        audit.update({"applied_at": audit["scanned_at"], "files_rewritten": changed,
+                      "backup": str(backup) if changed else None})
+    PRIVATE.mkdir(parents=True, exist_ok=True)
+    (PRIVATE / "names_candidates.json").write_text(json.dumps(
+        sorted(cand.values(), key=lambda c: (c["decision"], -c["total"])), indent=1, ensure_ascii=False))
+    (LECTURES / "names_audit.json").write_text(json.dumps(audit, indent=1))
+    return audit
+
+
+def _capture_running() -> bool:
+    try:
+        r = subprocess.run([str(HERE / "sp-mode"), "--json"], capture_output=True, text=True, timeout=15)
+        return bool(json.loads(r.stdout or "{}").get("running"))
+    except Exception:
+        return False
+
+
+def cmd_names(a):
+    """Attendee names in stored lectures (EP-4): roster | scan | decide | apply. Output holds
+    counts only; tokens go to the private candidate file read by the app's review sheet."""
+    import name_guard
+    def out(obj):
+        print(json.dumps(obj, ensure_ascii=False) if a.json else "\n".join(f"{k}: {v}" for k, v in obj.items()
+                                                                          if not isinstance(v, list)))
+    if a.action == "roster":
+        staff = {x.strip() for x in os.environ.get("LIVE_QA_STAFF", "").split(",") if x.strip()}
+        import live_qa
+        by_day = {}
+        for side in sorted((LECTURES / "live").glob("*/side_windows_raw.jsonl")):
+            names = set()
+            for l in side.read_text().splitlines():
+                if l.strip():
+                    for e in live_qa.parse_panel(json.loads(l).get("text", "")):
+                        au = e["author"]
+                        if au not in staff and not live_qa.YOU.search(au) and not au.lower().startswith("anonymous"):
+                            names.add(au)
+            by_day[side.parent.name] = names
+        return out({"ok": True, **name_guard.update_roster(PRIVATE, by_day)})
+    if a.action == "decide":
+        d = name_guard.save_decisions(PRIVATE, a.remove or [], a.keep or [])
+        return out({"ok": True, "decisions": len(d), "remove": sum(v == "remove" for v in d.values()),
+                    "keep": sum(v == "keep" for v in d.values())})
+    if a.action == "apply":
+        if _capture_running():
+            return out({"ok": False, "error": "capture is running: stop it in the app first"})
+        audit = _names_scan(apply=True)
+        if audit.get("files_rewritten"):
+            if (LECTURES / "anki_import.txt").exists():   # the export is rebuilt from the cleaned cards
+                import contextlib, io
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cmd_anki(argparse.Namespace(since="365d", out=None))
+            audit = {**_names_scan(apply=False), "applied_at": audit["applied_at"],
+                     "files_rewritten": audit["files_rewritten"], "backup": audit["backup"]}
+            (LECTURES / "names_audit.json").write_text(json.dumps(audit, indent=1))
+        return out({"ok": True, **{k: v for k, v in audit.items() if k != "lectures"}})
+    audit = _names_scan(apply=False)
+    return out({"ok": True, **{k: v for k, v in audit.items() if k != "lectures"},
+                "groups_with_names": sum(1 for g in audit["lectures"] if any(f["removed_count"] for f in g["files"]))})
 
 def cmd_next(a):
     """The next scheduled class from the programme calendar."""
@@ -1609,6 +2270,11 @@ def main():
     p.set_defaults(fn=cmd_doctor)
     p = sub.add_parser("qa-import", help="use the meeting app's Q&A export: score the live capture, anonymise, feed the build")
     p.add_argument("id"); p.add_argument("export"); p.set_defaults(fn=cmd_qa_import)
+    p = sub.add_parser("names", help="attendee names in stored lectures: roster | scan (dry run) | decide | apply")
+    p.add_argument("action", choices=["roster", "scan", "decide", "apply"], nargs="?", default="scan")
+    p.add_argument("--remove", nargs="*", help="decide: tokens to remove everywhere")
+    p.add_argument("--keep", nargs="*", help="decide: tokens to keep (not names)")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_names)
     p = sub.add_parser("after", help="after class: ingest, build, attendee-name check, qa.md (JSON report)")
     p.add_argument("id", nargs="?", default="last"); p.add_argument("--since", default="")
     p.add_argument("--force", action="store_true", help="run even while capture or the judge is busy")
@@ -1626,7 +2292,22 @@ def main():
     p.add_argument("--sources", default="", help="evidence ids, comma-separated")
     p.add_argument("--day", default="", help="live folder day, yyyymmdd")
     p.add_argument("--window", type=float, default=10.0, help="minutes either side")
+    p.add_argument("--answer", default="", help="answer text alone, for the sentence check (default: --text)")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_cite)
+    p = sub.add_parser("index", help="build the evidence store (lectures/index.sqlite) from guarded text")
+    p.add_argument("which", nargs="?", default="all", help="lecture id, its date-time prefix, live/<day>, or all")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_index)
+    p = sub.add_parser("search", help="search the evidence store")
+    p.add_argument("query"); p.add_argument("--lecture", default="", help="limit to one lecture (id or prefix)")
+    p.add_argument("--k", type=int, default=8); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_search)
+    p = sub.add_parser("checker", help="citation support checker: calibrate on labelled pairs, or write pairs to label")
+    p.add_argument("action", choices=["calibrate", "pairs", "todo", "label"])
+    p.add_argument("--i", type=int, default=-1, help="label: position in the todo list")
+    p.add_argument("--label", type=int, default=-1, help="label: 1 supports, 0 does not")
+    p.add_argument("--pairs", default=str(HERE / "eval" / "golden" / "support_pairs.jsonl"))
+    p.add_argument("--day", default="", help="pairs: live folder day, yyyymmdd")
+    p.add_argument("--n", type=int, default=120); p.add_argument("--out", default=str(HERE / "eval" / "golden" / "support_pairs_todo.jsonl"))
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_checker)
     p = sub.add_parser("next", help="the next class from the programme calendar"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_next)
     p = sub.add_parser("brief", help="before class: recall points and questions from the agenda and earlier notes")
     p.add_argument("--title", required=True); p.add_argument("--agenda", help="text file with the agenda")
