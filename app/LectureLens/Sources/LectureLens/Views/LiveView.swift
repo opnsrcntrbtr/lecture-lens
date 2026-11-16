@@ -160,16 +160,18 @@ struct LiveView: View {
                         .font(.scaled(.caption2, weight: .semibold)).foregroundStyle(.green)
                         .help(a.answers.isEmpty ? "Posted in the Q&A; no reply yet" : "Posted in the Q&A; \(a.answers.count) repl\(a.answers.count == 1 ? "y" : "ies")")
                 }
-                Text(c.part == "later" ? "later · \(c.type): " : "\(c.type): ").font(.scaled(.callout, weight: .semibold))
+                Text(CuratedQuestions.prefix(c)).font(.scaled(.callout, weight: .semibold))
                     + Text(c.q).font(.scaled(.callout))
                 Spacer()
                 CitationButton(title: c.q, t: c.t, text: c.q + " " + c.answer, sources: c.sources, day: live.day, answer: c.answer)
                 copyButton(c.q)
             }
-            Text("Draft: \(c.answer)\(live.sourceTitles(c.sources))").font(.scaled(.caption)).foregroundStyle(.secondary)
-                .textSelection(.enabled)
+            if !c.answer.isEmpty {
+                Text((c.pile == "self_check" ? "In class: " : "Draft: ") + c.answer + live.sourceTitles(c.sources))
+                    .font(.scaled(.caption)).foregroundStyle(.secondary).textSelection(.enabled)
+            }
         }
-        .opacity(c.part == "later" ? 0.75 : 1)
+        .opacity(c.part == "later" || c.pile == "self_check" ? 0.75 : 1)
     }
 
     // MARK: Q&A
@@ -375,6 +377,8 @@ struct Drafted: Decodable, Identifiable {
     var thread: String?; var t: String; var type: String; var q: String; var answer: String; var sources: [String]
     /// Curated top questions (curate.py): round number and part ("now" or "later").
     var curated: Bool?; var round: Int?; var part: String?
+    /// Questions v2 (NG-5): "ask" (not answered in class) or "self_check" (answered; quote of the class lines).
+    var pile: String?; var requested_level: String?
     var id: String { t + q }
 }
 struct OutlinePart: Decodable, Identifiable { var from: String; var to: String; var bullets: String; var partial: Bool?; var id: String { from + to } }

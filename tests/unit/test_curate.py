@@ -85,3 +85,96 @@ def test_a_replayed_round_never_reads_lines_after_now(tmp_path):
         return RAW
     curate.run(d, llm, T0 + dt.timedelta(minutes=20), "Garden class", lookback_min=10)
     assert "minute 15" in seen["p"] and "minute 25" not in seen["p"] and "minute 39" not in seen["p"]
+
+
+# ------------------------------------------------------------------ questions v2 (NG-5)
+class Stub2:
+    """Three calls per round: units, questions, answered-routing."""
+    def __init__(self, units, questions, answered):
+        self.replies = [json.dumps(units), json.dumps(questions), json.dumps(answered)]
+        self.prompts = []
+
+    def __call__(self, p):
+        self.prompts.append(p)
+        return self.replies[min(len(self.prompts) - 1, 2)]
+
+
+UNITS = {"units": [
+    {"kind": "claim", "summary": "Raised beds drain faster so water them more often", "line_ids": ["L2", "L3"]},
+    {"kind": "definition", "summary": "Mulch keeps soil moist through dry weeks", "line_ids": ["L1"]},
+    {"kind": "number", "summary": "Unicorn soil needs nine litres", "line_ids": ["L99"]},          # no such line
+    {"kind": "claim", "summary": "Rockets need fuel", "line_ids": ["L1"]}]}                      # not stated there
+
+
+def test_v2_round_routes_piles_and_never_drafts_does_not_specify(tmp_path):
+    d = folder(tmp_path)
+    qs = {"questions": [
+        {"unit_id": "u1", "q": "You said raised beds drain faster; how often should raised beds be watered in summer heat?"},
+        {"unit_id": "u2", "q": "How does mulch keep soil moist through dry weeks?"},
+        {"unit_id": "u2", "q": "Two? Questions?"}]}
+    llm = Stub2(UNITS, qs, {"answered": {"Q1": [1], "Q2": []}})
+    r = curate.run_v2(d, llm, T0 + dt.timedelta(minutes=40), "Garden class", guard=lambda ls: ls)
+    assert r["round"] == 1 and r["added"] == 2
+    rows = [json.loads(l) for l in (d / "questions.jsonl").read_text().splitlines()]
+    by = {x["pile"]: x for x in rows}
+    assert by["self_check"]["answered_in_class"] and "Raised beds drain faster" in by["self_check"]["draft_answer"]
+    assert by["ask"]["draft_answer"] is None and by["ask"]["answer"] == ""
+    assert all(not curate_dns(x) for x in rows)
+    assert all(x["line_ids"] and x["line_ids"][0].startswith("live-live/t/") for x in rows)
+    assert {x["requested_level"] for x in rows} <= set(curate.LEVELS) and {x["type"] for x in rows} <= set(curate.TYPES2)
+    assert "TYPE clarify" in llm.prompts[1] or "TYPE challenge" in llm.prompts[1] or "TYPE practical" in llm.prompts[1]
+    md = (d / "top_questions.md").read_text()
+    assert "## Ask now" in md and "## Self-check later" in md
+    m = json.loads((d / "curate_metrics.json").read_text())
+    assert m["rounds"] == 1 and m["ask"] == 1 and m["self_check"] == 1
+
+
+def curate_dns(row):
+    import re as _re
+    return bool(_re.search(r"does not specify|doesn't specify|not specified", str(row.get("answer") or ""), _re.I))
+
+
+def test_v2_units_must_cite_real_lines_that_state_them():
+    lines = [{"line_id": f"x/t/{i}", "t": None, "text": t} for i, t in enumerate(
+        ["Mulch keeps soil moist through dry weeks.", "Raised beds drain faster.", "So water raised beds more often."])]
+    us = curate.parse_units(json.dumps(UNITS), lines)
+    assert [u["summary"] for u in us] == ["Raised beds drain faster so water them more often",
+                                          "Mulch keeps soil moist through dry weeks"]
+    assert us[0]["line_ids"] == ["x/t/1", "x/t/2"]
+
+
+def test_v2_dedupes_against_the_day_and_records_similarity():
+    units = [{"unit_id": "u1", "kind": "claim", "summary": "beds drain", "quote": "raised beds drain faster water more often",
+              "line_ids": ["a"], "t": None, "type": "clarify", "requested_level": "apply"}]
+    raw = json.dumps({"questions": [{"unit_id": "u1", "q": "How often should raised beds be watered?"}]})
+    assert curate.parse_questions(raw, units, ["How often should raised beds be watered in summer?"], set()) == []
+    got = curate.parse_questions(raw, units, ["Why does compost feed worms?"], set())
+    assert len(got) == 1 and got[0]["max_sim_prior"] < 0.2
+
+
+def test_v2_round_skips_over_its_time_box(tmp_path):
+    d = folder(tmp_path)
+    ticks = iter([0, 500, 500, 500])
+    llm = Stub2(UNITS, {"questions": []}, {"answered": {}})
+    r = curate.run_v2(d, llm, T0 + dt.timedelta(minutes=40), "Garden class", time_box_s=240, clock=lambda: next(ticks))
+    assert r["added"] == 0 and "time box" in r["note"]
+    assert json.loads((d / "curate_metrics.json").read_text())["skipped"][0]["at"] == "units"
+
+
+def test_question_labels_m7(tmp_path, monkeypatch, capsys):
+    import argparse
+    import lecture_kit as k
+    live = tmp_path / "lectures" / "live" / "20300101"
+    live.mkdir(parents=True)
+    (live / "questions.jsonl").write_text("".join(json.dumps({"q": f"Q{i}?", "answer": "", "round": 1}) + "\n" for i in range(3)))
+    monkeypatch.setattr(k, "LECTURES", tmp_path / "lectures")
+    monkeypatch.setattr(k, "HERE", tmp_path)
+    ns = lambda **kw: argparse.Namespace(**{"action": "label", "day": "20300101", "i": 1, "would_ask": "y",
+                                            "duplicate": "n", "answered": "y", "json": True, **kw})
+    k.cmd_qlabels(ns())
+    out = json.loads(capsys.readouterr().out)
+    assert out["labelled"] == 1 and [t["i"] for t in out["todo"]] == [0, 2] and out["would_ask_share"] == 1.0
+    lab = json.loads((tmp_path / "eval" / "golden" / "questions_labels_20300101.jsonl").read_text())
+    assert lab["answered_in_class"] is True and lab["duplicate"] is False and "q" not in lab
+    k.cmd_qlabels(ns(i=7))
+    assert json.loads(capsys.readouterr().out)["ok"] is False

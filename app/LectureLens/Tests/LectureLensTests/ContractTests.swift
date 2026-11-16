@@ -228,3 +228,22 @@ import Testing
     #expect(Capstone.decideArgs(inject: "i1", severity: "SEV1", containment: "pause", customer: "c", team: "i", regulator: "", golden: "no", rationale: "r").prefix(5) == ["capstone", "sim", "decide", "--inject", "i1"])
     #expect(Capstone.label("unit_econ_heavy_user") == "Unit Econ Heavy User")
 }
+
+@Test func questionLabelsContract() throws {
+    let r = try JSONDecoder().decode(QuestionLabels.self, from: Data(#"{"ok": true, "day": "20300105", "total": 3, "labelled": 1, "todo": [{"i": 1, "q": "How often should raised beds be watered?", "answer": "", "round": 2, "type": "clarify", "t": "x"}], "would_ask_share": 1.0, "duplicate_share": 0.0, "answered_share": 0.0}"#.utf8))
+    #expect(r.todo?.first?.i == 1 && r.labelled == 1)
+    #expect(QuestionLabels.labelArgs(day: "20300105", i: 1, wouldAsk: true, duplicate: false, answered: true).suffix(6) == ["--would-ask", "y", "--duplicate", "n", "--answered", "y"])
+}
+
+@Test func judgeCardRowsAndBest() throws {
+    let rows = try JSONDecoder().decode([JudgeCardRow].self, from: Data(#"[{"criterion": "Relevance", "rubric_version": "v1", "n_labels": 18, "valid_rate": 1.0, "tpr": 0.5, "tpr_ci": [0.3, 0.7], "tnr": 0.5, "tnr_ci": [0.2, 0.8], "kappa": 0.0, "raw_agreement": 0.5, "status": "exploratory"}, {"criterion": "Relevance", "rubric_version": "v2", "n_labels": 18, "valid_rate": 1.0, "tpr": 0.93, "tpr_ci": [0.7, 0.99], "tnr": 0.5, "tnr_ci": [0.2, 0.8], "kappa": 0.47, "raw_agreement": 0.83, "status": "exploratory"}]"#.utf8))
+    #expect(JudgeCard.best(rows).map(\.rubric_version) == ["v2"])
+    #expect(JudgeCard.rate("TPR", 0.93, [0.7, 0.99]) == "TPR 0.93 [0.70–0.99]" && JudgeCard.rate("TNR", nil, nil) == "TNR –")
+}
+
+@Test func curatedV2RowsDecodeAndLabel() throws {
+    let d = try JSONDecoder().decode(Drafted.self, from: Data(#"{"t": "2030-01-05T05:00:00+00:00", "type": "challenge", "q": "Does mulch help in clay?", "answer": "", "sources": [], "curated": true, "round": 2, "part": "now", "pile": "ask", "requested_level": "analyse", "q_id": "r2q1"}"#.utf8))
+    #expect(CuratedQuestions.prefix(d) == "challenge · analyse: ")
+    var s = d; s.pile = "self_check"
+    #expect(CuratedQuestions.prefix(s) == "self-check · challenge: ")
+}
