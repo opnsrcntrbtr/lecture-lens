@@ -2399,6 +2399,35 @@ def cmd_lanes(a):
     print(json.dumps({"ok": True, **rep}))
 
 
+def notes_v2_build(folder: Path) -> dict:
+    """NG-3: notes v2 into <lecture>/notes_v2/ (the current notes.md is not touched)."""
+    import notes_v2, course_calendar
+    man = json.loads((folder / "manifest.json").read_text())
+    start = dt.datetime.fromisoformat(man["start"].replace("Z", "+00:00"))
+    day = start.astimezone().strftime("%Y%m%d")
+    cal = course_calendar.session_at(start) or {}
+    first_slide = [l for l in (folder / "slides.md").read_text().splitlines() if l.strip() and not l.startswith(("#", "!"))][:1] \
+        if (folder / "slides.md").exists() else []
+    titles = []
+    for t in [cal.get("title"), man.get("portal_title"), *[re.sub(r"[*_>]", "", x).strip()[:120] for x in first_slide],
+              man.get("title")]:
+        if t and t not in titles:
+            titles.append(t)
+    ag = LECTURES / "live" / day / "agenda.txt"
+    agenda = "\n".join(_day_guard(day)(ag.read_text().splitlines())) if ag.exists() else ""
+    llm = lambda p: study.llm(study.SYS_TUTOR, p, max_tokens=2500, temperature=0.2, slot="build")
+    res = notes_v2.build(_lecture_lines(folder), titles, agenda, llm)
+    if not res.get("ok"):
+        return res
+    notes_v2.save(folder, res)
+    return {"ok": True, "folder": str(folder / "notes_v2"), "title": res["outline"]["title"],
+            "sections": len(res["outline"]["sections"]), **res["audit"]}
+
+
+def cmd_notes_v2(a):
+    print(json.dumps(notes_v2_build(find_folder(a.id)), ensure_ascii=False))
+
+
 def cmd_agenda(a):
     folder = find_folder(a.id)
     if a.cached:
@@ -3161,6 +3190,8 @@ def main():
     p.add_argument("--lecture", default="last"); p.add_argument("--section"); p.add_argument("--seed", type=int)
     p.add_argument("--id"); p.add_argument("--marks"); p.add_argument("--corrections")
     p.set_defaults(fn=cmd_teachback)
+    p = sub.add_parser("notes-v2", help="NG-3: outline-first notes from verbatim extracts, into notes_v2/")
+    p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_notes_v2)
     p = sub.add_parser("lanes", help="NG-6: waits and timings per model caller kind (llm_slot_metrics.jsonl)")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_lanes)
     p = sub.add_parser("agenda", help="NG-4: agenda parts covered, partial, moved or skipped, as the class ran")

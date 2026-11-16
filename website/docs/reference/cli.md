@@ -36,6 +36,7 @@ All commands live in the repository root and read `.env`.
 | `./lecture lanes [--json]` | How long each kind of model caller waited (interactive, time-boxed, background, build), from `lectures/llm_slot_metrics.jsonl` |
 | `./lecture capstone peer add\|consent\|review\|doc\|check\|feedback\|classify\|overlap` | Peer review coach: checks the reviews you write and sorts feedback you receive; never writes a comment |
 | `./lecture agenda [ID] [--no-notes] [--cached] [--json]` | Agenda parts covered, partial, moved or skipped as the class ran; adds a "How the class ran" block to the notes |
+| `./lecture notes-v2 [ID]` | Notes written outline first: a title from the candidate list, verbatim extracts per section, each section from its own lines, then an audit; into `notes_v2/` beside the current notes |
 | `./lecture cornell show\|build\|summary ID [--text ..]` | Cornell view: cue questions from the notes' timed points (also as cards), your own summary |
 | `./lecture teachback start --lecture ID [--section S]` / `score --id X --marks s1,s3` | Find the planted errors; scored against the hidden key |
 | `./lecture doctor --privacy [--sync-guard REPO]` | Checks that endpoints, evals and capture stay local; refreshes the guard's hashed roster |

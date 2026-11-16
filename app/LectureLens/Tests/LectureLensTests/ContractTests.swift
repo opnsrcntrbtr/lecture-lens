@@ -296,3 +296,8 @@ import Testing
     let l = try JSONDecoder().decode(Lanes.self, from: Data(#"{"ok": true, "rows": 3, "by_kind": {"interactive": {"calls": 3, "median_wait_s": 0.2, "p95_wait_s": 3.0, "skipped": 0, "errors": 0, "median_prefill_s": 0.1, "median_decode_tps": 66.2}}, "bench": null}"#.utf8))
     #expect(PeerText.lane("interactive", l.by_kind!["interactive"]!) == "interactive: 3 calls · wait median 0.2 s, p95 3.0 s · 66 tok/s")
 }
+
+@Test func notesV2AuditContract() throws {
+    let a = try JSONDecoder().decode(NotesAudit.self, from: Data(#"{"extract_coverage": 0.958, "extracts": 48, "dropped_extracts": 43, "timecodes_repaired": 0, "numbers_not_in_sources": [], "terms_not_in_sources": [], "unreferenced_sentences": 0, "sentences": 66, "title_source": "model_choice", "title_review": false, "seconds": {"outline": 114.1, "total": 376.6}}"#.utf8))
+    #expect(NotesV2.summary(a) == "48 verbatim extracts (43 dropped as not verbatim) · 96% used in the notes")
+}
