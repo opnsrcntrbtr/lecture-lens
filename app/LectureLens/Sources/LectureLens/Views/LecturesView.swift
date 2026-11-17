@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Lecture library (brief J2): every captured session, built or not, and the
 /// notes / slides / transcript / cards the toolkit made from it.
@@ -172,6 +173,10 @@ struct LectureDetail: View {
                     .help(model.autoImportNote ?? "Transcript merge and word error rate, Q&A import, answer scores")
             }
             studioControls
+            GapChips(gaps: rawManifest["gaps"] as? [[String: Any]] ?? [],
+                     filled: rawManifest["gap_filled"] as? [[String: Any]] ?? []) { gap in
+                fillGap(gap)
+            }
             AfterClassChips(url: folder.appendingPathComponent("after_class.json"))
             Button("After class", systemImage: "checkmark.seal") { model.afterClass(session) }
                 .disabled(building || model.mode.running)
@@ -203,6 +208,17 @@ struct LectureDetail: View {
         case .finished(let engine):
             Label("Notes by \(engine) in Chrome", systemImage: "globe").font(.scaled(.callout)).foregroundStyle(.secondary)
         }
+    }
+
+    /// CT-6: pick the class recording (its audio is used) and fill this gap from it.
+    private func fillGap(_ gap: [String: Any]) {
+        let p = NSOpenPanel()
+        p.allowedContentTypes = [.audio, .movie, .mpeg4Movie, .mpeg4Audio]
+        p.allowsMultipleSelection = false
+        p.message = "Choose the class recording. Only its audio is used; existing transcript lines are never changed."
+        guard p.runModal() == .OK, let url = p.url,
+              let from = GapChips.hhmm(gap["from"] as? String), let to = GapChips.hhmm(gap["to"] as? String) else { return }
+        model.gapfill(folder.lastPathComponent, audio: url.path, from: from, to: to) { loadManifest() }
     }
 
     private func loadManifest() {
@@ -454,6 +470,45 @@ struct AfterClassChips: View {
                         .font(.scaled(.caption2)).foregroundStyle(.orange)
                         .help(g.filter { !$0.ok }.map { "\($0.name): \($0.value?.description ?? "–") (limit \($0.threshold?.description ?? "–"))" }
                             .joined(separator: "\n"))
+                }
+            }
+        }
+    }
+}
+
+
+/// CT-6: a "Missing 10:00–10:54" chip per unfilled gap in the ledger, with "Fill from
+/// recording…"; a filled gap shows how many of its lines have an approximate time.
+struct GapChips: View {
+    let gaps: [[String: Any]]
+    let filled: [[String: Any]]
+    let fill: ([String: Any]) -> Void
+
+    static func hhmm(_ iso: String?) -> String? {
+        guard let iso, let d = ISO8601DateFormatter().date(from: iso) else { return nil }
+        let f = DateFormatter(); f.dateFormat = "HH:mm"; f.timeZone = .current
+        return f.string(from: d)
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(gaps.enumerated()), id: \.offset) { _, g in
+                let span = "\(Self.hhmm(g["from"] as? String) ?? "?")–\(Self.hhmm(g["to"] as? String) ?? "?")"
+                if (g["filled"] as? Bool) == true {
+                    let f = filled.first { ($0["from"] as? String) == (g["from"] as? String) } ?? [:]
+                    let approx = (f["approx_lines"] as? NSNumber)?.intValue ?? 0
+                    Label("Filled \(span)", systemImage: "checkmark.circle")
+                        .font(.scaled(.caption2)).foregroundStyle(.green)
+                        .help("From the recording (\(f["file"] as? String ?? "audio")): \((f["lines"] as? NSNumber)?.intValue ?? 0) lines, \(approx) with an approximate time. Rebuild to use them in the notes.")
+                } else {
+                    Menu {
+                        Button("Fill from recording…") { fill(g) }
+                    } label: {
+                        Label("Missing \(span)", systemImage: "exclamationmark.circle")
+                    }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .font(.scaled(.caption2)).foregroundStyle(.orange)
+                    .help("No transcript for this span (\(g["cause"] as? String ?? "unknown")). Fill it from the class recording's audio.")
                 }
             }
         }
