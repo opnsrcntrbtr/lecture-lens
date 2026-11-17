@@ -3,8 +3,8 @@ complete, instead of on a timer.
 
 - A chunk counts as closed when its file has not changed for `settle_s` and either the next
   chunk exists or its 30 s have passed.
-- Each pass decodes the last `overlap_s` (6 s) of the previous chunk plus the chunk itself,
-  with word-level timestamps. Words in the final `hold_s` (2 s) of a chunk are held back and
+- Each pass decodes the last `overlap_s` (8 s) of the previous chunk plus the chunk itself,
+  with word-level timestamps. Words in the final `hold_s` (3 s) of a chunk are held back and
   committed by the next pass, which hears them again in its overlap, so a word split by a
   chunk edge is not lost and none is written twice.
 - If the watcher falls more than `max_behind` chunks behind, it drops the overlap
@@ -61,15 +61,24 @@ JITTER_S = 0.6
 
 
 def commit(words: list[dict], chunk_start: float, chunk_end: float, hold_s: float, final: bool,
-           tail: list[dict] | None = None) -> tuple[list, list]:
+           tail: list[dict] | None = None, pause_s: float = 0.0, info: dict | None = None) -> tuple[list, list]:
     """(committed, held) words of one pass, by absolute time in seconds.
 
     With an overlap, the new pass re-hears the end of the previous chunk. Its words are lined
     up with the last words already committed (`tail`) by their order, not their timestamps,
     which move a little between passes: everything after the last matched word is new. When
     nothing lines up (a pause, or a very different hearing), the time boundary decides:
-    words from `hold_s` before the chunk start on."""
+    words from `hold_s` before the chunk start on.
+
+    With `pause_s`, the held part starts at the last pause of at least that length in the
+    final 6 s instead of at a fixed `hold_s`, so the next pass hears a phrase cut by the chunk
+    edge whole. `info["mode"]` says how the start was found: aligned, time or first."""
     hi = chunk_end if final else chunk_end - hold_s
+    if pause_s and not final:
+        late = [w for w in words if w["t"] >= chunk_end - 6.0]
+        cuts = [q["t"] for p, q in zip(late, late[1:]) if q["t"] < hi and q["t"] - p.get("t1", p["t"]) >= pause_s]
+        if cuts:
+            hi = cuts[-1]
     start_i = None
     if tail:
         import difflib
@@ -84,19 +93,24 @@ def commit(words: list[dict], chunk_start: float, chunk_end: float, hold_s: floa
     if start_i is not None:
         mine = words[start_i:]
     else:
-        mine = [w for w in words if w["t"] >= chunk_start - hold_s]
+        mine = [w for w in words if w["t"] >= chunk_start - hold_s] if tail else words
+    if info is not None:
+        info["mode"] = "aligned" if start_i is not None else ("time" if tail else "first")
     return [w for w in mine if w["t"] < hi], [w for w in mine if w["t"] >= hi]
 
 
 class EventASR:
     def __init__(self, data_dir: Path, device: str, start: dt.datetime, out_dir: Path, line_prefix: str,
-                 transcribe=None, prompt_fn=lambda: "", settle_s: float = 2.0, overlap_s: float = 6.0,
-                 hold_s: float = 2.0, max_behind: int = 3, clean=None, log=print, now=time.time, done: set | None = None):
+                 transcribe=None, prompt_fn=lambda: "", settle_s: float = 2.0, overlap_s: float = 8.0,
+                 hold_s: float = 3.0, max_behind: int = 3, clean=None, log=print, now=time.time, done: set | None = None,
+                 pause_s: float = 0.0):
         self.data, self.device, self.start = Path(data_dir), device, start
         self.out, self.prefix = Path(out_dir), line_prefix
         self.transcribe = transcribe or whisper_words
         self.prompt_fn, self.settle_s, self.overlap_s, self.hold_s = prompt_fn, settle_s, overlap_s, hold_s
         self.max_behind, self.clean, self.log, self.now = max_behind, clean, log, now
+        self.pause_s = pause_s
+        self.modes: dict[str, int] = {}
         self.done = done if done is not None else set()
         self.state_f = self.out / "asr_state.json"
         st = json.loads(self.state_f.read_text()) if self.state_f.exists() else {}
@@ -151,7 +165,10 @@ class EventASR:
         absw = [{"w": w["w"], "t": cs - ov + w["t"], "t1": cs - ov + w.get("t1", w["t"])} for w in words]
         if ov:   # held words were heard again in the overlap: the new pass decides them
             self.held = []
-        committed, held = commit(absw, cs, cs + dur, self.hold_s, final, self.tail if ov else None)
+        info: dict = {}
+        committed, held = commit(absw, cs, cs + dur, self.hold_s, final, self.tail if ov else None,
+                                 pause_s=self.pause_s, info=info)
+        self.modes[info.get("mode", "?")] = self.modes.get(info.get("mode", "?"), 0) + 1
         committed = sorted(self.held + committed, key=lambda w: w["t"]) if not ov else committed
         self.held = held
         if committed:
@@ -227,7 +244,8 @@ def whisper_model() -> str | None:
     return hits[-1] if hits else None
 
 
-def whisper_words(path: Path, prev: Path | None, overlap_s: float, prompt: str = "", threads: int = 4) -> tuple[list[dict], float]:
+def whisper_words(path: Path, prev: Path | None, overlap_s: float, prompt: str = "", threads: int = 4,
+                  timeout: int = 300) -> tuple[list[dict], float]:
     """Word-level transcription of [last overlap_s of prev] + path. Returns ([{w, t, t1}] with
     t in seconds from the start of the decoded audio, overlap seconds actually prepended)."""
     model = whisper_model()
@@ -250,7 +268,7 @@ def whisper_words(path: Path, prev: Path | None, overlap_s: float, prompt: str =
                "-np", "-ml", "1", "-sow", "-mc", "0"]
         if prompt:
             cmd += ["--prompt", prompt[:400]]
-        subprocess.run(cmd, check=True, timeout=300, capture_output=True)
+        subprocess.run(cmd, check=True, timeout=timeout, capture_output=True)
         data = json.loads((td / "o.json").read_text())
     words = []
     for s in data.get("transcription", []):

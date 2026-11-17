@@ -105,3 +105,14 @@ def test_lines_break_on_pause_and_sentence_end():
     w = [{"w": "Mulch", "t": 0, "t1": .3}, {"w": "helps.", "t": .4, "t1": .7}, {"w": "Water", "t": .8, "t1": 1.0},
          {"w": "early", "t": 3.0, "t1": 3.2}]
     assert [[x["w"] for x in ln] for ln in live_asr.lines_from_words(w)] == [["Mulch", "helps."], ["Water"], ["early"]]
+
+
+def test_pause_hold_starts_at_the_last_pause():
+    import live_asr
+    ws = [{"w": f"x{i}", "t": float(i) * 0.4, "t1": float(i) * 0.4 + 0.3} for i in range(62)]   # 0 .. 24.4 s
+    ws += [{"w": "after", "t": 26.0, "t1": 26.3}, {"w": "pause", "t": 26.4, "t1": 26.7}]
+    info = {}
+    done, held = live_asr.commit(ws, 0.0, 30.0, 2.0, False, None, pause_s=0.3, info=info)
+    assert [w["w"] for w in held] == ["after", "pause"] and info["mode"] == "first"
+    done2, held2 = live_asr.commit(ws, 0.0, 30.0, 2.0, False, None)
+    assert held2 == [] and len(done2) == 64
