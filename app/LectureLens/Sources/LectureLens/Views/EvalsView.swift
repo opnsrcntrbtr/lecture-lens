@@ -14,6 +14,7 @@ struct EvalsView: View {
     @State private var checkingHoldout = false
     @State private var labellingPairs = false
     @State private var labellingQuestions = false
+    @State private var labellingScenes = false
     @State private var judgeCard: [JudgeCardRow] = []
 
     var body: some View {
@@ -32,6 +33,7 @@ struct EvalsView: View {
         .navigationTitle("Evals")
         .toolbar {
             Button("Question labels", systemImage: "questionmark.bubble") { labellingQuestions = true }
+            Button("Scene labels", systemImage: "photo.on.rectangle") { labellingScenes = true }
                 .help("Label a past class's questions: the baseline for questions v2")
             Button("Citation labels", systemImage: "checkmark.bubble") { labellingPairs = true }
                 .help("Label sentence and passage pairs so a citation checker can be calibrated")
@@ -39,6 +41,7 @@ struct EvalsView: View {
         }
         .sheet(isPresented: $labellingPairs) { SupportPairsSheet() }
         .sheet(isPresented: $labellingQuestions) { QuestionLabelsSheet() }
+        .sheet(isPresented: $labellingScenes) { SceneLabelsSheet() }
         .task { model.loadEvalRuns(); feedback = FeedbackStore.load(); calibration = (try? CalibrationSheet.load()) ?? CalibrationSheet() }
         .sheet(isPresented: $calibrating, onDismiss: { calibration = (try? CalibrationSheet.load()) ?? CalibrationSheet() }) {
             CalibrationView()

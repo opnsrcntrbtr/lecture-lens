@@ -2428,6 +2428,93 @@ def cmd_notes_v2(a):
     print(json.dumps(notes_v2_build(find_folder(a.id)), ensure_ascii=False))
 
 
+def scene_frames(folder: Path, con=None) -> list[dict]:
+    """CT-5 inputs for a built lecture's kept frames: the image, its time, the app and window
+    and OCR text of the nearest captured frame, how long it stayed (next visual change) and
+    how different it is from the previous kept frame."""
+    import evidence, scenes
+    _, recs = evidence.lecture_records(folder, lambda x: x)
+    slides = [r for r in recs if r["kind"] == "s" and r.get("slide_file")]
+    con = con or db()
+    imgs = [str(folder / "slides" / r["slide_file"]) for r in slides]
+    ocr = scenes.ocr_images([p for p in imgs if Path(p).exists()], HERE / "tools" / "ocr" / "ocr")
+    ocr_by = dict(zip([p for p in imgs if Path(p).exists()], ocr))
+    out, prev_h = [], None
+    for r in slides:
+        t = dt.datetime.fromisoformat(r["t_abs"].replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+        lo, hi = (t - dt.timedelta(seconds=3)).strftime("%Y-%m-%dT%H:%M:%S"), (t + dt.timedelta(seconds=3)).strftime("%Y-%m-%dT%H:%M:%S")
+        near = [dict(x) for x in con.execute(
+            "SELECT timestamp, app_name, window_name, text_json, COALESCE(full_text, accessibility_text, '') AS text FROM frames "
+            f"WHERE timestamp >= '{lo}' AND timestamp <= '{hi}' ORDER BY timestamp LIMIT 5").fetchall()]
+        nxt = [dict(x) for x in con.execute(
+            "SELECT timestamp FROM frames WHERE capture_trigger = 'visual_change' AND "
+            f"timestamp > '{(t + dt.timedelta(seconds=1)).strftime('%Y-%m-%dT%H:%M:%S')}' AND "
+            f"timestamp <= '{(t + dt.timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S')}' ORDER BY timestamp LIMIT 1").fetchall()]
+        img = folder / "slides" / r["slide_file"]
+        h = dhash(str(img)) if img.exists() else None
+        diff = hamming(h, prev_h) / 64 if h is not None and prev_h is not None else None
+        prev_h = h if h is not None else prev_h
+        f = near[0] if near else {}
+        dwell = ((_ts(nxt[0]["timestamp"]) - t).total_seconds() if nxt else 300.0) if near else None
+        out.append({"slide_id": f"{folder.name}/s/{r['idx']}", "slide_file": r["slide_file"], "t_abs": r["t_abs"],
+                    "image": str(img) if img.exists() else None, "app_name": f.get("app_name"),
+                    "window_name": f.get("window_name"),
+                    "text": scenes.ocr_text(ocr_by.get(str(img), [])), "title": scenes.has_title(ocr_by.get(str(img), [])),
+                    "dwell_s": dwell,
+                    "diff_prev": round(diff, 3) if diff is not None else None, "vlm_desc": r["text"]})
+    return out
+
+
+def scene_vlm():
+    """Vision-model label for one image (the CT-5 last stage), under the model lock."""
+    import scenes
+    if not VL_MODEL:
+        return None
+    def f(image):
+        with study.llm_slot("build"):
+            r = vc.ask(VL_MODEL, scenes.VLM_PROMPT, images=[image], think=False, max_tokens=12, timeout=300)
+        return None if r.get("error") else scenes.parse_label(r.get("text"))
+    return f
+
+
+def cmd_scenes(a):
+    import scenes
+    folder = find_folder(a.id)
+    frames = scene_frames(folder)
+    vlm = None if a.no_vision else scene_vlm()
+    rows, used = [], 0
+    for fr in frames:
+        c = scenes.classify(fr, vlm)
+        used += c["class_source"] == "vision"
+        rows.append({"slide_id": fr["slide_id"], "t0": fr["t_abs"], "t1": None, "class": c["class"],
+                     "class_source": c["class_source"], "reason": c["reason"],
+                     "text_blocks": len(scenes.clean_lines(fr["text"])), "tables": None,
+                     "thumb_path": fr["image"], "vlm_desc": (fr["vlm_desc"] or "")[:400]})
+    for a_, b_ in zip(rows, rows[1:]):
+        a_["t1"] = b_["t0"]
+    scenes.write_jsonl(folder, rows)
+    counts = {k: sum(r["class"] == k for r in rows) for k in scenes.CLASSES}
+    print(json.dumps({"ok": True, "frames": len(rows), "classes": counts,
+                      "vision_share": round(used / len(rows), 3) if rows else None}))
+
+
+def cmd_scene_labels(a):
+    """CT-5 labels: list them (with thumbnail paths) or correct one; a correction is confirmed."""
+    import scenes
+    f = HERE / "eval" / "golden" / "scene_labels.jsonl"
+    rows = [json.loads(l) for l in f.read_text().splitlines() if l.strip()] if f.exists() else []
+    if a.action == "set":
+        if a.label not in scenes.CLASSES:
+            return print(json.dumps({"ok": False, "error": f"label must be one of {', '.join(scenes.CLASSES)}"}))
+        r = next((r for r in rows if r["slide_id"] == a.id), None)
+        if not r:
+            return print(json.dumps({"ok": False, "error": "no such frame"}))
+        r.update({"label": a.label, "source": "learner", "confirmed": True})
+        f.write_text("".join(json.dumps(x) + "\n" for x in rows))
+    print(json.dumps({"ok": True, "labels": rows, "confirmed": sum(bool(r.get("confirmed")) for r in rows),
+                      "classes": list(scenes.CLASSES)}))
+
+
 def cmd_agenda(a):
     folder = find_folder(a.id)
     if a.cached:
@@ -3190,6 +3277,12 @@ def main():
     p.add_argument("--lecture", default="last"); p.add_argument("--section"); p.add_argument("--seed", type=int)
     p.add_argument("--id"); p.add_argument("--marks"); p.add_argument("--corrections")
     p.set_defaults(fn=cmd_teachback)
+    p = sub.add_parser("scenes", help="CT-5: classify kept frames (slide, shared document, gallery, break, other)")
+    p.add_argument("id", nargs="?", default="last"); p.add_argument("--no-vision", action="store_true")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_scenes)
+    p = sub.add_parser("scene-labels", help="CT-5: list or correct the labelled keyframes")
+    p.add_argument("action", choices=["list", "set"], nargs="?", default="list"); p.add_argument("--id")
+    p.add_argument("--label"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_scene_labels)
     p = sub.add_parser("notes-v2", help="NG-3: outline-first notes from verbatim extracts, into notes_v2/")
     p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_notes_v2)
     p = sub.add_parser("lanes", help="NG-6: waits and timings per model caller kind (llm_slot_metrics.jsonl)")
