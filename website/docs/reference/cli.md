@@ -37,6 +37,8 @@ All commands live in the repository root and read `.env`.
 | `./lecture capstone peer add\|consent\|review\|doc\|check\|feedback\|classify\|overlap` | Peer review coach: checks the reviews you write and sorts feedback you receive; never writes a comment |
 | `./lecture agenda [ID] [--no-notes] [--cached] [--json]` | Agenda parts covered, partial, moved or skipped as the class ran; adds a "How the class ran" block to the notes |
 | `./lecture notes-v2 [ID]` | Notes written outline first: a title from the candidate list, verbatim extracts per section, each section from its own lines, then an audit; into `notes_v2/` beside the current notes |
+| `./lecture scenes [ID] [--no-vision]` | Classify kept frames as slide, shared document, gallery, break or other (window title, dwell, on-device OCR layout, vision model last) into `slides.jsonl`. Build the OCR helper once: `swiftc -O tools/ocr/main.swift -o tools/ocr/ocr` |
+| `./lecture scene-labels list\|set --id ID --label L` | The labelled keyframes for `tools/scene_bench.py`; `tools/scene_prelabel.py` pre-labels them with the vision model |
 | `./lecture cornell show\|build\|summary ID [--text ..]` | Cornell view: cue questions from the notes' timed points (also as cards), your own summary |
 | `./lecture teachback start --lecture ID [--section S]` / `score --id X --marks s1,s3` | Find the planted errors; scored against the hidden key |
 | `./lecture doctor --privacy [--sync-guard REPO]` | Checks that endpoints, evals and capture stay local; refreshes the guard's hashed roster |

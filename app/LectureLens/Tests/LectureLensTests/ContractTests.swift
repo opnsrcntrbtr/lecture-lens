@@ -301,3 +301,8 @@ import Testing
     let a = try JSONDecoder().decode(NotesAudit.self, from: Data(#"{"extract_coverage": 0.958, "extracts": 48, "dropped_extracts": 43, "timecodes_repaired": 0, "numbers_not_in_sources": [], "terms_not_in_sources": [], "unreferenced_sentences": 0, "sentences": 66, "title_source": "model_choice", "title_review": false, "seconds": {"outline": 114.1, "total": 376.6}}"#.utf8))
     #expect(NotesV2.summary(a) == "48 verbatim extracts (43 dropped as not verbatim) · 96% used in the notes")
 }
+
+@Test func sceneLabelsContract() throws {
+    let s = try JSONDecoder().decode(SceneLabels.self, from: Data(#"{"ok": true, "labels": [{"lecture": "L", "slide_id": "L/s/1", "slide_file": "01.jpg", "t_abs": "2030-01-05T10:00:00+00:00", "thumb": "/x/01.jpg", "label": "break", "source": "vlm_prelabel", "confirmed": false}], "confirmed": 0, "classes": ["slide", "shared_document", "gallery", "break", "other"]}"#.utf8))
+    #expect(SceneText.progress(s) == "0 of 1 checked" && s.labels?.first?.label == "break")
+}
