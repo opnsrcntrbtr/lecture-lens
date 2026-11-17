@@ -37,6 +37,8 @@ All commands live in the repository root and read `.env`.
 | `./lecture capstone peer add\|consent\|review\|doc\|check\|feedback\|classify\|overlap` | Peer review coach: checks the reviews you write and sorts feedback you receive; never writes a comment |
 | `./lecture agenda [ID] [--no-notes] [--cached] [--json]` | Agenda parts covered, partial, moved or skipped as the class ran; adds a "How the class ran" block to the notes |
 | `./lecture notes-v2 [ID]` | Notes written outline first: a title from the candidate list, verbatim extracts per section, each section from its own lines, then an audit; into `notes_v2/` beside the current notes |
+| `STUDY_ASR_EVENT=1` (Settings → Capture) | The live follower transcribes each audio chunk as it closes, about 5 s behind instead of minutes; read at start-up, so change it between classes |
+| `python3 tools/asr_replay.py --day DAY --from HH:MM --minutes 15` | Replays stored chunks at real-time pace into the event-driven pass with a model build running; reports lag, chunk-edge words missing against a one-pass decode, and duplicates |
 | `./lecture scenes [ID] [--no-vision]` | Classify kept frames as slide, shared document, gallery, break or other (window title, dwell, on-device OCR layout, vision model last) into `slides.jsonl`. Build the OCR helper once: `swiftc -O tools/ocr/main.swift -o tools/ocr/ocr` |
 | `./lecture scene-labels list\|set --id ID --label L` | The labelled keyframes for `tools/scene_bench.py`; `tools/scene_prelabel.py` pre-labels them with the vision model |
 | `./lecture cornell show\|build\|summary ID [--text ..]` | Cornell view: cue questions from the notes' timed points (also as cards), your own summary |
