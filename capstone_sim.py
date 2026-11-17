@@ -54,6 +54,10 @@ INJECTS = {
          "comms_cadence_honesty", "an honest customer message; a decision owner", ["honour affected cases", "correct publicly and review case by case"]),
         ("executive", "The executive asks if you can keep the bot live for the sale weekend.",
          "mitigation_before_root_cause", "a fallback or narrowed scope now, root cause later", ["narrow to order status only", "pause the bot and route to people"]),
+        ("operations lead", "Logs show the wrong window was quoted to about 1,400 customers since Tuesday; the retrieval index still serves last year's policy.",
+         "golden_set_update", "a golden-set case that checks policy answers against the current document", ["rebuild the index, then re-enable after the cases pass", "keep answers restricted until the golden set covers policy"]),
+        ("executive", "The executive wants a written status for all staff in ten minutes and asks whether any regulator must be told.",
+         "regulatory_clock", "whether a reporting clock applies, from the snapshot and marked verify, and who confirms", ["no notification duty: say why and who confirms", "ask legal to confirm consumer-protection duties by a stated time"]),
     ],
     "prompt_injection_excessive_agency": [
         ("operations lead", "Logs show the agent issued two account changes after a message containing 'ignore previous instructions'.",
@@ -62,6 +66,10 @@ INJECTS = {
          "comms_cadence_honesty", "an apology without blame; what is fixed now", ["call affected customers", "message with a ticket and timeline"]),
         ("executive", "The board meets tomorrow and wants to know if any data left the company.",
          "regulatory_clock", "what is known, what is not, when the next update comes", ["report as a possible breach", "investigate first with a stated deadline"]),
+        ("operations lead", "The same phrasing works on the staging build; no golden-set case sends instructions inside customer text.",
+         "golden_set_update", "injection cases added to the golden set; write actions gated", ["add injection cases and block release on them", "require approval on write actions until the cases pass"]),
+        ("support lead", "Forty customers have written in; the support desk needs a script and the time of the next update.",
+         "comms_cadence_honesty", "a script that says what is known, what is not, and when the next update comes", ["one script for all affected customers", "personal calls to the two whose accounts changed, script for the rest"]),
     ],
     "personal_data_leak": [
         ("support lead", "A customer reports seeing another person's phone number in a chat summary.",
@@ -70,6 +78,10 @@ INJECTS = {
          "regulatory_clock", "the clock from the governance snapshot, marked verify", ["notify within the stated window", "assess scope first, notify if confirmed"]),
         ("operations lead", "The same pattern appears in logs from last week.",
          "golden_set_update", "a golden-set case that would have caught it", ["add PII cases to the golden set", "add an output filter test"]),
+        ("angry customer", "The person whose number was shown posts publicly that you 'sold' their data.",
+         "comms_cadence_honesty", "a public reply that is honest about what happened, without blame or legal hedging", ["reply publicly and contact them directly", "contact them directly and post a general notice"]),
+        ("executive", "The executive asks whether summaries can come back on tomorrow.",
+         "mitigation_before_root_cause", "a re-enable condition tied to the new golden-set cases", ["re-enable once the masking test passes", "keep off until the root cause is confirmed"]),
     ],
     "regression_after_update": [
         ("operations lead", "After last night's model update, Hindi-English messages fail twice as often.",
@@ -78,6 +90,10 @@ INJECTS = {
          "fallback_in_artefacts", "the rollback path in the learner's own artefacts", ["roll back", "hold and add monitoring"]),
         ("executive", "The executive asks how this got past testing.",
          "golden_set_update", "why the golden set missed it; what changes", ["add segment cases", "make segment pass rates a release gate"]),
+        ("angry customer", "A customer who writes in Hindi and English says the bot 'stopped understanding' them and threatens to leave.",
+         "comms_cadence_honesty", "an apology that names the problem and when it will be fixed", ["route them to a person now", "reply with the rollback time"]),
+        ("legal", "Legal asks whether the quality drop counts as a reportable incident anywhere you operate.",
+         "regulatory_clock", "whether a reporting clock applies, from the snapshot and marked verify", ["no duty: say why and who confirms", "check the high-risk classification before deciding"]),
     ],
     "cost_blowup": [
         ("operations lead", "Overnight spend is six times the daily budget; a retry loop is suspected.",
@@ -86,6 +102,10 @@ INJECTS = {
          "comms_cadence_honesty", "the unit economics at heavy usage, honestly", ["raise prices for heavy use", "limit free usage"]),
         ("support lead", "Throttled users complain that answers now take a minute.",
          "mitigation_before_root_cause", "a temporary experience trade-off, stated", ["show a queue message", "fall back to a cheaper model"]),
+        ("operations lead", "The retry loop came from a timeout change in yesterday's deploy; no eval checks cost per outcome.",
+         "golden_set_update", "a cost-per-outcome check added to the release gate", ["add a cost budget test to the golden set", "alert on cost per outcome in monitoring"]),
+        ("legal", "Legal asks whether throttling paying customers triggers any notice duty.",
+         "regulatory_clock", "whether a clock applies (contract or regulator), stated with who confirms", ["no regulator clock: say why and who confirms", "notify customers under the contract terms by a stated time"]),
     ],
 }
 
@@ -112,9 +132,10 @@ def make_scenario(seed: int, ws: cs.Workspace | None = None, micro: bool = True)
         fam = "personal_data_leak"
     elif gap["label"] == "policy answers":
         fam = "hallucinated_policy"
-    injects = INJECTS[fam][: 3 if micro else 3]
-    offsets = [0, 7, 14] if micro else [0, 15, 30]
+    injects = INJECTS[fam][: 3 if micro else 5]
+    offsets = MICRO_OFFSETS if micro else FULL_OFFSETS
     sc = {"scenario_id": f"sim-{seed}", "seed": seed, "format": "micro" if micro else "full",
+          "time_box_min": 20 if micro else 60,
           "failure_class": fam, "vector_family": rng.choice(FAMILIES[fam]["vectors"]),
           "autonomy_level": rng.choice(AUTONOMY), "surface": rng.choice(SURFACES),
           "harm": FAMILIES[fam]["harm"], "bound_gap": {"artefact_id": gap["artefact_id"], "quote": gap["quote"]},
@@ -122,6 +143,13 @@ def make_scenario(seed: int, ws: cs.Workspace | None = None, micro: bool = True)
                        "tests_objective": o, "expected_evidence": e, "permissible_branches": b}
                       for i, (r, t, o, e, b) in enumerate(injects)]}
     return sc
+
+
+MICRO_OFFSETS, FULL_OFFSETS = [0, 7, 14], [0, 10, 20, 35, 50]
+CADENCE_MIN = {"SEV1": 15, "SEV2": 15, "SEV3": 30, "SEV4": 30}     # status updates at least this often
+NEXT_UPDATE = re.compile(r"next update|update (you|again)|\bby \d|within \d+\s*(min|hour|h\b)|at \d{1,2}[:.]\d\d|in \d+\s*(min|hour)", re.I)
+OVERCLAIM = re.compile(r"fully (resolved|fixed)|no (customers?|one|users?) (were|was) affected|nothing to worry|100% (safe|secure)", re.I)
+CLOCK_WORDS = re.compile(r"\b(\d+)\s*(hours?|hrs?|h|days?)\b|without (undue )?delay", re.I)
 
 
 def lint_inject(i: dict) -> list[str]:
@@ -137,9 +165,12 @@ def lint_inject(i: dict) -> list[str]:
 
 
 def public_view(sc: dict, revealed: int) -> dict:
-    """What the learner may see before the hot-wash: no hidden fields."""
+    """What the learner may see before the hot-wash: no hidden fields. The time of the next
+    inject is shown, never its text."""
+    nxt = sc["injects"][revealed]["t_offset_min"] if revealed < len(sc["injects"]) else None
     return {"scenario_id": sc["scenario_id"], "format": sc["format"], "surface": sc["surface"],
-            "autonomy_level": sc["autonomy_level"],
+            "autonomy_level": sc["autonomy_level"], "time_box_min": sc.get("time_box_min", 20),
+            "n_injects": len(sc["injects"]), "next_at_min": nxt,
             "brief": f"You are incident commander. Your product runs on {sc['surface']} at autonomy "
                      f"'{sc['autonomy_level']}'. Something is going wrong.",
             "injects": [{k: i[k] for k in ("inject_id", "t_offset_min", "role", "text")} for i in sc["injects"][:revealed]]}
@@ -151,13 +182,35 @@ class Drill:
         self.ws, self.seed = ws, seed
         self.dir = ws.session_dir(f"sim-{seed}", day)
 
-    def start(self, now: dt.datetime | None = None, micro: bool = True) -> dict:
+    def start(self, now: dt.datetime | None = None, micro: bool = True, real_time: bool | None = None) -> dict:
+        """A full session runs on the real clock by default (injects unlock at their minute);
+        a micro drill unlocks on request, as before."""
         sc = make_scenario(self.seed, self.ws, micro)
         (self.dir / "scenario.json").write_text(json.dumps(sc, indent=1))
         st = {"started": (now or dt.datetime.now(dt.timezone.utc)).isoformat(timespec="seconds"), "revealed": 1,
-              "hotwash": False}
+              "hotwash": False, "real_time": (not micro) if real_time is None else real_time}
         (self.dir / "state.json").write_text(json.dumps(st))
-        return public_view(sc, 1)
+        return self.view(now)
+
+    def view(self, now: dt.datetime | None = None) -> dict:
+        st = self.state()
+        v = public_view(self.scenario(), st["revealed"])
+        v["elapsed_min"] = round(((now or dt.datetime.now(dt.timezone.utc)) - dt.datetime.fromisoformat(st["started"])).total_seconds() / 60, 1)
+        v["real_time"] = st.get("real_time", False)
+        return v
+
+    def update(self, audience: str, text: str, now: dt.datetime | None = None) -> dict:
+        """A status update outside an inject decision (customers, internal or regulator)."""
+        if audience not in ("customer", "internal", "regulator"):
+            raise ValueError("audience must be customer, internal or regulator")
+        row = {"t": (now or dt.datetime.now(dt.timezone.utc)).isoformat(timespec="seconds"), "audience": audience, "text": text}
+        with (self.dir / "updates.jsonl").open("a") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return row
+
+    def updates(self) -> list[dict]:
+        p = self.dir / "updates.jsonl"
+        return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
 
     def scenario(self) -> dict:
         return json.loads((self.dir / "scenario.json").read_text())
@@ -168,16 +221,19 @@ class Drill:
     def _save(self, st):
         (self.dir / "state.json").write_text(json.dumps(st))
 
-    def next(self, now: dt.datetime | None = None, practice: bool = True) -> dict:
-        """Reveal the next inject when its time has come (or at once in practice mode)."""
+    def next(self, now: dt.datetime | None = None, practice: bool | None = None) -> dict:
+        """Reveal the next inject when its time has come (or at once in practice mode; a
+        real-time session is never in practice mode)."""
         sc, st = self.scenario(), self.state()
+        if practice is None:
+            practice = not st.get("real_time", False)
         if st["revealed"] < len(sc["injects"]):
             nxt = sc["injects"][st["revealed"]]
             elapsed = ((now or dt.datetime.now(dt.timezone.utc)) - dt.datetime.fromisoformat(st["started"])).total_seconds() / 60
             if practice or elapsed >= nxt["t_offset_min"]:
                 st["revealed"] += 1
                 self._save(st)
-        return public_view(sc, st["revealed"])
+        return self.view(now)
 
     def decide(self, inject_id: str, severity: str, containment: str, comms: dict, golden_set_would_catch: str,
                rationale: str = "", now: dt.datetime | None = None) -> dict:
@@ -218,24 +274,36 @@ class Drill:
         self._save(st)
         return ratings
 
-    def hotwash(self, now: dt.datetime | None = None) -> dict:
+    def hotwash(self, now: dt.datetime | None = None, postmortem: str | None = None) -> dict:
         """Critic ratings (deterministic where the rule allows) beside the self-ratings;
-        refuses until the learner has rated. Reveals the hidden inject fields."""
+        refuses until the learner has rated. Reveals the hidden inject fields. With a
+        registered postmortem, action-item quality is rated from it."""
         st, sc = self.state(), self.scenario()
         if "self" not in st:
             raise RuntimeError("rate yourself first (self-rating is captured before the critic's)")
-        aar = critic(sc, self.decisions(), dt.datetime.fromisoformat(st["started"]), self.ws)
+        end = now or dt.datetime.now(dt.timezone.utc)
+        aar = critic(sc, self.decisions(), dt.datetime.fromisoformat(st["started"]), self.ws, updates=self.updates(),
+                     ended=end, postmortem=postmortem)
         for row in aar:
             row["self_rating"] = st["self"].get(row["objective_id"])
         st["hotwash"] = True
         self._save(st)
         (self.dir / "aar.json").write_text(json.dumps(aar, indent=1))
-        return {"aar": aar, "scenario": sc}
+        snap = cs.governance(self.ws.root)
+        clocks = [{**{k: c[k] for k in ("regime", "obligation", "window", "status", "source_url", "verify")},
+                   "as_of": snap.get("as_of")} for c in snap.get("clocks", []) if sc["failure_class"] in c.get("families", [])]
+        return {"aar": aar, "scenario": sc, "clocks": clocks, "updates": self.updates()}
 
 
-def critic(sc: dict, decisions: list[dict], started: dt.datetime, ws: cs.Workspace | None) -> list[dict]:
+def critic(sc: dict, decisions: list[dict], started: dt.datetime, ws: cs.Workspace | None,
+           updates: list[dict] | None = None, ended: dt.datetime | None = None, postmortem: str | None = None) -> list[dict]:
     """P/S/M/U per objective from the decisions and the clock. Rules are stated in each
-    observation; anything not decidable from the record is marked U with the reason."""
+    observation; anything not decidable from the record is marked U with the reason. A full
+    session adds the comms cadence (gaps between status updates), the reporting clock named
+    in the regulator message, a written golden-set case, and action items from the
+    postmortem."""
+    if sc.get("format") == "full":
+        return critic_full(sc, decisions, started, ws, updates or [], ended or dt.datetime.now(dt.timezone.utc), postmortem)
     out = []
     first = decisions[0] if decisions else None
     by = {d["inject_id"]: d for d in decisions}
@@ -277,6 +345,85 @@ def critic(sc: dict, decisions: list[dict], started: dt.datetime, ws: cs.Workspa
         "tool")
     row("action_item_quality", "U", "rated from your postmortem (lecture capstone postmortem)", "process")
     return out
+
+
+def critic_full(sc, decisions, started, ws, updates, ended, postmortem):
+    out = critic(dict(sc, format="micro"), decisions, started, ws)       # the shared rules first
+    by_obj = {r["objective_id"]: r for r in out}
+    T = lambda s: dt.datetime.fromisoformat(s)
+    mins = lambda t: (t - started).total_seconds() / 60
+
+    def put(obj, rating, obs, gap):
+        by_obj[obj].update({"critic_rating": rating, "observation_quote": obs, "gap_class": gap})
+
+    # comms cadence: every customer or internal message, in decisions or as updates
+    msgs = [(T(d["t"]), a, d["comms"].get(a) or "") for d in decisions for a in ("customer", "internal")
+            if len((d["comms"].get(a) or "").split()) >= 5]
+    msgs += [(T(u["t"]), u["audience"], u["text"]) for u in updates if u["audience"] in ("customer", "internal")
+             and len(u["text"].split()) >= 5]
+    msgs.sort()
+    sev = next((re.match(r"(?i)sev\s*([1-4])", d.get("severity") or "") for d in decisions
+                if re.match(r"(?i)sev\s*[1-4]", d.get("severity") or "")), None)
+    target = CADENCE_MIN.get(f"SEV{sev[1]}" if sev else "SEV3", 30)
+    if msgs:
+        first_t = T(decisions[0]["t"]) if decisions else msgs[0][0]
+        end_t = min(ended, started + dt.timedelta(minutes=sc.get("time_box_min", 60)))
+        times = sorted({first_t, end_t, *[m[0] for m in msgs if first_t <= m[0] <= end_t]})
+        gap = max((b - a).total_seconds() / 60 for a, b in zip(times, times[1:])) if len(times) > 1 else 0
+        cust = [m for m in msgs if m[1] == "customer"]
+        with_next = sum(1 for m in cust if NEXT_UPDATE.search(m[2]))
+        over = [m for m in cust if OVERCLAIM.search(m[2])]
+        rating = "P" if gap <= target and cust and with_next == len(cust) and not over else \
+                 "S" if gap <= 2 * target and not over else "M"
+        put("comms_cadence_honesty", rating,
+            f"longest gap between updates {gap:.0f} min (target {target} at {('SEV' + sev[1]) if sev else 'SEV3'}); "
+            f"{with_next} of {len(cust)} customer messages give the next update time" + ("; a message over-claims" if over else ""),
+            "communication")
+    else:
+        put("comms_cadence_honesty", "U", "no status update of five words or more", "communication")
+
+    # reporting clock: the regulator message names a window from the snapshot, or says why none applies
+    snap = cs.governance(ws.root) if ws else cs.GOVERNANCE_SNAPSHOT
+    clocks = [c for c in snap.get("clocks", []) if sc["failure_class"] in c.get("families", [])]
+    reg = " ".join([d["comms"].get("regulator") or "" for d in decisions] +
+                   [u["text"] for u in updates if u["audience"] == "regulator"]).strip()
+    data = sc["failure_class"] in ("personal_data_leak", "prompt_injection_excessive_agency")
+    named = [m.group(0) for m in CLOCK_WORDS.finditer(reg)]
+    known = {str(c["hours"]) for c in clocks} | {str(c["hours"] // 24) for c in clocks if c["hours"] >= 24}
+    matches = [n for n in named if (re.match(r"\d+", n) and re.match(r"\d+", n).group(0) in known) or "delay" in n.lower()]
+    as_of = f" (snapshot as of {snap.get('as_of')}, verify)"
+    if not reg:
+        put("regulatory_clock", "M" if data else "S", "no regulator message" + (" for a possible data incident" if data else
+            "; say whether any clock applies and who confirms") + as_of, "communication")
+    elif data:
+        put("regulatory_clock", "P" if matches else "S",
+            (f"regulator message names {', '.join(matches)}" if matches else "regulator message names no reporting window") + as_of,
+            "communication")
+    else:
+        put("regulatory_clock", "P" if len(reg.split()) >= 5 else "S",
+            "you stated the reporting position" + as_of, "communication")
+
+    # golden set: on the inject that tests it, a written case with an expected behaviour
+    gi = [i["inject_id"] for i in sc["injects"] if i["tests_objective"] == "golden_set_update"]
+    gd = [d for d in decisions if d["inject_id"] in gi]
+    case = [d for d in gd if len((d.get("rationale") or "").split()) >= 8 and
+            re.search(r"\b(should|must|expect|refuse|route|escalat|block|flag|mask|fail)", d.get("rationale") or "", re.I)]
+    if gi:
+        put("golden_set_update", "P" if case else "S" if gd else "U",
+            "a golden-set case with an expected behaviour is written" if case else
+            ("answered without a case that states the expected behaviour" if gd else "no answer on the golden-set inject"), "tool")
+
+    # action items from the learner's postmortem, when one is registered
+    if postmortem and ws:
+        try:
+            fs = postmortem_findings(ws, postmortem)
+        except (KeyError, FileNotFoundError, StopIteration):
+            fs = None
+        if fs is not None:
+            checks = {f["check_id"] for f in fs}
+            put("action_item_quality", "M" if "vague_actions" in checks or len(fs) >= 2 else "S" if fs else "P",
+                "postmortem checks: " + (", ".join(sorted(checks)) if checks else "none failed"), "process")
+    return [by_obj[o] for o in OBJECTIVES if o in by_obj]
 
 
 # ------------------------------------------------------------------ postmortem critique
