@@ -40,12 +40,19 @@ struct CapEcon: Decodable, Sendable {
 struct CapDrill: Decodable, Sendable {
     let ok: Bool; let error: String?; let seed: Int?; let brief: String?; let injects: [Inject]?
     let decisions: [Decision]?; let rated: Bool?; let hotwash: Bool?
+    /// CC-2 full session: the clock and the next inject's time (never its text).
+    let format: String?; let time_box_min: Int?; let n_injects: Int?; let next_at_min: Int?
+    let elapsed_min: Double?; let real_time: Bool?; let updates: [Update]?
+    struct Update: Decodable, Sendable, Hashable { let t: String; let audience: String; let text: String }
     struct Inject: Decodable, Sendable, Identifiable { let inject_id: String; let t_offset_min: Int; let role: String; let text: String; var id: String { inject_id } }
     struct Decision: Decodable, Sendable { let inject_id: String; let severity: String }
 }
 
 struct CapHotwash: Decodable, Sendable {
-    let ok: Bool; let error: String?; let aar: [Row]?
+    let ok: Bool; let error: String?; let aar: [Row]?; let clocks: [Clock]?
+    struct Clock: Decodable, Sendable, Hashable {
+        let regime: String; let obligation: String; let window: String; let status: String; let as_of: String?; let verify: Bool?
+    }
     struct Row: Decodable, Sendable, Identifiable {
         let objective_id: String; let critic_rating: String; let observation_quote: String; let self_rating: String?
         var id: String { objective_id }
@@ -98,6 +105,11 @@ struct CapstoneView: View {
     @State private var dec = ["severity": "SEV2", "containment": "", "customer": "", "internal": "", "regulator": "", "golden": "no", "rationale": ""]
     @State private var roleReply: String?
     @State private var selfRatings: [String: String] = [:]
+    @State private var fullDrill = false
+    @State private var drillLoadedAt = Date()
+    @State private var updAudience = "internal"
+    @State private var updText = ""
+    @State private var postmortemID = ""
     @State private var hotwash: CapHotwash?
 
     var body: some View {
@@ -255,21 +267,29 @@ struct CapstoneView: View {
 
     // drill
     private var drillBox: some View {
-        GroupBox("Incident drill (20 minutes, 3 injects)") {
+        GroupBox("Incident drill") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
+                    Picker("", selection: $fullDrill) {
+                        Text("Micro: 20 min, 3 injects").tag(false)
+                        Text("Full: 60 min, 5 injects, real time").tag(true)
+                    }.pickerStyle(.segmented).frame(width: 420).labelsHidden()
                     Button("Start drill", systemImage: "flame") {
-                        Task { drill = await Capstone.run(CapDrill.self, ["sim", "start"]); hotwash = nil; selfRatings = [:]; roleReply = nil }
+                        Task {
+                            drill = await Capstone.run(CapDrill.self, ["sim", "start"] + (fullDrill ? ["--full"] : []))
+                            drillLoadedAt = Date(); hotwash = nil; selfRatings = [:]; roleReply = nil
+                        }
                     }
-                    Button("Next inject") { Task { drill = await Capstone.run(CapDrill.self, ["sim", "next"]) } }.disabled(drill == nil)
                     if let s = drill?.seed { Text("seed \(s)").font(.scaled(.caption)).foregroundStyle(.tertiary) }
                 }
+                if drill != nil { drillClock }
                 if let b = drill?.brief { Text(b).font(.scaled(.callout)) }
                 ForEach(drill?.injects ?? []) { i in
                     Text("+\(i.t_offset_min) min · \(i.role): \(i.text)").font(.scaled(.callout)).textSelection(.enabled)
                 }
                 if let last = drill?.injects?.last { decisionForm(last) }
                 if let r = roleReply, !r.isEmpty { Text(r).italic().font(.scaled(.callout)).foregroundStyle(.secondary) }
+                if drill?.format == "full" { updateForm }
                 if drill != nil { ratingForm }
                 if let h = hotwash?.aar {
                     ForEach(h) { row in
@@ -280,8 +300,54 @@ struct CapstoneView: View {
                         }
                     }
                 }
+                if let cl = hotwash?.clocks, !cl.isEmpty {
+                    Text("Reporting clocks that may apply (check each with counsel)").font(.scaled(.caption, weight: .semibold))
+                    ForEach(cl, id: \.self) { c in
+                        Text("\(c.regime): \(c.obligation): \(c.window) (\(c.status); as of \(c.as_of ?? "?")\(c.verify == true ? ", verify" : ""))")
+                            .font(.scaled(.caption)).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
                 if let e = hotwash?.error ?? drill?.error { Text(e).foregroundStyle(.orange) }
             }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Elapsed time against the time box; "Next inject" unlocks at its minute on a real-time session.
+    private var drillClock: some View {
+        TimelineView(.periodic(from: .now, by: 15)) { ctx in
+            let elapsed = (drill?.elapsed_min ?? 0) + ctx.date.timeIntervalSince(drillLoadedAt) / 60
+            let due = drill?.next_at_min.map { elapsed >= Double($0) } ?? false
+            HStack {
+                Text("\(Int(elapsed)) of \(drill?.time_box_min ?? 20) min · \(drill?.injects?.count ?? 0) of \(drill?.n_injects ?? 3) injects")
+                    .font(.scaled(.caption)).monospacedDigit()
+                if let n = drill?.next_at_min {
+                    Button(drill?.real_time == true && !due ? "Next inject at +\(n) min" : "Next inject") {
+                        Task { drill = await Capstone.run(CapDrill.self, ["sim", "next"]); drillLoadedAt = Date() }
+                    }.disabled(drill?.real_time == true && !due)
+                }
+            }
+        }
+    }
+
+    /// Status updates between injects; the critic reads their cadence and the next-update promise.
+    private var updateForm: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Status update").font(.scaled(.caption, weight: .semibold))
+            HStack {
+                Picker("", selection: $updAudience) {
+                    ForEach(["internal", "customer", "regulator"], id: \.self) { Text($0).tag($0) }
+                }.pickerStyle(.segmented).frame(width: 280).labelsHidden()
+                TextField("What is known, what is not, and when the next update comes", text: $updText)
+                Button("Post update") {
+                    Task {
+                        _ = await Capstone.run(CapDrill.self, ["sim", "update", "--audience", updAudience, "--text", updText])
+                        updText = ""; drill = await Capstone.run(CapDrill.self, ["sim", "show"]); drillLoadedAt = Date()
+                    }
+                }.disabled(updText.split(separator: " ").count < 5)
+            }
+            ForEach(drill?.updates ?? [], id: \.self) { u in
+                Text("\(String(u.t.dropFirst(11).prefix(5))) · \(u.audience): \(u.text)").font(.scaled(.caption)).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -322,10 +388,17 @@ struct CapstoneView: View {
                     Text("–").tag(""); ForEach(["P", "S", "M", "U"], id: \.self) { Text($0).tag($0) }
                 }.pickerStyle(.segmented).frame(width: 520)
             }
+            let pms = (status?.artefacts ?? []).filter { $0.kind == "postmortem" }
+            if !pms.isEmpty {
+                Picker("Rate action items from", selection: $postmortemID) {
+                    Text("no postmortem yet").tag("")
+                    ForEach(pms) { Text($0.artefact_id).tag($0.artefact_id) }
+                }.frame(width: 420)
+            }
             Button("Save my ratings, then show the critic's") {
                 Task {
                     _ = await Capstone.run(CapDrill.self, ["sim", "rate", "--ratings", Capstone.ratingsArg(selfRatings.filter { !$0.value.isEmpty })])
-                    hotwash = await Capstone.run(CapHotwash.self, ["sim", "hotwash"])
+                    hotwash = await Capstone.run(CapHotwash.self, ["sim", "hotwash"] + (postmortemID.isEmpty ? [] : ["--postmortem", postmortemID]))
                 }
             }.disabled(selfRatings.values.filter { !$0.isEmpty }.count < Capstone.objectives.count)
         }

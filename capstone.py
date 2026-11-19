@@ -330,4 +330,37 @@ GOVERNANCE_SNAPSHOT = {
          "date": "2026-11-13", "status": "reported", "source_url": "https://compliancehub.wiki/india-dpdp-consent-manager-november-2026-phase-two-deadline-compliance/", "verify": True},
         {"regime": "India DPDP Rules", "obligation": "Substantive data fiduciary duties",
          "date": "2027-05-13", "status": "reported", "source_url": "https://compliancehub.wiki/india-dpdp-consent-manager-november-2026-phase-two-deadline-compliance/", "verify": True},
+    ],
+    # Reporting clocks for the incident drill (CC-2). Read from the rule texts on 2026-11-17;
+    # whether one applies to a given product is a question for counsel, so every clock is
+    # shown with its as-of date and a verify flag. `families` are the drill scenarios where
+    # the clock may run.
+    "clocks": [
+        {"regime": "GDPR", "obligation": "Personal data breach notice to the supervisory authority (Art. 33)",
+         "window": "without undue delay, and where feasible within 72 hours of awareness", "hours": 72,
+         "status": "applies", "families": ["personal_data_leak", "prompt_injection_excessive_agency"],
+         "source_url": "https://gdpr-info.eu/art-33-gdpr/", "verify": True},
+        {"regime": "India DPDP Rules", "obligation": "Personal data breach intimation to the Board and affected people (Rule 7)",
+         "window": "without delay; detailed report to the Board within 72 hours of awareness", "hours": 72,
+         "status": "reported to apply from 2027-05-13", "families": ["personal_data_leak", "prompt_injection_excessive_agency"],
+         "source_url": "https://www.dpdpa.com/dpdparules/rule7.html", "verify": True},
+        {"regime": "India CERT-In Directions (2022)", "obligation": "Cyber incident report to CERT-In",
+         "window": "within 6 hours of noticing the incident", "hours": 6,
+         "status": "applies", "families": ["prompt_injection_excessive_agency", "personal_data_leak"],
+         "source_url": "https://trilegal.com/knowledge-repository/2022-cert-in-directions-on-reporting-cyber-incidents/", "verify": True},
+        {"regime": "EU AI Act", "obligation": "Serious incident report by providers of high-risk AI systems (Art. 73)",
+         "window": "within 15 days of awareness; 2 days for a widespread infringement; 10 days after a death", "hours": 360,
+         "status": "for Annex III systems, scheduled from 2027-12-02", "families": ["hallucinated_policy", "regression_after_update",
+                                                                                     "prompt_injection_excessive_agency"],
+         "source_url": "https://www.springlex.eu/en/packages/ai-act/ai-act-regulation/article-73/", "verify": True},
     ]}
+
+
+def governance(root: Path) -> dict:
+    """The learner's dated snapshot, with any section it lacks taken from the code's default
+    (so an older snapshot gains the reporting clocks without losing the learner's edits)."""
+    g = Path(root) / "governance_snapshot.json"
+    snap = json.loads(g.read_text()) if g.exists() else {}
+    for k, v in GOVERNANCE_SNAPSHOT.items():
+        snap.setdefault(k, v)
+    return snap

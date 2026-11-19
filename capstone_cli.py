@@ -3,7 +3,8 @@
   init | status | register --kind K --path P | refresh
   review [--check ID ...] | findings | hint --finding ID --attempt TEXT | ask TEXT
   econ --file inputs.json | premortem add|propose|classify ... | faq
-  sim start --seed N | sim next | sim decide ... | sim reply --inject I | sim rate obj=P,... | sim hotwash
+  sim start --seed N [--full [--practice]] | sim next | sim decide ... | sim update --audience A --text T |
+  sim reply --inject I | sim rate --ratings obj=P,... | sim hotwash [--postmortem ID]
   postmortem --artefact ID | sample
   readiness list | rate --item I --rating R [--artefact A --quote Q | --eval-run E] | candidates --item I
             | triage --answers k=y,... | card --artefact A
@@ -129,8 +130,11 @@ def main(argv=None):
     p.add_argument("--text"); p.add_argument("--id"); p.add_argument("--class", dest="klass")
     p.add_argument("--mitigation"); p.add_argument("--owner")
     p = sub.add_parser("postmortem"); p.add_argument("--artefact", required=True)
-    p = sub.add_parser("sim"); p.add_argument("action", choices=["start", "next", "decide", "reply", "rate", "hotwash", "show"])
+    p = sub.add_parser("sim"); p.add_argument("action", choices=["start", "next", "decide", "update", "reply", "rate", "hotwash", "show"])
     p.add_argument("--seed", type=int); p.add_argument("--full", action="store_true"); p.add_argument("--inject")
+    p.add_argument("--practice", action="store_true", help="full session: unlock injects on request, not on the clock")
+    p.add_argument("--audience", default="internal"); p.add_argument("--text", default="")
+    p.add_argument("--postmortem", help="registered postmortem artefact to rate action items from")
     p.add_argument("--severity", default=""); p.add_argument("--containment", default="")
     p.add_argument("--customer", default=""); p.add_argument("--internal", default=""); p.add_argument("--regulator", default="")
     p.add_argument("--golden", default=""); p.add_argument("--rationale", default=""); p.add_argument("--ratings", default="")
@@ -338,7 +342,7 @@ def main(argv=None):
         if a.action == "start":
             seed = a.seed if a.seed is not None else int.from_bytes(os.urandom(2), "big")
             d = sim.Drill(ws, seed)
-            view = d.start(micro=not a.full)
+            view = d.start(micro=not a.full, real_time=(not a.practice) if a.full else None)
             cur.write_text(json.dumps({"seed": seed, "dir": str(d.dir)}))
             return out({"ok": True, "seed": seed, **view})
         if not cur.exists():
@@ -348,10 +352,15 @@ def main(argv=None):
         d.dir = Path(c["dir"])
         st = d.state()
         if a.action == "show":
-            return out({"ok": True, "seed": c["seed"], **sim.public_view(d.scenario(), st["revealed"]),
+            return out({"ok": True, "seed": c["seed"], **d.view(), "updates": d.updates(),
                         "decisions": d.decisions(), "rated": "self" in st, "hotwash": st.get("hotwash", False)})
         if a.action == "next":
-            return out({"ok": True, **d.next()})
+            return out({"ok": True, "seed": c["seed"], **d.next()})
+        if a.action == "update":
+            try:
+                return out({"ok": True, "update": d.update(a.audience, a.text)})
+            except ValueError as e:
+                return out({"ok": False, "error": str(e)})
         if a.action == "decide":
             row = d.decide(a.inject, a.severity, a.containment,
                            {"customer": a.customer, "internal": a.internal, "regulator": a.regulator}, a.golden, a.rationale)
@@ -366,7 +375,7 @@ def main(argv=None):
                 return out({"ok": False, "error": str(e)})
         if a.action == "hotwash":
             try:
-                return out({"ok": True, **d.hotwash()})
+                return out({"ok": True, **d.hotwash(postmortem=a.postmortem)})
             except RuntimeError as e:
                 return out({"ok": False, "error": str(e)})
 
