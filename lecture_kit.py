@@ -1136,7 +1136,9 @@ def _name_allow(live_dir: Path | None = None) -> set[str]:
     """Words that look like names but are not: lectures/name_allow.txt, lectures/glossary.txt and
     the day's slide titles (deck headings name products and cases, not attendees)."""
     import name_guard
+    import glossary
     allow = name_guard.load_allow(LECTURES / "name_allow.txt") | name_guard.load_allow(LECTURES / "glossary.txt")
+    allow |= glossary.allow_words(glossary.load(LECTURES / "glossary.json"))   # CT-3: course terms are never names
     f = live_dir / "slides.jsonl" if live_dir else None
     if f and f.exists():
         for l in f.read_text().splitlines():
@@ -2714,6 +2716,43 @@ def lecture_gaps(folder: Path) -> list[dict]:
     return g
 
 
+def cmd_glossary(a):
+    """CT-3: the course glossary (glossary.py). build | show | add TERM | remove TERM | suggest [ID]."""
+    import glossary, name_guard
+    path = LECTURES / "glossary.json"
+    g = glossary.load(path)
+    out = lambda o: print(json.dumps(o, ensure_ascii=False))
+    if a.action == "build":
+        roster = name_guard.Roster(name_guard.load_roster(PRIVATE), keep=name_guard.staff_names())
+        removed = {t.lower() for t, d in name_guard.load_decisions(PRIVATE).items() if d == "remove"}
+        words = name_guard.load_lower_dictionary()
+        g = glossary.build(LECTURES, lambda w: w.lower() in removed or roster.match(w) is not None,
+                           lambda w: name_guard.in_dictionary(w, words), old=g)
+    elif a.action in ("add", "remove"):
+        if not a.term.strip():
+            return out({"ok": False, "error": "give a term"})
+        g = (glossary.add if a.action == "add" else glossary.remove)(g, a.term.strip())
+    elif a.action == "suggest":
+        folder = find_folder(a.id)
+        lines = [l for l in _lecture_lines(folder) if "/t/" in l["line_id"]]
+        words = name_guard.load_lower_dictionary()
+        rows = glossary.suggestions(lines, g, name_guard.similarity, in_dictionary=lambda w: name_guard.in_dictionary(w, words))
+        (folder / "glossary_suggestions.json").write_text(json.dumps(rows, indent=1, ensure_ascii=False))
+        return out({"ok": True, "lecture": folder.name, "suggestions": len(rows), "top": rows[:10],
+                    "note": "for review only; the transcript is unchanged"})
+    if a.action != "show":
+        path.write_text(json.dumps(g, indent=1, ensure_ascii=False))
+    act = glossary.active(g)
+    kinds = {}
+    for e in act:
+        kinds[e.get("kind", "?")] = kinds.get(e.get("kind", "?"), 0) + 1
+    res = {"ok": True, "terms": len(act), "by_kind": kinds, "manual": sum(1 for e in act if e.get("source") == "manual"),
+           "to_review": len(glossary.review(g)), "removed": sum(1 for e in g.get("terms", []) if e.get("status") == "removed")}
+    if a.json and a.action == "show":
+        res["glossary"], res["review"] = act, [e["term"] for e in glossary.review(g)]
+    out(res)
+
+
 def cmd_gaps(a):
     g = lecture_gaps(find_folder(a.id))
     if a.json:
@@ -3314,6 +3353,9 @@ def main():
     p.add_argument("rest", nargs=argparse.REMAINDER); p.set_defaults(fn=lambda a: __import__("capstone_cli").main(a.rest))
     p = sub.add_parser("health", help="capture health: one probe (audio age and level, newest frame) and any alert")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_health)
+    p = sub.add_parser("glossary", help="CT-3: course terms from slides and the evidence bank (never names); suggestions for review")
+    p.add_argument("action", choices=["build", "show", "add", "remove", "suggest"]); p.add_argument("id", nargs="?", default="last")
+    p.add_argument("--term", default=""); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_glossary)
     p = sub.add_parser("gaps", help="gap ledger for a built lecture (late start, holes) into gaps.json and the manifest")
     p.add_argument("id", nargs="?", default="last"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_gaps)
     p = sub.add_parser("gates", help="the After-class regression gates for a built lecture (model-free)")
