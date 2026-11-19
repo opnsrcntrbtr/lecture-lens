@@ -218,6 +218,15 @@ import Testing
     #expect(LiveData.prequestionDay(nextClassDate: "2030-01-05", today: thu, root: root) == "20300103")   // today's come first
 }
 
+@Test func voiceTurnContractAndAutoStopRule() throws {
+    let v = try JSONDecoder().decode(CapVoice.self, from: Data(#"{"ok": true, "audio": "/tmp/q3.aiff", "voice": "Karen", "transcript": "We measured a drop", "speech": {"words": 4, "wpm": null, "fillers": 1, "fillers_per_100": 25.0, "long_pauses": 0}, "timing": {"transcribe_s": 0.9, "model_s": 1.2, "speak_s": 0.6, "processing_s": 2.7}}"#.utf8))
+    #expect(v.audio == "/tmp/q3.aiff" && v.timing?.processing_s == 2.7)
+    #expect(CapVoice.speechLine(v.speech!).hasPrefix("too short for a pace · 25.0 fillers per 100 words"))
+    #expect(VoiceRecorder.shouldStop(heardSpeech: true, quietFor: 2.1))
+    #expect(!VoiceRecorder.shouldStop(heardSpeech: false, quietFor: 9))      // silence before speaking never stops it
+    #expect(!VoiceRecorder.shouldStop(heardSpeech: true, quietFor: 1.0))
+}
+
 @Test func askResultCarriesRetrievalNote() throws {
     let r = try JSONDecoder().decode(AskResult.self, from: Data(#"{"ok": true, "question": "q", "answer": "a [1]", "sources": [], "model": "m", "prompt_version": "ask-v1", "latency_s": 1.2, "retrieval": "lecture index", "note": "screenpipe is not running; answered from built lectures only"}"#.utf8))
     #expect(r.retrieval == "lecture index" && r.note?.hasPrefix("screenpipe is not running") == true)
