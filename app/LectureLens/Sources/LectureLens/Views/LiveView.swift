@@ -454,12 +454,13 @@ struct LiveData {
         return (0...withinDays).contains(days) ? todayKey(d) : t
     }
 
-    /// Past live-class folders (yyyyMMdd), newest first, today excluded.
+    /// Past live-class folders (yyyyMMdd), newest first; today and later (a folder made ahead
+    /// of class for its agenda and prequestions) are left out.
     static func pastDays(root: URL = Paths.lectures.appendingPathComponent("live"), today: Date = Date()) -> [String] {
-        let f = DateFormatter(); f.dateFormat = "yyyyMMdd"
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd"; f.locale = Locale(identifier: "en_US_POSIX")
         let t = f.string(from: today)
         let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
-        return names.filter { $0.count == 8 && $0.allSatisfy(\.isNumber) && $0 != t }.sorted(by: >)
+        return names.filter { $0.count == 8 && $0.allSatisfy(\.isNumber) && $0 < t }.sorted(by: >)
     }
 
     static func date(_ day: String) -> Date? {
