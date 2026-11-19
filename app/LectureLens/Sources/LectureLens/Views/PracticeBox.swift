@@ -195,6 +195,7 @@ struct Prequestions: Decodable, Sendable {
 /// resolved against what was said, beside your guess.
 struct PrequestionsBox: View {
     let day: String
+    var caption: String? = nil
     @State private var state: Prequestions?
     @State private var guesses: [String: String] = [:]
     @State private var busy = false
@@ -203,10 +204,14 @@ struct PrequestionsBox: View {
         GroupBox("Prequestions (guess before class)") {
             VStack(alignment: .leading, spacing: 8) {
                 let items = state?.prequestions ?? []
+                if let caption { Text(caption).font(.scaled(.caption, weight: .medium)).foregroundStyle(.secondary) }
                 if items.isEmpty {
                     Text("Write a guess for each before class: guessing first helps the answer stick, even when the guess is wrong.")
                         .font(.scaled(.caption)).foregroundStyle(.secondary)
                     Button(busy ? "Writing…" : "Make prequestions from the agenda") { act(["make", "--day", day]) }.disabled(busy)
+                }
+                if let err = state?.error {
+                    Label(err, systemImage: "exclamationmark.triangle").font(.scaled(.caption)).foregroundStyle(.orange)
                 }
                 ForEach(items) { p in
                     VStack(alignment: .leading, spacing: 3) {
@@ -232,7 +237,7 @@ struct PrequestionsBox: View {
                         }
                     }
                 }
-                if !items.isEmpty && items.allSatisfy({ $0.resolved == nil }) {
+                if !items.isEmpty && items.allSatisfy({ $0.resolved == nil }) && day <= LiveData.todayKey() {   // not before the class day
                     Button("Check against the class now") { act(["resolve", "--day", day]) }.disabled(busy)
                         .font(.scaled(.caption))
                 }
@@ -244,8 +249,16 @@ struct PrequestionsBox: View {
     private func act(_ args: [String]) {
         Task {
             busy = true; defer { busy = false }
-            if let r = await Prequestions.run(args), r.ok {
-                state = args.first == "make" || args.first == "resolve" ? r : await Prequestions.run(["show", "--day", day])
+            if let r = await Prequestions.run(args) {
+                if r.ok {
+                    state = args.first == "make" || args.first == "resolve" ? r : await Prequestions.run(["show", "--day", day])
+                } else {   // show why (e.g. no agenda for that day) and keep what was there
+                    state = Prequestions(ok: false, error: r.error ?? "Could not \(args.first ?? "run") prequestions",
+                                         prequestions: state?.prequestions, note: nil)
+                }
+            } else {
+                state = Prequestions(ok: false, error: "The lecture tool did not answer; try again, or run lecture doctor.",
+                                     prequestions: state?.prequestions, note: nil)
             }
         }
     }

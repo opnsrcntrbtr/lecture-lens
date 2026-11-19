@@ -175,3 +175,44 @@ def test_recap_is_scored_on_tldr_points_not_the_whole_sheet(tmp_path):
     r = practice.reveal_recap(store, s["session_id"])
     assert [p["missed"] for p in r["points"]] == [True, False]
     assert "10:19" not in r["points"][0]["text"] and r["content"].startswith("a long cheat sheet")
+
+
+PARTS_AGENDA = """Garden workshop
+Session agenda (two hours)
+Outcome. You can plan a small vegetable bed.
+Part 1. Soil (about 40 minutes)
+- What soil texture means for water.
+- Compost, mulch and when to add each.
+- Exercise: test your own soil.
+Part 2. Planting plan (about 45 minutes)
+- Spacing and companion planting for small beds.
+- Exercise: draw your bed.
+A ten-minute break follows Part 2.
+Part 3. Care through the season (about 30 minutes)
+- Watering schedules and signs of over-watering.
+"""
+
+
+def test_prequestion_items_spread_across_agenda_parts():
+    items = pq.agenda_items(PARTS_AGENDA, 4)
+    assert items == ["Soil: What soil texture means for water.",
+                     "Planting plan: Spacing and companion planting for small beds.",
+                     "Care through the season: Watering schedules and signs of over-watering.",
+                     "Soil: Compost, mulch and when to add each."]
+    assert not any("Exercise" in i or "break" in i for i in pq.agenda_items(PARTS_AGENDA, 10))
+    assert len(pq.agenda_items(PARTS_AGENDA, 10)) == 4          # only the central points exist
+    assert pq.agenda_items(PARTS_AGENDA, 2) == items[:2]
+
+
+def test_resolving_before_class_is_refused_and_changes_nothing(tmp_path, monkeypatch, capsys):
+    import lecture_kit as lk
+    monkeypatch.setattr(lk, "LECTURES", tmp_path)
+    live = tmp_path / "live" / "20300105"
+    pq.save(live, [{"pq_id": "pq1", "agenda_item": "Soil", "text": "Why does mulch keep soil moist?", "guess": None,
+                    "guess_t": None, "late": False, "resolved": None, "got_it": None, "became_card": False}])
+    monkeypatch.setattr(lk, "_index_targets", lambda which: [])
+    monkeypatch.setattr(__import__("sys"), "argv", ["lecture", "prequestions", "resolve", "--day", "20300105", "--json"])
+    lk.main()
+    r = json.loads(capsys.readouterr().out)
+    assert r["ok"] is False and "after the class" in r["error"]
+    assert pq.load(live)[0]["resolved"] is None
