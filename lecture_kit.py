@@ -2253,7 +2253,10 @@ def cmd_prequestions(a):
     if a.action == "mark":
         return out({"ok": True, "prequestion": pq.mark(live, a.id, a.got_it == "y")})
     if a.action == "resolve":
-        return out({"ok": True, "prequestions": resolve_prequestions(day)})
+        try:
+            return out({"ok": True, "prequestions": resolve_prequestions(day)})
+        except LookupError as e:
+            return out({"ok": False, "error": str(e), "prequestions": pq.load(live)})
     return out({"ok": True, "prequestions": pq.load(live)})
 
 
@@ -2546,6 +2549,8 @@ def resolve_prequestions(day: str) -> list[dict]:
     for lid, folder in _index_targets("all"):
         if lid.startswith(day) and not lines:
             lines = [l for l in _lecture_lines(folder) if "/t/" in l["line_id"]]
+    if not lines:   # before class: resolving now would mark every prequestion "not covered"
+        raise LookupError(f"No class transcript for {day} yet: check the prequestions after the class.")
     llm = lambda p: study.llm("You check whether class passages answer questions. JSON only.", p, max_tokens=600,
                               temperature=0.0, slot="build")
     rows = pq.resolve(live, lines, llm, skipped_parts(day))

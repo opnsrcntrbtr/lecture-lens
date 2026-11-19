@@ -37,8 +37,41 @@ Reply with JSON only: {{"answered": {{"P1": [passage numbers], "P2": []}}}}
 ITEM = re.compile(r"^\s*(?:[-*•]|\d+[.)]|part\s+\w+[:.)-]|module\s+\w+[:.)-]|session\s+\w+[:.)-])\s*(.+)$", re.I)
 
 
+PART = re.compile(r"^\s*(?:\d+[.)]\s*)?part\s+(\w+)\s*[·:.\-–—)]*\s*(.+)$", re.I)
+BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+)$")
+# activities and logistics, not ideas to guess at
+SKIP = re.compile(r"^\s*(exercise|activity|break|q\s*&\s*a|questions?\b|recap|wrap|summary|close|closing)\b", re.I)
+
+
+def part_items(agenda: str) -> list[list[str]]:
+    """Per agenda part ('Part 2. Title (about 55 minutes)'), its central points: the bullets
+    under it that are ideas (not exercises, breaks or Q&A), each prefixed with the part's
+    title; a part with no such bullet contributes its title."""
+    parts: list[tuple[str, list[str]]] = []
+    for line in agenda.splitlines():
+        m = PART.match(line)
+        if m:
+            title = re.sub(r"\s*\([^)]*\)\s*", " ", m.group(2)).strip(" ·:.-")
+            parts.append((title, []))
+            continue
+        b = BULLET.match(line)
+        if parts and b and len(b.group(1).split()) >= 3 and not SKIP.match(b.group(1)):
+            parts[-1][1].append(b.group(1).strip())
+    return [[f"{t}: {x}" for x in xs] or [t] for t, xs in parts]
+
+
 def agenda_items(agenda: str, k: int = 5) -> list[str]:
-    """The agenda's main items: bulleted or numbered lines (or 'Part 2: ...'), else its first lines."""
+    """The agenda's main items. With two or more parts, the items are spread across them
+    (the first central point of each part, then the second, ...), so a long first part does
+    not take every prequestion. Otherwise bulleted or numbered lines (or 'Part 2: ...'),
+    else its first lines."""
+    per = part_items(agenda)
+    if len(per) >= 2:
+        out, i = [], 0
+        while len(out) < k and any(i < len(xs) for xs in per):
+            out += [xs[i][:200] for xs in per if i < len(xs)][: k - len(out)]
+            i += 1
+        return out
     items = [m.group(1).strip() for m in (ITEM.match(l) for l in agenda.splitlines()) if m and len(m.group(1).split()) >= 2]
     if not items:
         items = [l.strip() for l in agenda.splitlines() if len(l.split()) >= 3]

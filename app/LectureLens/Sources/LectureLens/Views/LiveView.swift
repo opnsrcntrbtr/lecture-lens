@@ -37,11 +37,24 @@ struct LiveView: View {
         }
     }
 
+    /// The class the prequestions are for: a day picked in the toolbar, else today when today
+    /// already has prequestions, else the next scheduled class within a week (so they can be
+    /// made before class), else today.
+    private var prequestionDay: String {
+        if let pastDay, !pastDay.isEmpty { return pastDay }
+        return LiveData.prequestionDay(nextClassDate: model.nextClass?.date)
+    }
+
+    private var prequestionCaption: String {
+        let title = model.nextClass.flatMap { c in c.date.replacingOccurrences(of: "-", with: "") == prequestionDay ? c.title : nil }
+        return "For \(LiveData.dayLabel(prequestionDay))" + (title.map { " · \($0)" } ?? "")
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 statusBox
-                PrequestionsBox(day: live.day.isEmpty || live.day == "/" ? LiveData.todayKey() : live.day)
+                PrequestionsBox(day: prequestionDay, caption: prequestionCaption)
                 askNowBox
                 curatedBox
                 qaBox
@@ -426,6 +439,20 @@ struct LiveData {
     var day: String { folder.lastPathComponent }
 
     static func todayKey(_ d: Date = Date()) -> String { let f = DateFormatter(); f.dateFormat = "yyyyMMdd"; return f.string(from: d) }
+
+    /// The day prequestions are made for (yyyyMMdd): today when today already has them,
+    /// else the next class from the calendar ("yyyy-MM-dd") when it is within `withinDays`,
+    /// else today.
+    static func prequestionDay(nextClassDate: String?, today: Date = Date(), withinDays: Int = 7,
+                               root: URL = Paths.lectures.appendingPathComponent("live")) -> String {
+        let t = todayKey(today)
+        if FileManager.default.fileExists(atPath: root.appendingPathComponent("\(t)/prequestions.json").path) { return t }
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
+        guard let s = nextClassDate, let d = f.date(from: s) else { return t }
+        let cal = Calendar.current
+        let days = cal.dateComponents([.day], from: cal.startOfDay(for: today), to: cal.startOfDay(for: d)).day ?? Int.max
+        return (0...withinDays).contains(days) ? todayKey(d) : t
+    }
 
     /// Past live-class folders (yyyyMMdd), newest first, today excluded.
     static func pastDays(root: URL = Paths.lectures.appendingPathComponent("live"), today: Date = Date()) -> [String] {

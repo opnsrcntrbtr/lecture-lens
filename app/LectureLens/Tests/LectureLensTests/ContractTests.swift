@@ -205,6 +205,19 @@ import Testing
     #expect(LiveData.dayLabel("20300108").hasSuffix("8 Jan"))
 }
 
+@Test func prequestionsTargetTheNextClassWithinAWeek() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("live-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let thu = try #require(LiveData.date("20300103"))
+    #expect(LiveData.prequestionDay(nextClassDate: "2030-01-05", today: thu, root: root) == "20300105")
+    #expect(LiveData.prequestionDay(nextClassDate: "2030-01-03", today: thu, root: root) == "20300103")
+    #expect(LiveData.prequestionDay(nextClassDate: "2030-01-19", today: thu, root: root) == "20300103")   // too far ahead
+    #expect(LiveData.prequestionDay(nextClassDate: nil, today: thu, root: root) == "20300103")
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("20300103"), withIntermediateDirectories: true)
+    try Data("[]".utf8).write(to: root.appendingPathComponent("20300103/prequestions.json"))
+    #expect(LiveData.prequestionDay(nextClassDate: "2030-01-05", today: thu, root: root) == "20300103")   // today's come first
+}
+
 @Test func askResultCarriesRetrievalNote() throws {
     let r = try JSONDecoder().decode(AskResult.self, from: Data(#"{"ok": true, "question": "q", "answer": "a [1]", "sources": [], "model": "m", "prompt_version": "ask-v1", "latency_s": 1.2, "retrieval": "lecture index", "note": "screenpipe is not running; answered from built lectures only"}"#.utf8))
     #expect(r.retrieval == "lecture index" && r.note?.hasPrefix("screenpipe is not running") == true)
