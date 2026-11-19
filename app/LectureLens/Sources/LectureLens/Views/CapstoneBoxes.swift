@@ -166,15 +166,18 @@ struct PanelBox: View {
     @State private var answer = ""
     @State private var scores: [String: Int] = [:]
     @State private var busy = false
+    @State private var voice = false
 
     var body: some View {
-        GroupBox("Panel defence (text)") {
+        GroupBox("Panel defence") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Up to three reviewers, each with different documents. One question at a time; one follow-up that quotes your answer; they do not concede without new evidence and they do not score. You score yourself first, then a separate critic rates the transcript.")
                     .font(.scaled(.caption)).foregroundStyle(.secondary)
                 HStack {
                     Picker("Type", selection: $type) { Text("Panel").tag("panel"); Text("Leadership review").tag("leadership") }.frame(width: 260)
                     Picker("Pressure", selection: $pressure) { Text("Neutral").tag("neutral"); Text("Sceptical").tag("sceptical"); Text("Interrupting").tag("interrupting") }.frame(width: 240)
+                    Toggle("Voice", isOn: $voice).toggleStyle(.switch)
+                        .help("Hear each reviewer in a built-in macOS voice and answer out loud; your answer is transcribed on this Mac")
                     Button(busy ? "Starting…" : "Start") { act(["panel", "start", "--type", type, "--pressure", pressure]) }.disabled(busy)
                 }
                 if let p {
@@ -189,7 +192,10 @@ struct PanelBox: View {
                             if let c = t.criterion { Text(c).font(.scaled(.caption2)).foregroundStyle(.tertiary) }
                         }
                     }
-                    if p.awaiting_answer == true {
+                    if p.awaiting_answer == true && voice {
+                        VoiceAnswerControls(turnKey: p.turns?.last?.turn ?? 0) { self.p = $0 }
+                        Button("End session") { act(["panel", "finish"]) }.disabled(busy)
+                    } else if p.awaiting_answer == true {
                         TextEditor(text: $answer).frame(minHeight: 70).overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
                         HStack {
                             Button(busy ? "Waiting for the panel…" : "Answer") { let a = answer; answer = ""; act(["panel", "answer", "--text", a]) }
