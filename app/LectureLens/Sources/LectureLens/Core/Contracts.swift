@@ -87,6 +87,11 @@ struct CaptureHealth: Decodable, Sendable {
     struct Record: Decodable, Sendable {
         let t: String; let capture_running: Bool; let audio_chunk_age_s: Double?; let audio_level_db: Double?
         let frame_age_s: Double?; let frames_expected: Bool?; let status: String
+        /// How far behind the engine saves audio (s after a 30-s chunk ends), and what the
+        /// engine itself reports; absent from older records.
+        var audio_write_lag_s: Double? = nil
+        var audio_unsaved_s: Double? = nil
+        var engine_audio_active: Bool? = nil
     }
     struct Alert: Decodable, Sendable { let status: String; let since: String; let lasted_s: Int; let message: String }
 
@@ -94,15 +99,24 @@ struct CaptureHealth: Decodable, Sendable {
         switch status {
         case "silent_audio": "silent audio"
         case "audio_stalled": "audio stopped"
+        case "audio_behind": "audio saving behind"
         case "no_frames": "no screen frames"
         case "stopped": "not capturing"
         default: "ok"
         }
     }
 
+    /// Restart guard: about how many seconds of audio a stop would drop now (the chunk being
+    /// recorded plus what is waiting to be saved), or nil when nothing would be lost.
+    static func unsavedAudioSeconds(_ r: Record) -> Int? {
+        guard r.capture_running, r.status != "stopped" else { return nil }
+        return 30 + Int(max(0, r.audio_unsaved_s ?? r.audio_write_lag_s ?? 30))
+    }
+
     static func detail(_ r: Record) -> String {
         var parts: [String] = []
-        if let a = r.audio_chunk_age_s { parts.append("audio \(Int(a)) s ago") }
+        if let a = r.audio_chunk_age_s { parts.append("audio saved \(Int(a)) s ago") }
+        if let u = r.audio_unsaved_s, u >= 60 { parts.append("\(Int(u)) s not saved yet") }
         if let l = r.audio_level_db { parts.append(String(format: "%.0f dB", l)) }
         if r.frames_expected == true, let f = r.frame_age_s { parts.append("frame \(Int(f)) s ago") }
         return parts.isEmpty ? label(r.status) : label(r.status) + " · " + parts.joined(separator: " · ")
