@@ -5,6 +5,8 @@ struct CaptureView: View {
     @State private var domains: [String] = []
     @State private var newDomain = ""
     @State private var probing = false
+    /// Restart guard: seconds of unsaved audio a stop would drop, while asking to confirm.
+    @State private var stopWarning: Int?
 
     var body: some View {
         ScrollView {
@@ -96,7 +98,29 @@ struct CaptureView: View {
                                                   set: { m in Task { await model.setMode(m) } })) {
                     Text("Auto").tag("auto"); Text("Portal").tag("portal"); Text("Live").tag("live")
                 }.pickerStyle(.segmented).frame(width: 220)
-                Button("Stop", systemImage: "stop.fill") { Task { await model.stopCapture() } }.controlSize(.large)
+                Button("Stop", systemImage: "stop.fill") {
+                    if let h = model.captureHealth, let s = CaptureHealth.unsavedAudioSeconds(h.record) {
+                        stopWarning = s
+                    } else {
+                        Task { await model.stopCapture() }
+                    }
+                }
+                    .controlSize(.large)
+                    .confirmationDialog("Stop capture now?", isPresented: Binding(get: { stopWarning != nil },
+                                                                                  set: { if !$0 { stopWarning = nil } }),
+                                        titleVisibility: .visible) {
+                        Button("Stop anyway", role: .destructive) { stopWarning = nil; Task { await model.stopCapture() } }
+                        Button("Keep capturing", role: .cancel) { stopWarning = nil }
+                    } message: {
+                        Text("About \(stopWarning ?? 60) s of audio is recorded but not saved yet and would be lost. "
+                             + "If a health alert brought you here, wait two minutes first: saving usually catches up, "
+                             + "and audio keeps arriving.")
+                    }
+                Button("Restart audio", systemImage: "arrow.clockwise") { model.restartAudio() }
+                    .controlSize(.large)
+                    .disabled(model.jobs.jobs.contains { $0.running && $0.title == "Restart audio" })
+                    .help("Restart audio capture only. It first waits until recorded audio is saved, so nothing is dropped; screen capture keeps running.")
+                    .accessibilityLabel("Restart audio capture")
             } else {
                 Button("Start capture", systemImage: "record.circle") { Task { await model.startCapture() } }
                     .controlSize(.large).buttonStyle(.borderedProminent)

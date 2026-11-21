@@ -394,6 +394,14 @@ final class AppModel {
         }
     }
 
+    /// Restart audio capture only, once recorded audio is saved (`lecture audio-restart`).
+    func restartAudio() {
+        jobs.enqueue("Restart audio", Paths.tool("lecture"), ["audio-restart"]) { [weak self] _ in
+            Task { await self?.refreshFast() }
+            self?.checkCaptureHealth()
+        }
+    }
+
     func ingest(_ folderName: String) {
         jobs.enqueue("Import Zoom files", Paths.tool("lecture"), ["ingest", folderName]) { [weak self] _ in
             Task { await self?.loadSessions() }

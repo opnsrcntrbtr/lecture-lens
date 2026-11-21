@@ -1,8 +1,14 @@
 """Capture health, silent-audio and no-frames alerts, and the gap ledger (CT-1).
 
-Pure functions decide; small readers gather the three values the engine leaves behind (age
-of the newest audio chunk, that chunk's signal level, age of the newest kept frame). Nothing
-here starts, stops or restarts capture: the app is the only place that happens.
+Pure functions decide; small readers gather the values the engine leaves behind (when the
+newest audio chunk was saved, its signal level, age of the newest kept frame) and, when the
+engine answers, its own view (is audio arriving, is the frame loop healthy). Nothing here
+starts, stops or restarts capture: the app is the only place that happens.
+
+Audio freshness is when a chunk was *saved*, not when it started. The engine saves each 30-s
+chunk 30-90 s after it starts (the 21 Nov class: up to 82 s), so measuring from the start
+raised false 'audio stalled' alerts while audio was flowing, and stopping capture then lost
+the minute still in memory.
 
   probe(...)          one record {t, capture_running, audio_chunk_age_s, audio_level_db,
                       frame_age_s, frames_expected, status}
@@ -20,12 +26,17 @@ from pathlib import Path
 
 PROBE_EVERY_S = 30
 ALERT_AFTER_S = 90          # a failure must last this long before anyone is told
-AUDIO_STALE_S = 90          # no new audio chunk for this long: the engine stopped writing
+AUDIO_STALE_S = 90          # no audio chunk saved for this long: the engine stopped writing
 FRAME_STALE_S = 90          # no kept frame while frames are expected
+STATIC_FRAME_S = 600        # with the engine's frame loop healthy, an unchanged screen keeps no
+                            # new frame (duplicates are skipped): only this long is a problem
+CHUNK_S = 30                # the engine's audio chunk length
+UNSAVED_WARN_S = 120        # recorded audio not yet saved: a stop or restart would drop it
+ALERT_AFTER = {"audio_behind": 180}   # per-status alert delays where ALERT_AFTER_S is too eager
 SILENCE_DB = -90.0          # digital silence (all-zero samples) only; a quiet break is not silent
 LATE_START_S = 5 * 60       # Spec C: calendar start to first capture
 HOLE_S = 3 * 60             # Spec C: an internal hole
-STATUSES = ("ok", "stopped", "audio_stalled", "silent_audio", "no_frames")
+STATUSES = ("ok", "stopped", "audio_stalled", "audio_behind", "silent_audio", "no_frames")
 CHUNK_NAME = re.compile(r"_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})\.(?:mp4|m4a|wav)$")
 
 
@@ -45,28 +56,65 @@ def parse_t(s) -> dt.datetime | None:
 # ------------------------------------------------------------------ decisions (pure)
 def probe(now: dt.datetime, capture_running: bool, audio_chunk_t: dt.datetime | None,
           audio_level_db: float | None, frame_t: dt.datetime | None, frames_expected: bool,
-          drm_paused: bool = False) -> dict:
-    """One health record. Checked in order: stopped, audio stalled, silent audio, no frames.
-    Frames are only expected while a meeting runs (and never while protected video pauses
-    the screen); quiet speech is never 'silent': only digital silence is."""
+          drm_paused: bool = False, engine: dict | None = None,
+          audio_write_lag_s: float | None = None, audio_unsaved_s: float | None = None) -> dict:
+    """One health record. Checked in order: stopped, audio stalled (or behind), silent audio,
+    no frames. `audio_chunk_t` is when the newest chunk was saved. `engine` is
+    engine_signals(): when it says audio is arriving, a slow save is 'audio_behind', not a
+    stall; when its frame loop is healthy, an unchanged screen is not 'no_frames' until
+    STATIC_FRAME_S. Frames are only expected while a meeting runs (and never while protected
+    video pauses the screen); quiet speech is never 'silent': only digital silence is."""
     now = _utc(now)
+    engine = engine or {}
     a_age = (now - _utc(audio_chunk_t)).total_seconds() if audio_chunk_t else None
     f_age = (now - _utc(frame_t)).total_seconds() if frame_t else None
+    frame_limit = STATIC_FRAME_S if engine.get("frame_ok") else FRAME_STALE_S
     if not capture_running:
         status = "stopped"
     elif a_age is None or a_age > AUDIO_STALE_S:
-        status = "audio_stalled"
+        status = "audio_behind" if engine.get("audio_active") else "audio_stalled"
+    elif audio_unsaved_s is not None and audio_unsaved_s > UNSAVED_WARN_S:
+        status = "audio_behind"     # chunks still being saved, but minutes of audio wait in memory
     elif audio_level_db is not None and audio_level_db <= SILENCE_DB:
         status = "silent_audio"
-    elif frames_expected and not drm_paused and (f_age is None or f_age > FRAME_STALE_S):
+    elif frames_expected and not drm_paused and (f_age is None or f_age > frame_limit):
         status = "no_frames"
     else:
         status = "ok"
-    return {"t": now.isoformat(timespec="seconds"), "capture_running": bool(capture_running),
-            "audio_chunk_age_s": None if a_age is None else round(a_age, 1),
-            "audio_level_db": None if audio_level_db is None else round(audio_level_db, 1),
-            "frame_age_s": None if f_age is None else round(f_age, 1),
-            "frames_expected": bool(frames_expected and not drm_paused), "status": status}
+    rec = {"t": now.isoformat(timespec="seconds"), "capture_running": bool(capture_running),
+           "audio_chunk_age_s": None if a_age is None else round(a_age, 1),
+           "audio_level_db": None if audio_level_db is None else round(audio_level_db, 1),
+           "frame_age_s": None if f_age is None else round(f_age, 1),
+           "frames_expected": bool(frames_expected and not drm_paused), "status": status}
+    if audio_write_lag_s is not None:
+        rec["audio_write_lag_s"] = round(audio_write_lag_s, 1)
+    if audio_unsaved_s is not None:
+        rec["audio_unsaved_s"] = round(max(0.0, audio_unsaved_s), 1)
+    if "audio_active" in engine:
+        rec["engine_audio_active"] = bool(engine["audio_active"])
+    if "frame_ok" in engine:
+        rec["engine_frame_ok"] = bool(engine["frame_ok"])
+    return rec
+
+
+def engine_signals(health: dict, now: dt.datetime) -> dict:
+    """What the engine's /health says: audio_active (its audio device had activity within
+    AUDIO_STALE_S) and frame_ok (its frame loop reports ok). Missing fields stay missing."""
+    out: dict = {}
+    if not health:
+        return out
+    m = re.search(r"active \(last activity: (\d+)s ago\)", str(health.get("device_status_details") or ""))
+    if m:
+        out["audio_active"] = int(m[1]) <= AUDIO_STALE_S
+    elif health.get("last_audio_timestamp"):
+        t = parse_t(health["last_audio_timestamp"])
+        if t:
+            out["audio_active"] = (_utc(now) - t).total_seconds() <= AUDIO_STALE_S
+    if health.get("audio_db_write_stalled"):
+        out["audio_active"] = False          # arriving but not being saved: a real stall
+    if "frame_status" in health:
+        out["frame_ok"] = health.get("frame_status") == "ok"
+    return out
 
 
 def alert(records: list[dict], after_s: float = ALERT_AFTER_S) -> dict | None:
@@ -85,13 +133,16 @@ def alert(records: list[dict], after_s: float = ALERT_AFTER_S) -> dict | None:
             break
         first = r
     lasted = (parse_t(last["t"]) - parse_t(first["t"])).total_seconds()
-    if lasted < after_s:
+    if lasted < max(after_s, ALERT_AFTER.get(st, 0)):
         return None
     return {"status": st, "since": first["t"], "lasted_s": round(lasted), "message": MESSAGES[st]}
 
 
 MESSAGES = {
-    "audio_stalled": "No new audio for over 90 seconds: the engine may have stopped writing. Check Capture.",
+    "audio_stalled": "No audio saved for over 90 seconds and the engine reports no audio: it may have stopped. "
+                     "Check Capture before restarting: a restart drops the audio not yet saved.",
+    "audio_behind": "Audio is arriving but is being saved slowly (over 90 seconds behind). Keep capturing: "
+                    "stopping now would lose the unsaved minute. It usually catches up.",
     "silent_audio": "Audio is digital silence: macOS may be refusing the audio tap. Check Screen & System Audio "
                     "Recording for Lecture Lens.",
     "no_frames": "No screen frames kept for over 90 seconds while the meeting runs. Keep the meeting window "
@@ -174,6 +225,32 @@ def newest_chunk(data_dir: Path) -> tuple[Path | None, dt.datetime | None]:
         if t and (best[1] is None or t > best[1]):
             best = (p, t)
     return best
+
+
+def saved_t(path: Path) -> dt.datetime | None:
+    """When a chunk file was last written (its save time), UTC."""
+    try:
+        return dt.datetime.fromtimestamp(Path(path).stat().st_mtime, dt.timezone.utc)
+    except OSError:
+        return None
+
+
+def unsaved_s(newest: dict[str, tuple[Path, dt.datetime]], now: dt.datetime) -> float | None:
+    """Seconds of recorded audio not saved yet: now minus the end of the newest saved chunk
+    (the 21 Nov 11:04 case: chunks kept being saved, each one 4 minutes late)."""
+    starts = [_utc(t) for _, t in newest.values()]
+    return max(0.0, (_utc(now) - max(starts)).total_seconds() - CHUNK_S) if starts else None
+
+
+def newest_saved(newest: dict[str, tuple[Path, dt.datetime]]) -> tuple[dt.datetime | None, float | None]:
+    """From newest_chunks(): the newest save time over all devices, and that chunk's save lag
+    (seconds after its 30-s span ended)."""
+    best, lag = None, None
+    for p, start in newest.values():
+        w = saved_t(p)
+        if w and (best is None or w > best):
+            best, lag = w, max(0.0, (w - _utc(start)).total_seconds() - CHUNK_S)
+    return best, lag
 
 
 def newest_chunks(data_dir: Path) -> dict[str, tuple[Path, dt.datetime]]:

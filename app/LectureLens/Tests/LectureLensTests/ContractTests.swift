@@ -226,7 +226,11 @@ import Testing
 @Test func decodesCaptureHealthAndGates() throws {
     let h = try JSONDecoder().decode(CaptureHealth.self, from: Data(#"{"ok": true, "record": {"t": "2030-01-05T04:31:30+00:00", "capture_running": true, "audio_chunk_age_s": 12.0, "audio_level_db": -120.0, "frame_age_s": 4.0, "frames_expected": true, "status": "silent_audio"}, "alert": {"status": "silent_audio", "since": "2030-01-05T04:30:00+00:00", "lasted_s": 90, "message": "Audio is digital silence"}, "mode": "live", "in_class": true}"#.utf8))
     #expect(h.alert?.status == "silent_audio" && CaptureHealth.label("no_frames") == "no screen frames")
-    #expect(CaptureHealth.detail(h.record).hasPrefix("silent audio · audio 12 s ago"))
+    #expect(CaptureHealth.detail(h.record).hasPrefix("silent audio · audio saved 12 s ago"))
+    #expect(CaptureHealth.unsavedAudioSeconds(h.record) == 60)          // older records: assume 30 s behind
+    let behind = try JSONDecoder().decode(CaptureHealth.Record.self, from: Data(#"{"t": "2030-01-05T04:40:00+00:00", "capture_running": true, "audio_chunk_age_s": 100.0, "audio_level_db": -4.0, "frame_age_s": 5.0, "frames_expected": true, "status": "audio_behind", "audio_write_lag_s": 70.0, "audio_unsaved_s": 95.0, "engine_audio_active": true}"#.utf8))
+    #expect(CaptureHealth.label(behind.status) == "audio saving behind" && CaptureHealth.unsavedAudioSeconds(behind) == 125)
+    #expect(CaptureHealth.detail(behind).contains("95 s not saved yet") && behind.engine_audio_active == true)
     let r = try JSONDecoder().decode(AfterClassReport.self, from: Data(#"{"ok": true, "steps": [], "gates": [{"name": "names_left", "value": 0, "threshold": 0, "ok": true}, {"name": "title_from_candidates", "value": "Garden", "threshold": "calendar|portal|first slide", "ok": false}, {"name": "quiz_lint_pass_rate", "value": null, "threshold": 1.0, "ok": true}], "needs_review": true}"#.utf8))
     #expect(r.needs_review == true && r.gates?.count == 3 && r.gates?[1].value?.description == "Garden")
     #expect(r.gates?[0].value?.description == "0")
