@@ -172,6 +172,15 @@ final class AppModel {
         Task { await loadSessions() }
     }
 
+    /// Fold lectures into a destination lecture (background job; it rebuilds notes and cards).
+    func consolidate(into dest: Session, from sources: [Session]) {
+        guard !sources.isEmpty else { return }
+        jobs.enqueue("Consolidate into \(dest.displayTitle)", Paths.tool("lecture"),
+                     ["merge-lectures", CourseForm.lectureArg(dest), "--from"] + sources.map(CourseForm.lectureArg)) { [weak self] _ in
+            Task { await self?.loadSessions() }
+        }
+    }
+
     func refreshAll(probeVision: Bool) async {
         await loadCourses()
         await refreshFast()
