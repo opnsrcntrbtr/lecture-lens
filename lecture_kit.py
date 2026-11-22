@@ -42,6 +42,10 @@ SITE = os.environ.get("STUDY_LECTURE_SITE", "learn.example.edu")   # your course
 # The portal's own name as it appears in window titles (stripped from titles; a bare match is a generic title).
 PORTAL = os.environ.get("STUDY_PORTAL_NAME", "").strip()
 COURSE = os.environ.get("STUDY_COURSE_NAME", "My course")
+# Window-title suffixes to drop and page titles that name the site, not the lecture; a course adds
+# its own (courses.json: title_strip, generic_titles).
+TITLE_STRIP = [t for t in os.environ.get("STUDY_TITLE_STRIP", "").split("|") if t.strip()]
+GENERIC_EXTRA = [t for t in os.environ.get("STUDY_GENERIC_TITLES", "").split("|") if t.strip()]
 # Native apps whose windows are live classes (Zoom webinars): no browser URL to match.
 LIVE_APPS = [a.strip() for a in os.environ.get("STUDY_LIVE_APPS", "zoom").split(",") if a.strip()]
 # A gap longer than this ends a lecture session.
@@ -237,7 +241,7 @@ def audio_between(con, start, end, device_filter=None):
 def title_of(frames):
     """Lecture title: the most common browser window title, cleaned of chrome."""
     from collections import Counter
-    chrome = "|".join(["Google Chrome"] + ([re.escape(PORTAL)] if PORTAL else []))
+    chrome = "|".join(["Google Chrome"] + ([re.escape(PORTAL)] if PORTAL else []) + [re.escape(t.strip()) for t in TITLE_STRIP])
     names = [re.sub(rf"\s*[-–|]\s*({chrome}).*$", "", (f["window_name"] or "").strip())
              for f in frames if f["window_name"]]
     names = [n for n in names if len(n) > 3]
@@ -619,7 +623,7 @@ def make_notes(title, source):
     return study.llm(study.SYS_TUTOR,
         f"Lecture: {title}\n\n{source}\n\n"
         "Write study notes with these sections: ## TL;DR (5 bullets), ## Key concepts, "
-        "## Frameworks & models, ## Worked examples and numbers, ## How this applies to building AI products, "
+        "## Frameworks & models, ## Worked examples and numbers, " f"## How this applies to {study.FOCUS}, "
         "## Action items for the learner, ## Open questions. "
         "Cite timecodes like [00:12:30] and slides like [slide 4]. "
         "Ignore player UI and navigation text. Speech-to-text often misspells names and numbers: "
@@ -889,7 +893,8 @@ def digest_parts(title, parts, say=lambda *a: None):
 
 
 GENERIC_TITLE = re.compile(r"^(" + (re.escape(PORTAL) + r"\b.*|" if PORTAL else "")
-                           + r"learning experience platform|untitled lecture|zoom\b.*)$", re.I)
+                           + r"learning experience platform|untitled lecture|zoom\b.*"
+                           + "".join("|" + g for g in GENERIC_EXTRA) + r")$", re.I)
 
 def lecture_title(session, transcript):
     """A portal player's page title is often generic ('<Portal> - Learning Experience
@@ -3204,10 +3209,66 @@ def cmd_finish(a):
             print(f"~ {e}")
 
 
+def check_drm(con, hours=24, sample=24):
+    """Is the active course's player blanked by DRM under screen capture? Looks at frames kept
+    from the course's sites in the last `hours` (markers carry no image and are skipped)."""
+    import tempfile
+    import courses
+    from PIL import Image
+    c = courses.active()
+    if c is None:
+        return {"ok": False, "error": "no course registry: nothing to check"}
+    start = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
+    sites = c.get("sites") or [SITE]
+    frames = [f for f in frames_since(con, start)
+              if f.get("capture_trigger") != "drm_marker" and any(courses.site_matches(x, f.get("browser_url") or "") for x in sites)]
+    step = max(1, len(frames) // sample)
+    shares = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in frames[::step][:sample]:
+            img = frame_image(con, f, tmp)
+            if not img:
+                continue
+            try:
+                with Image.open(img) as im:
+                    shares.append(courses.dark_share(im))
+            except OSError:
+                continue
+    verdict = courses.drm_verdict(shares)
+    out = {"ok": True, "course": c["id"], "frames_seen": len(frames), "drm_setting": c.get("drm", False), **verdict}
+    if c.get("drm") == "auto":
+        st = courses.record_drm(c["id"], verdict)
+        out["drm_on"] = courses.drm_on(c, st)
+        if verdict.get("blanked"):
+            out["next"] = "Restart capture from the app: the engine then pauses the screen on these pages and keeps audio."
+    return out
+
+
+def cmd_courses(a):
+    import courses
+    if a.action == "list":
+        s = courses.summary()
+        s["active"] = os.environ.get("STUDY_COURSE_ID") or s["default"]
+        if a.json: print(json.dumps(s)); return
+        for c in s["courses"]:
+            mark = "*" if c["id"] == s["active"] else " "
+            print(f"{mark} {c['id']:<30} {c['kind']:<10} {c['lectures']:>3} lectures · {', '.join(c['sites']) or 'calendar'} · {c['root']}")
+        return
+    if a.action == "which":
+        cid = courses.for_url(a.url or "")
+        print(json.dumps({"ok": True, "url": a.url, "course": cid}) if a.json else (cid or "no course matches")); return
+    r = check_drm(db(), hours=a.hours)
+    print(json.dumps(r) if a.json else json.dumps(r, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser(prog="lecture", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("courses", help="courses side by side: list, which <url>, check-drm (pick one with --course <id>)")
+    p.add_argument("action", nargs="?", default="list", choices=["list", "which", "check-drm"])
+    p.add_argument("url", nargs="?"); p.add_argument("--hours", type=int, default=24)
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_courses)
     p = sub.add_parser("list"); p.add_argument("--since", default="7d")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_list)
     p = sub.add_parser("build"); p.add_argument("id", nargs="?", default="last",

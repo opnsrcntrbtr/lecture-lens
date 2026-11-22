@@ -7,6 +7,12 @@
 set -e
 DIR="${0:A:h}"; STATE="$HOME/.screenpipe"; mkdir -p "$STATE"
 set -a; source "$DIR/.env"; set +a
+# Courses side by side (courses.py): their sites join the portal allowlist, and pages of a course
+# whose player blanks under capture (drm, or drm: auto once `lecture courses check-drm` saw it)
+# join the DRM list.
+course_sites="$(/usr/bin/python3 "$DIR/courses.py" sites 2>/dev/null)"
+course_drm="$(/usr/bin/python3 "$DIR/courses.py" drm 2>/dev/null)"
+[[ -n "$course_drm" ]] && SP_DRM_URLS="${SP_DRM_URLS:+$SP_DRM_URLS,}$course_drm"
 [[ -x "$SP_BIN" ]] || { echo "screenpipe binary not found at $SP_BIN (install screenpipe and set SP_BIN in .env)"; exit 1; }
 
 fg=0; watch=1; mode=""
@@ -59,6 +65,9 @@ if [[ "$mode" == portal ]]; then
     done < "$DIR/allowed-domains.txt"
   fi
   for d in ${(s:,:)SP_URL_ALLOW}; do d="${d//[[:space:]]/}"; [[ -n "$d" ]] && domains+=("$d"); done
+  # every course's sites (courses/courses.json): one engine captures them all; each course's tools
+  # only read frames from its own sites
+  for d in ${(s:,:)course_sites}; do [[ -n "$d" ]] && domains+=("$d"); done
   domains=(${(u)domains})
   for d in $domains; do args+=(--url-allow "$d"); done
   echo "mode: portal · apps: $SP_PORTAL_APPS · sites: ${(j:, :)domains:-ALL (allowlist empty)}"

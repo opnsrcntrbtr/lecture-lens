@@ -25,6 +25,12 @@ struct MainView: View {
             List(Screen.allCases, selection: $model.screen) { s in
                 Label(s.rawValue, systemImage: s.symbol).font(.scaled(.body)).tag(s)
             }
+            .safeAreaInset(edge: .top) {
+                if let list = model.courseList, list.choices.count > 1 {
+                    CoursePicker(model: model, courses: list.choices)
+                        .padding(.horizontal, 10).padding(.top, 6)
+                }
+            }
             .navigationSplitViewColumnWidth(min: 150, ideal: 150 + 40 * (TextScale.current - 1) * 2, max: 320)
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 6) {
@@ -34,16 +40,49 @@ struct MainView: View {
                 }.padding(10)
             }
         } detail: {
-            switch model.screen ?? .capture {
-            case .capture: CaptureView(model: model)
-            case .live: LiveView(model: model)
-            case .lectures: LecturesView(model: model)
-            case .review: ReviewView(model: model)
-            case .ask: AskView(model: model)
-            case .capstone: CapstoneView(model: model)
-            case .evals: EvalsView(model: model)
-            case .settings: SettingsView(model: model)
+            Group {
+                switch model.screen ?? .capture {
+                case .capture: CaptureView(model: model)
+                case .live: LiveView(model: model)
+                case .lectures: LecturesView(model: model)
+                case .review: ReviewView(model: model)
+                case .ask: AskView(model: model)
+                case .capstone: CapstoneView(model: model)
+                case .evals: EvalsView(model: model)
+                case .settings: SettingsView(model: model)
+                }
+            }
+            .id(model.course?.id ?? "")     // a course switch rebuilds the screen with that course's data
+        }
+    }
+}
+
+/// Which course the app shows. Capture is shared; each course keeps its own lectures,
+/// study aids, review, Ask, vault folder and NotebookLM folder.
+struct CoursePicker: View {
+    @Bindable var model: AppModel
+    let courses: [CourseList.Course]
+
+    var body: some View {
+        Menu {
+            ForEach(courses) { c in
+                Button {
+                    model.selectCourse(c)
+                } label: {
+                    if c.id == model.course?.id { Label(c.name, systemImage: "checkmark") } else { Text(c.name) }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: model.course?.selfPaced == true ? "play.rectangle" : "person.3")
+                    .accessibilityHidden(true)
+                Text(model.course?.label ?? "Course").font(.scaled(.callout)).lineLimit(1)
             }
         }
+        .menuStyle(.borderlessButton)
+        .help(model.course.map { "Showing \($0.name). Capture records every course's sites; switch to see another course's lectures." } ?? "Pick a course")
+        .accessibilityLabel("Course: \(model.course?.name ?? "none")")
+        .accessibilityHint("Shows another course's lectures, study aids and review")
+        .accessibilityIdentifier("course.picker")
     }
 }

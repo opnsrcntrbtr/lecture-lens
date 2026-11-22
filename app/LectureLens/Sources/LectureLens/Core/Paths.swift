@@ -9,7 +9,11 @@ enum Paths {
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("lecture-lens")
     }
-    static var lectures: URL { study.appendingPathComponent("lectures") }
+    /// The selected course's lecture folder (CourseStore); the default course's is lectures/.
+    static var lectures: URL {
+        if let r = CourseStore.root { return URL(fileURLWithPath: (r as NSString).expandingTildeInPath) }
+        return study.appendingPathComponent("lectures")
+    }
     static var results: URL { study.appendingPathComponent("eval/results") }
     static var feedback: URL { study.appendingPathComponent("feedback/feedback.jsonl") }
     static var envFile: URL { study.appendingPathComponent(".env") }
@@ -26,6 +30,8 @@ enum Paths {
                      study.deletingLastPathComponent().appendingPathComponent("target/release").path]
         env["PATH"] = (extra + [env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"]).joined(separator: ":")
         env["PYTHONUNBUFFERED"] = "1"
+        // every tool works on the course shown in the app (courses.py reads STUDY_COURSE)
+        if let c = CourseStore.id { env["STUDY_COURSE"] = c } else { env.removeValue(forKey: "STUDY_COURSE") }
         return env
     }
 }
