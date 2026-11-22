@@ -1493,6 +1493,22 @@ def _manifest_window(con, ident):
     return []
 
 
+def _auto_drm(con, quiet=False):
+    """A drm: auto course decides once, from the frames behind its first build: if the player is
+    blanked, its pages join the DRM list (screen paused there, audio kept) from the next capture."""
+    import courses
+    c = courses.active()
+    if not c or c.get("drm") != "auto" or (courses.load_state().get("drm") or {}).get(c["id"]):
+        return None
+    try:
+        r = check_drm(con, hours=72)
+    except Exception:
+        return None
+    if not quiet and r.get("blanked") is not None:
+        print(f"  DRM check for {c['id']}: {r['reason']}" + (f" · {r['next']}" if r.get("next") else ""), file=sys.stderr)
+    return r
+
+
 def cmd_build(a):
     con = db()
     if a.start:
@@ -1519,6 +1535,7 @@ def cmd_build(a):
             print(json.dumps({"ok": True, "folder": str(folder), "manifest": man})); continue
         print(f"✓ {folder}\n  {man['transcript_segments']} transcript segments · "
               f"{man['slides']} slides ({man['slides_described']} described) · {man['cards']} cards")
+    _auto_drm(con, quiet=a.json)
 
 def cmd_watch(a):
     import time
