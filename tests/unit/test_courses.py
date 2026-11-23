@@ -109,3 +109,13 @@ def test_default_course_keeps_a_parents_explicit_folder(env, tmp_path):
     courses.activate(["z", "--course", "pond-path"], child)
     courses.activate(["z", "--course", "garden"], child)
     assert child["STUDY_LECTURE_DIR"] == str(tmp_path / "fixture")
+
+
+def test_capture_health_stays_with_the_default_course(env, tmp_path, monkeypatch):
+    import os
+    import lecture_kit as lk
+    fake = dict(env)
+    monkeypatch.setattr(os, "environ", fake)   # activate() writes freely; nothing leaks to other tests
+    courses.activate(["x", "--course", "pond-path"], fake)
+    assert fake["STUDY_LECTURE_DIR"].endswith("pond-path")
+    assert lk._capture_root() == tmp_path / "lectures"
