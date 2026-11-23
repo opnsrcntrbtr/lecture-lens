@@ -59,6 +59,16 @@ struct CaptureView: View {
                                     .buttonStyle(.borderless)
                             }
                         }
+                        ForEach(CaptureText.courseSites(model.courseList, besides: domains), id: \.site) { cs in
+                            HStack {
+                                Image(systemName: "graduationcap").foregroundStyle(.secondary).accessibilityHidden(true)
+                                Text(cs.site).font(.scaled(.body, design: .monospaced))
+                                Text("from \(cs.course)").font(.scaled(.caption)).foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .help("Added at each start because the course \(cs.course) lists it; change it in the course registry")
+                            .accessibilityElement(children: .combine)
+                        }
                         HStack {
                             TextField("domain.com or domain.com:subdomains", text: $newDomain)
                                 .textFieldStyle(.roundedBorder).onSubmit { add() }
@@ -139,5 +149,16 @@ struct CaptureView: View {
         guard let r = try? await ToolRunner.run("sp-domains", ["list"], timeout: 10) else { return }
         domains = String(decoding: r.stdout, as: UTF8.self).split(separator: "\n").map(String.init)
             .filter { !$0.hasPrefix("(") && !$0.isEmpty }
+    }
+}
+
+enum CaptureText {
+    /// Sites every start adds from the course registry (sp-start), beside the hand-kept allowlist.
+    static func courseSites(_ list: CourseList?, besides kept: [String] = []) -> [(site: String, course: String)] {
+        var seen = Set(kept.map { $0.lowercased() }), out: [(site: String, course: String)] = []
+        for c in list?.choices ?? [] {
+            for s in c.sites ?? [] where !s.contains("/") && seen.insert(s.lowercased()).inserted { out.append((s, c.label)) }
+        }
+        return out
     }
 }

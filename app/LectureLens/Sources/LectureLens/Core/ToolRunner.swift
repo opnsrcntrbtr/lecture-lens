@@ -61,13 +61,16 @@ enum ToolRunner {
     }
 
     /// Launch and stream lines (for long jobs). Returns the exit status.
-    static func stream(_ executable: URL, _ args: [String], onLine: @escaping @Sendable (String) -> Void) async -> Int32 {
+    /// `environment`: the tool environment captured when the job was queued (its course), so a
+    /// course switch while it waits does not move the job to another course.
+    static func stream(_ executable: URL, _ args: [String], environment: [String: String]? = nil,
+                       onLine: @escaping @Sendable (String) -> Void) async -> Int32 {
         await withCheckedContinuation { cont in
             let p = Process()
             p.executableURL = executable
             p.arguments = args
             p.currentDirectoryURL = executable.deletingLastPathComponent()
-            p.environment = Paths.toolEnvironment
+            p.environment = environment ?? Paths.toolEnvironment
             let pipe = Pipe()
             p.standardOutput = pipe
             p.standardError = pipe

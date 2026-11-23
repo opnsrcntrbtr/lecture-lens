@@ -82,7 +82,7 @@ struct CoursePicker: View {
             HStack(spacing: 6) {
                 Image(systemName: model.course?.selfPaced == true ? "play.rectangle" : "person.3")
                     .accessibilityHidden(true)
-                Text(model.course?.label ?? "Courses").font(.scaled(.callout)).lineLimit(1)
+                Text(model.course?.label ?? "Courses").font(.scaled(.callout)).lineLimit(1).truncationMode(.middle)
             }
         }
         .menuStyle(.borderlessButton)
