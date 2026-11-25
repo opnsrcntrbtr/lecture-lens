@@ -45,7 +45,15 @@ struct LecturesView: View {
                 }
             }
             .overlay {
-                if model.sessions.isEmpty {
+                if model.sessions.isEmpty, let err = model.sessionsError, !model.loadingSessions {
+                    ContentUnavailableView {
+                        Label("Couldn't load lectures", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(err)
+                    } actions: {
+                        Button("Try again") { Task { await model.loadSessions() } }
+                    }
+                } else if model.sessions.isEmpty {
                     ContentUnavailableView(model.loadingSessions ? "Loading…" : "No lectures yet",
                                            systemImage: "books.vertical",
                                            description: Text(LectureText.emptyLibrary(model.course)))
@@ -89,9 +97,14 @@ func parseISO(_ s: String) -> Date? {
     return f.date(from: s)
 }
 
-private enum LectureTab: String, CaseIterable, Identifiable {
+enum LectureTab: String, CaseIterable, Identifiable {
     case notes = "Notes", slides = "Slides", transcript = "Transcript", qa = "Q&A", cards = "Cards", cornell = "Cornell", notesV2 = "Notes v2", practice = "Practice"
     var id: String { rawValue }
+
+    /// Class Q&A only exists for live classes; a self-paced lesson has no tab for it.
+    static func shown(selfPaced: Bool) -> [LectureTab] {
+        selfPaced ? allCases.filter { $0 != .qa } : allCases
+    }
 }
 
 struct LectureDetail: View {
@@ -129,7 +142,7 @@ struct LectureDetail: View {
             Divider()
             if session.built {
                 Picker("", selection: $tab) {
-                    ForEach(LectureTab.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(LectureTab.shown(selfPaced: model.course?.selfPaced == true)) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden().padding(12)
                 switch tab {
@@ -214,9 +227,11 @@ struct LectureDetail: View {
                 fillGap(gap)
             }
             AfterClassChips(url: folder.appendingPathComponent("after_class.json"))
+            if model.course?.selfPaced != true {   // live classes only: Zoom files, names check, class Q&A
             Button("After class", systemImage: "checkmark.seal") { model.afterClass(session) }
                 .disabled(building || model.mode.running)
                 .help(model.mode.running ? "Stop capture first" : "Import Zoom files, build, check attendee names are gone, rewrite qa.md")
+            }
             if session.built {
                 Button("Rebuild", systemImage: "arrow.triangle.2.circlepath") {
                     if session.built { confirmRebuild = true } else { model.build(session) }
@@ -234,9 +249,12 @@ struct LectureDetail: View {
                     .disabled(building || addingResources || !session.built)
                     .help("Add the class's files from the portal: deck (.pptx/.pdf), agenda (.docx), answered Q&A sheet (.xlsx), readings. You can also drop them here.")
                     .accessibilityIdentifier("addClassResources")
+
+                if model.course?.selfPaced != true {
                 Button("Import Zoom files", systemImage: "tray.and.arrow.down") { model.ingest(folder.lastPathComponent) }
                     .disabled(building)
                     .help("Use Zoom's transcript, Q&A export or the deck saved in this class's folder or today's live folder")
+                }
                 Button("Show in Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
             }
         }

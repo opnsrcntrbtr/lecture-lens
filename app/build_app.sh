@@ -41,7 +41,15 @@ if (( run_tests )); then
 fi
 
 echo "▸ swift build -c release" >&2
-swift build -c release --arch arm64 2>&1 | grep -Ev '^\[[0-9]+/[0-9]+\]' || true
+# A failed compile must stop here: piping into grep with `|| true` used to swallow the failure,
+# so the previous binary was bundled and reported as a fresh build.
+build_log="$(mktemp)"
+if ! swift build -c release --arch arm64 >"$build_log" 2>&1; then
+  grep -E 'error:' "$build_log" | sed $'s/\x1b\\[[0-9;]*m//g' | sort -u | head -20 >&2
+  echo "✗ swift build failed: the app was not updated (full log: $build_log)" >&2
+  exit 1
+fi
+grep -Ev '^\[[0-9]+/[0-9]+\]' "$build_log" >&2 || true
 BIN="$(swift build -c release --arch arm64 --show-bin-path)/LectureLens"
 [[ -x "$BIN" ]] || { echo "✗ build produced no binary at $BIN" >&2; exit 1; }
 

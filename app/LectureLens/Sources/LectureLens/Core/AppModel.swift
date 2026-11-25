@@ -36,6 +36,8 @@ final class AppModel {
     var course: CourseList.Course?
     // lectures
     var sessions: [Session] = []
+    /// Why the lecture list could not be read (shown instead of an empty library).
+    var sessionsError: String?
     var nextClass: NextClass?
     var loadingSessions = false
     // jobs / evals
@@ -356,13 +358,19 @@ final class AppModel {
 
     func stopCapture() async {
         busyCapture = true; defer { busyCapture = false }
-        _ = try? await ToolRunner.run("sp-stop", [], timeout: 60)
+        do {
+            let r = try await ToolRunner.run("sp-stop", [], timeout: 60)
+            if !r.ok { lastError = "Stop failed: " + ErrorText.tail(r.stderr) }
+        } catch { lastError = "Stop failed: " + ErrorText.short(error) }
         await refreshFast()
     }
 
     func setMode(_ m: String) async {
         busyCapture = true; defer { busyCapture = false }
-        _ = try? await ToolRunner.run("sp-mode", [m], timeout: 90)
+        do {
+            let r = try await ToolRunner.run("sp-mode", [m], timeout: 90)
+            if !r.ok { lastError = "Mode change failed: " + ErrorText.tail(r.stderr) }
+        } catch { lastError = "Mode change failed: " + ErrorText.short(error) }
         await refreshFast()
     }
 
@@ -374,9 +382,10 @@ final class AppModel {
     // MARK: lectures
     func loadSessions() async {
         loadingSessions = true; defer { loadingSessions = false }
-        if let l = try? await ToolRunner.json(SessionList.self, "lecture", ["list", "--json", "--since", "90d"], timeout: 60) {
-            sessions = l.sessions
-        }
+        do {
+            sessions = try await ToolRunner.json(SessionList.self, "lecture", ["list", "--json", "--since", "90d"], timeout: 60).sessions
+            sessionsError = nil
+        } catch { sessionsError = ErrorText.short(error) }
         nextClass = try? await ToolRunner.json(NextClass.self, "lecture", ["next", "--json"], timeout: 30)
     }
 
@@ -482,5 +491,19 @@ final class AppModel {
     func runJudgeBenchmark() {
         jobs.enqueue("Judge benchmark: Laya vs oMLX", Paths.study.appendingPathComponent("tests/evals/run_judge_bench.sh"),
                      []) { [weak self] _ in self?.loadEvalRuns() }
+    }
+}
+
+/// Short, readable error text for banners (the full output stays in job logs).
+enum ErrorText {
+    static func short(_ e: Error, limit: Int = 220) -> String {
+        tail((e as? LocalizedError)?.errorDescription ?? e.localizedDescription, limit: limit)
+    }
+
+    /// The last meaningful line(s) of a tool's stderr: tracebacks end with the actual error.
+    static func tail(_ s: String, limit: Int = 220) -> String {
+        let lines = s.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let last: String = lines.last ?? "no details"
+        return last.count > limit ? String(last.prefix(limit)) + "…" : last
     }
 }
