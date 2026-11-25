@@ -192,6 +192,8 @@ struct Session: Decodable, Sendable, Identifiable, Hashable {
     let frames: Int?
     let built: Bool
     let folder: String
+    /// Other lectures were consolidated into this one (`lecture unmerge-lecture` can undo it).
+    var consolidated: Bool? = nil
     var key: String { id ?? folder }
     var displayTitle: String { title ?? "Untitled lecture" }
 }
@@ -277,4 +279,24 @@ struct OmlxStatus: Decodable, Sendable {
     let status: String?
     let loaded_models: [String]?
     let active_requests: Int?
+}
+
+/// `lecture library-check --json` (lecture_manage.library_check): read only.
+struct LibraryCheck: Decodable, Sendable, Equatable {
+    struct Issue: Decodable, Sendable, Equatable, Hashable {
+        let kind: String
+        let folders: [String]
+        let message: String
+    }
+    let ok: Bool
+    let lectures: Int?
+    let issues: [Issue]
+
+    /// Wrong dates and merges across days come first; copies of a class last (often deliberate).
+    var ordered: [Issue] { issues.sorted { ($0.kind == "copies" ? 1 : 0) < ($1.kind == "copies" ? 1 : 0) } }
+    var summary: String {
+        let copies = issues.filter { $0.kind == "copies" }.count, other = issues.count - copies
+        return [other > 0 ? "\(other) to fix" : nil, copies > 0 ? "\(copies) class(es) built twice" : nil]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
 }
