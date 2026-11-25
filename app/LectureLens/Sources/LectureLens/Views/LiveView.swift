@@ -53,6 +53,13 @@ struct LiveView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                if let c = model.course, c.selfPaced {
+                    Label("Live is for live classes (Zoom or Meet). \(c.label) is self-paced: watch a lesson with capture on, then build it in Lectures.",
+                          systemImage: "info.circle")
+                        .font(.scaled(.callout)).foregroundStyle(.secondary)
+                        .padding(10)
+                        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+                }
                 statusBox
                 PrequestionsBox(day: prequestionDay, caption: prequestionCaption)
                 askNowBox

@@ -237,6 +237,43 @@ def audio_between(con, start, end, device_filter=None):
             out.append({"ts": t, "text": text, "device": r["device"]})
     return out
 
+def fill_untranscribed(con, start, end, audio, say=lambda *a: None, transcribe=None):
+    """Audio the engine recorded but never transcribed (capture stopped before its queue caught
+    up, or a live class ran the engine without speech-to-text): transcribe those System Audio
+    chunks with whisper.cpp now, as the live follower does. Returns (audio, lines added)."""
+    if os.environ.get("STUDY_FILL_UNTRANSCRIBED", "1") != "1":
+        return audio, 0
+    try:
+        rows = con.execute(
+            "SELECT timestamp, file_path FROM audio_chunks WHERE datetime(timestamp) >= datetime(?) "
+            "AND datetime(timestamp) <= datetime(?) AND file_path LIKE ? ORDER BY timestamp",
+            (start.strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ"), "%System Audio%")).fetchall()
+    except Exception:
+        return audio, 0
+    import bisect
+    covered = sorted(a["ts"] for a in audio)
+    def near(t):   # a transcript line within one chunk's length of this chunk
+        i = bisect.bisect_left(covered, t - dt.timedelta(seconds=35))
+        return i < len(covered) and covered[i] <= t + dt.timedelta(seconds=35)
+    missing = [(t, Path(r[1]).name) for r in rows if (t := _ts(r[0])) and not near(t)]
+    if not missing:
+        return audio, 0
+    if transcribe is None:
+        import live_class
+        transcribe = live_class.transcribe
+    say(f"  {len(missing)} audio chunk(s) were never transcribed: transcribing them with whisper.cpp…")
+    segs = []
+    for i in range(0, len(missing), 10):
+        batch = missing[i:i + 10]
+        try:
+            segs += transcribe(batch, batch[0][0], "", 6)
+        except Exception as e:
+            say(f"  whisper fill stopped: {e}")
+            break
+    add = [{"ts": t, "text": re.sub(r"\s+", " ", x["text"]).strip(), "device": "whisper (filled)"}
+           for x in segs if (t := _ts(x.get("t"))) and (x.get("text") or "").strip()]
+    return sorted(audio + add, key=lambda a: a["ts"]), len(add)
+
 # ------------------------------------------------------- session segmentation
 def title_of(frames):
     """Lecture title: the most common browser window title, cleaned of chrome."""
@@ -1302,6 +1339,12 @@ def build(session, con, describe=True, cards=20, quiet=False):
     if live:
         say(f"  using the live whisper re-transcription ({len(live)} parts) instead of screenpipe's ({len(audio)})")
         audio, transcript_source = live, "whisper_live"
+    else:
+        audio, filled = fill_untranscribed(con, session["start"] - dt.timedelta(seconds=45),
+                                           session["end"] + dt.timedelta(minutes=2), audio, say)
+        if filled:
+            say(f"  {filled} transcript line(s) filled from untranscribed audio")
+            transcript_source = "capture+whisper_fill"
     t0 = session["start"]
     transcript_lines = _guard_names(session, [f"[{hhmmss((a['ts']-t0).total_seconds())}] {a['text']}" for a in audio])
     transcript = "\n".join(transcript_lines)

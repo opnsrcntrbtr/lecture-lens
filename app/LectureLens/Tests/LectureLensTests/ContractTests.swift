@@ -363,3 +363,25 @@ import Testing
     let r = try JSONDecoder().decode(ManageResult.self, from: Data(#"{"ok": false, "error": "learn.example.org already belongs to “Ponds”", "course": "ponds"}"#.utf8))
     #expect(!r.ok && r.course == "ponds")
 }
+
+@Test func libraryAndCaptureWording() throws {
+    let l = try JSONDecoder().decode(CourseList.self, from: Data(#"{"ok": true, "default": "a", "courses": [{"id": "a", "name": "Garden", "kind": "live", "root": "/x", "sites": []}, {"id": "p", "name": "Pond Keeping", "short": "Ponds", "kind": "self_paced", "root": "/y", "sites": ["learn.example.org", "learn.example.org/path"]}]}"#.utf8))
+    #expect(LectureText.emptyLibrary(l.courses[1]).contains("learn.example.org"))
+    #expect(LectureText.emptyLibrary(l.courses[0]).contains("Zoom"))
+    #expect(CaptureText.courseSites(l).map(\.site) == ["learn.example.org"] && CaptureText.courseSites(l).first?.course == "Ponds")
+    #expect(LectureText.rebuildWarning(["consolidated": [1]]).contains("merged files"))
+    #expect(!LectureText.rebuildWarning([:]).contains("merged"))
+}
+
+@Test func recallFirstAndAskSuggestions() throws {
+    let d = UserDefaults(suiteName: "recall-test")!
+    defer { d.removePersistentDomain(forName: "recall-test") }
+    #expect(RecallFirst.due("L1", defaults: d))
+    RecallFirst.markDone("L1", defaults: d)
+    #expect(!RecallFirst.due("L1", defaults: d))
+    #expect(RecallFirst.due("L1", now: .now.addingTimeInterval(86_400 * 2), defaults: d))
+    d.set(false, forKey: RecallFirst.enabledKey)
+    #expect(!RecallFirst.due("L2", defaults: d))
+    let l = try JSONDecoder().decode(CourseList.self, from: Data(#"{"ok": true, "default": "a", "courses": [{"id": "p", "name": "Ponds", "kind": "self_paced", "root": "/y", "sites": ["learn.example.org"]}]}"#.utf8))
+    #expect(CaptureText.courseSites(l, besides: ["LEARN.example.org"]).isEmpty)
+}
