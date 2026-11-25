@@ -86,6 +86,9 @@ struct LectureDetail: View {
     @State private var tab: LectureTab = .notes
     @State private var rawManifest: [String: Any] = [:]
     @State private var dropTargeted = false
+    @State private var resourcesResult: ResourcesAddResult?
+    @State private var resourcesError: String?
+    @State private var addingResources = false
 
     private var folder: URL {
         session.folder.hasPrefix("/") ? URL(fileURLWithPath: session.folder)
@@ -98,6 +101,15 @@ struct LectureDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header.padding(16)
+            if let r = resourcesResult {
+                ClassResourcesBanner(result: r, building: building,
+                                     onRebuild: { model.build(session); resourcesResult = nil },
+                                     onDismiss: { resourcesResult = nil })
+                    .padding(.horizontal, 16).padding(.bottom, 12)
+            } else if let e = resourcesError {
+                Label(e, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                    .padding(.horizontal, 16).padding(.bottom, 12)
+            }
             Divider()
             if session.built {
                 Picker("", selection: $tab) {
@@ -137,21 +149,23 @@ struct LectureDetail: View {
             if dropTargeted {
                 RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6]))
                     .background(Color.accentColor.opacity(0.06))
-                    .overlay(Label("Drop Zoom's transcript, Q&A export or the deck", systemImage: "tray.and.arrow.down")
+                    .overlay(Label("Drop the deck, agenda, Q&A sheet or Zoom's transcript", systemImage: "tray.and.arrow.down")
                         .font(.scaled(.title3, weight: .semibold)))
                     .padding(8).allowsHitTesting(false)
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard session.built else { return false }
+            let resources = urls.filter(ClassResources.accepts)
+            if !resources.isEmpty { addResources(resources) }
             let fm = FileManager.default
             var copied = 0
-            for u in urls where ["md", "txt", "vtt", "pptx"].contains(u.pathExtension.lowercased()) {
+            for u in urls where ["md", "txt", "vtt"].contains(u.pathExtension.lowercased()) {
                 let dest = folder.appendingPathComponent(u.lastPathComponent)
                 if !fm.fileExists(atPath: dest.path), (try? fm.copyItem(at: u, to: dest)) != nil { copied += 1 }
             }
             if copied > 0 { model.ingest(folder.lastPathComponent) }
-            return copied > 0
+            return copied > 0 || !resources.isEmpty
         } isTargeted: { dropTargeted = $0 }
         .task { loadManifest() }
     }
@@ -183,6 +197,12 @@ struct LectureDetail: View {
                 .help(model.mode.running ? "Stop capture first" : "Import Zoom files, build, check attendee names are gone, rewrite qa.md")
             if session.built {
                 Button("Rebuild", systemImage: "arrow.triangle.2.circlepath") { model.build(session) }.disabled(building)
+                Button("Add resources…", systemImage: "doc.badge.plus") { addResources(ClassResources.pick()) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .disabled(building || addingResources || !session.built)
+                    .help("Add the class's files from the portal: deck (.pptx/.pdf), agenda (.docx), answered Q&A sheet (.xlsx), readings. You can also drop them here.")
+                    .accessibilityIdentifier("addClassResources")
                 Button("Import Zoom files", systemImage: "tray.and.arrow.down") { model.ingest(folder.lastPathComponent) }
                     .disabled(building)
                     .help("Use Zoom's transcript, Q&A export or the deck saved in this class's folder or today's live folder")
@@ -219,6 +239,27 @@ struct LectureDetail: View {
         guard p.runModal() == .OK, let url = p.url,
               let from = GapChips.hhmm(gap["from"] as? String), let to = GapChips.hhmm(gap["to"] as? String) else { return }
         model.gapfill(folder.lastPathComponent, audio: url.path, from: from, to: to) { loadManifest() }
+    }
+
+    /// Class resources from the portal (`lecture resources add`): the result banner offers Rebuild.
+    private func addResources(_ urls: [URL]) {
+        let files = urls.filter(ClassResources.accepts).map(\.path)
+        guard !files.isEmpty, !addingResources else { return }
+        let targetId = folder.lastPathComponent
+        addingResources = true
+        resourcesError = nil
+        Task {
+            defer { addingResources = false }
+            do {
+                let r = try await ToolRunner.json(ResourcesAddResult.self, "lecture",
+                                                  ClassResources.args(lecture: targetId, files: files), timeout: 300)
+                guard targetId == folder.lastPathComponent else { return }
+                resourcesResult = r
+            } catch {
+                guard targetId == folder.lastPathComponent else { return }
+                resourcesError = "Couldn't add the files: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func loadManifest() {

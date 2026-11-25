@@ -938,31 +938,82 @@ def live_transcript(session, bucket_s=30, min_coverage=0.6):
 
 def deck_source(folder, budget=36000, notes_chars=260):
     """The class's own deck, when one was put in the lecture folder (deck.json from
-    tools/deck_text.py, or a .pptx that is converted here). Slide text is exact, unlike
-    keyframe descriptions; speaker notes are the instructor's, trimmed per slide."""
+    tools/deck_text.py, or a .pptx that is converted here), then any decks added after class
+    (`lecture resources add`), numbered on across them. Slide text is exact, unlike keyframe
+    descriptions; speaker notes are the instructor's, trimmed per slide."""
+    import resources
     dj = folder / "deck.json"
     if not dj.exists():
         decks = sorted(folder.glob("*.pptx"))
-        if not decks:
-            return "", []
-        sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
-        import deck_text
-        dj.write_text(json.dumps(deck_text.read_deck(str(decks[0])), ensure_ascii=False, indent=1))
-    deck = json.loads(dj.read_text())
-    lines = []
-    for s in deck:
-        body = re.sub(r"\s+", " ", s["text"]).strip()
-        note = re.sub(r"\s+", " ", s.get("notes", "")).strip()[:notes_chars]
-        lines.append(f"[deck {s['n']}] {s['title']} :: {body}" + (f" || speaker notes: {note}" if note else ""))
-    text = "CLASS DECK (the instructor's own slides, exact text; cite as [deck N]):\n" + "\n".join(lines)
+        if decks:
+            sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+            import deck_text
+            dj.write_text(json.dumps(deck_text.read_deck(str(decks[0])), ensure_ascii=False, indent=1))
+    deck = resources.combined_deck(folder, json.loads(dj.read_text()) if dj.exists() else [])
+    if not deck:
+        return "", []
+    several = len({s.get("deck") for s in deck}) > 1
+
+    def render(per):
+        lines = []
+        for s in deck:
+            if several and s.get("deck_n") == 1:
+                lines.append(f"-- deck: {s['deck']} --")
+            body = re.sub(r"\s+", " ", s["text"]).strip()[:per]
+            note = re.sub(r"\s+", " ", s.get("notes", "")).strip()[:notes_chars]
+            lines.append(f"[deck {s['n']}] {s['title']} :: {body}" + (f" || speaker notes: {note}" if note else ""))
+        return "CLASS DECK (the instructor's own slides, exact text; cite as [deck N]):\n" + "\n".join(lines)
+
+    text = render(None)
+    if len(text) > budget:   # several decks: an even share per slide rather than losing the last deck
+        text = render(max(160, budget // len(deck) - notes_chars - 60))
     return text[:budget], deck
+
+
+SOURCE_WEIGHTS = {"page": 2, "deck": 3, "slides": 3, "keyframes": 1, "qa": 2}
+
+
+def fit_blocks(blocks: dict, room: int, weights: dict | None = None) -> str:
+    """Join the notes' non-transcript sources (deck, keyframes, class Q&A, page text) within
+    `room` characters. When they don't fit, each gets a share by weight, a block needing less
+    than its share passes the rest on, and a cut block ends at a line end. (Before, the
+    source was cut at the end, so the Q&A, then the deck's last slides, were lost.)"""
+    text = "\n\n".join(v for v in blocks.values() if v)
+    if len(text) <= room:
+        return text
+    w = weights or SOURCE_WEIGHTS
+    left, alloc = {k: v for k, v in blocks.items() if v}, {}
+    avail = max(0, room - 2 * len(left))
+    while left:
+        tot = sum(w.get(k, 1) for k in left)
+        small = {k: v for k, v in left.items() if len(v) <= avail * w.get(k, 1) / tot}
+        if not small:
+            alloc.update({k: int(avail * w.get(k, 1) / tot) for k in left})
+            break
+        for k, v in small.items():
+            alloc[k] = len(v)
+            avail -= len(v)
+            del left[k]
+    out = []
+    for k, v in blocks.items():
+        cut = v[: alloc.get(k, 0)]
+        if len(cut) < len(v) and "\n" in cut:
+            cut = cut[: cut.rfind("\n")]
+        if cut:
+            out.append(cut)
+    return "\n\n".join(out)
 
 
 def live_qa_source(session, folder, budget=9000):
     """Write qa.md from live_class's Q&A threads and follow-ups; return a compact source block."""
+    import resources
     d = _live_dir(session)
+    sheet = resources.load_sheet(folder)   # the answered Q&A sheet added after class, if any
     if not (d / "qa_threads.json").exists():
-        return ""
+        if not sheet:
+            return ""
+        (folder / "qa.md").write_text("\n".join(resources.sheet_markdown(sheet, session["title"])) + "\n")
+        return resources.sheet_source(sheet, budget)
     try:
         import live_qa
     except Exception:
@@ -1005,6 +1056,8 @@ def live_qa_source(session, folder, budget=9000):
         say_src = "the meeting app's Q&A export" + (" and the live capture" if rest else "")
     else:
         say_src = "the live capture"
+    if sheet:   # questions the sheet answers are shown from it; the rest of the live capture follows
+        threads = [t for t in threads if not resources.in_sheet(t["q"], sheet)]
     md = [f"# Class Q&A — {session['title']}", "",
           f"_From {say_src}. Attendees are unnamed; staff replies as posted. Follow-ups are local-model drafts, not answers from the class._", ""]
     for t in threads:
@@ -1030,10 +1083,16 @@ def live_qa_source(session, folder, budget=9000):
                        f"  - Draft: {f['answer']}"]
             pm += [""]
         (folder / "qa_pruned.md").write_text("\n".join(pm) + "\n")
+    if sheet:
+        md[0] = "# Also captured live (not in the Q&A sheet)"
+        md = resources.sheet_markdown(sheet, session["title"]) + ["---", ""] + md
     (folder / "qa.md").write_text("\n".join(md) + "\n")
     lines = [f"Q ({t['time']}): {t['q'][:300]} | A: " + " / ".join(a["text"][:500] for a in t["answers"])
              for t in threads if live_qa.thread_kind(t) == "content" and t["answers"]]
-    return ("CLASS Q&A (quoted; attendee questions with staff replies, not the lecturer's words):\n" + "\n".join(lines))[:budget]
+    live_block = "CLASS Q&A (quoted; attendee questions with staff replies, not the lecturer's words):\n" + "\n".join(lines)
+    if sheet:
+        return (resources.sheet_source(sheet, budget) + ("\n\n" + live_block if lines else ""))[:budget]
+    return live_block[:budget]
 
 
 def studio_job(session, transcript_lines, deck_src, qa_src, cards, transcript_source="capture"):
@@ -1302,13 +1361,18 @@ def build(session, con, describe=True, cards=20, quiet=False):
     # 3. notes + cards (model, grounded in the two files above)
     slide_src = "SLIDES:\n" + "\n".join(f"[slide {s['n']} @ {s['at']}] {s['description'] or s['screen_text']}"
                                          for s in slides)
+    blocks = {"slides": slide_src}   # the non-transcript sources, fitted to the room left (fit_blocks)
     deck_src, deck = deck_source(folder)
     if deck_src:   # the deck replaces keyframe descriptions as the slide source (slides.md stays)
-        slide_src = deck_src + "\n\nKEYFRAME TIMES (when each captured slide was on screen):\n" + "\n".join(
-            f"[slide {s['n']} @ {s['at']}] {(s['description'] or s['screen_text'])[:90]}" for s in slides)
+        blocks = {"deck": deck_src, "keyframes": "KEYFRAME TIMES (when each captured slide was on screen):\n" + "\n".join(
+            f"[slide {s['n']} @ {s['at']}] {(s['description'] or s['screen_text'])[:90]}" for s in slides)}
+        slide_src = "\n\n".join(blocks.values())
         say(f"  class deck used as the slide source ({len(deck)} slides)")
-    qa_src = live_qa_source(session, folder)
+        import resources
+        (folder / "deck_index.md").write_text(resources.deck_index_markdown(deck))
+    qa_src = live_qa_source(session, folder, budget=16000)
     if qa_src:   # class Q&A: attendee questions and staff replies, names already removed
+        blocks["qa"] = qa_src
         slide_src = slide_src + "\n\n" + qa_src
         say(f"  class Q&A added to the notes source ({qa_src.count(chr(10)) + 1} lines)")
     # A reference transcript merged in by transcript_ref.py (e.g. Zoom's own export) is more
@@ -1349,10 +1413,11 @@ def build(session, con, describe=True, cards=20, quiet=False):
         digests = digest_parts(session["title"], parts, say)
         (folder / "digest.md").write_text(f"# Part digests — {session['title']}\n\n" + "\n\n".join(
             f"## Part {i}\n\n{d}" for i, d in enumerate(digests, 1)) + "\n")
-        source = ("DIGEST OF THE FULL TRANSCRIPT (timecoded):\n" + "\n\n".join(digests)
-                  + "\n\n" + slide_src)[: study.CTX]
+        head = "DIGEST OF THE FULL TRANSCRIPT (timecoded):\n" + "\n\n".join(digests) + "\n\n"
+        source = (head + fit_blocks(blocks, study.CTX - len(head)))[: study.CTX]
     else:
-        source = (f"TRANSCRIPT (timecoded):\n{transcript_src}\n\n" + slide_src)[: study.CTX]
+        head = f"TRANSCRIPT (timecoded):\n{transcript_src}\n\n"
+        source = (head + fit_blocks(blocks, study.CTX - len(head)))[: study.CTX]
     if not browser:
         notes = make_notes(session["title"], source)
 
@@ -3255,6 +3320,57 @@ def cmd_qa(a):
     print(f"✓ {folder / 'qa.md'}" + (f" · pruned: {folder / 'qa_pruned.md'}" if (folder / "qa_pruned.md").exists() else ""))
 
 
+def cmd_resources(a):
+    """The class's files posted after it (deck .pptx/.pdf, agenda .docx, answered Q&A sheet
+    .xlsx, readings): `add` decides what each is and writes the form the build reads; `list`
+    shows what was added. Rebuild the lecture afterwards to use them."""
+    import resources, name_guard
+    try:   # readings (packs, exports) where the study integrations are installed
+        import study_integrations
+        import_reading = lambda f, path, title: study_integrations.import_reading(f, path, title=title)
+    except ImportError:
+        import_reading = None
+    folder = find_folder(a.id)
+    man = json.loads((folder / "manifest.json").read_text())
+    day = dt.datetime.fromisoformat(man["start"]).astimezone().strftime("%Y%m%d")
+    live = LECTURES / "live" / day
+    if a.action == "list":
+        rows = [{k: v for k, v in e.items() if k != "sha256"} for e in resources.load_index(folder)]
+        if a.json:
+            print(json.dumps({"lecture": folder.name, "resources": rows}))
+        else:
+            print(f"{len(rows)} resource(s) for {folder.name}")
+            for e in rows:
+                print(f"  {e['kind']:<9} {e['file']} — {e.get('summary', '')}")
+        return
+    if not a.files:
+        sys.exit("give one or more files to add")
+    staff = name_guard.staff_names()
+
+    def guard(lines):
+        out, _ = name_guard.guard(lines, panel_authors=set(), allow=_name_allow(live), roster=_name_roster(),
+                                  decisions=name_guard.load_decisions(PRIVATE))
+        return out
+
+    def learn(people):   # the sheet's asked-by names strengthen the private roster (never printed)
+        name_guard.update_roster(PRIVATE, {day: {p for p in people if p not in staff}})
+
+    sys.path.insert(0, str(HERE / "tools"))
+    import deck_text
+    rep = resources.add(folder, a.files, live_dir=live, read_deck=deck_text.read_deck,
+                        import_reading=import_reading,
+                        guard=guard, learn=learn, keep=staff)
+    if a.json:
+        print(json.dumps(rep))
+        return
+    for e in rep["added"]:
+        print(f"✓ {e['kind']:<9} {e['file']} — {e.get('summary', '')}")
+    for e in rep["skipped"]:
+        print(f"· skipped   {e['file']} — {e['reason']}")
+    if rep["rebuild"]:
+        print(f"  rebuild to use them: lecture build {man['id']}")
+
+
 def cmd_ingest(a):
     """After class: find the meeting app's files beside the class (live folder or the built
     lecture folder), then clean the live transcript, import the Q&A export, merge and score
@@ -3473,6 +3589,9 @@ def main():
     p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_qa)
     p = sub.add_parser("finish", help="after Lecture Lens Studio ran a lecture (browser mode): vault note and manifest")
     p.add_argument("id", nargs="?", default="last", help="session id, 'last' or 'all'"); p.set_defaults(fn=cmd_finish)
+    p = sub.add_parser("resources", help="add the class's files posted after it: deck (.pptx/.pdf), agenda (.docx), answered Q&A sheet (.xlsx), readings")
+    p.add_argument("action", choices=["add", "list"]); p.add_argument("id")
+    p.add_argument("files", nargs="*"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_resources)
     p = sub.add_parser("ingest", help="after class: use the meeting app's transcript/Q&A export/deck found beside the class")
     p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_ingest)
     a = ap.parse_args(); a.fn(a)
