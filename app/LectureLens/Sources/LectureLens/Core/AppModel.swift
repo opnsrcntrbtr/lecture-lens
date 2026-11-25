@@ -18,6 +18,13 @@ final class AppModel {
     // capture
     /// Sidebar selection; also set by the Go menu (⌘1…⌘7).
     var screen: Screen? = .capture
+    /// A missed mastery-check item to work through in the guided tutor (`mastery:<check>:<item>`).
+    var pendingGuidedItem: String? = nil
+
+    func tutorOnItem(_ ref: String) {
+        pendingGuidedItem = ref
+        screen = .ask
+    }
     var mode = ModeState(running: false, mode: "stopped", pinned: nil, autoswitch: false)
     var screenpipe: ScreenpipeHealth? = nil
     var omlx: OmlxStatus? = nil

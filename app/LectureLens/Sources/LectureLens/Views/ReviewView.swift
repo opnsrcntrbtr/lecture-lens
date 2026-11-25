@@ -77,6 +77,7 @@ struct ReviewView: View {
                 sessionBox
                 budgetBox
                 masteryBox
+                GroupBox("Mastery check") { MasteryCheckView(model: model) }
             }
             .padding(24).frame(maxWidth: 900, alignment: .leading).frame(maxWidth: .infinity)
         }
