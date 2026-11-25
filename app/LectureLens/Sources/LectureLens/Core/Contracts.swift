@@ -16,6 +16,55 @@ struct DoctorResult: Decodable, Sendable {
     }
 }
 
+/// `lecture courses --json`: the courses kept side by side (courses/courses.json). Each has its own
+/// lecture folder, vault folder and sites; the app shows one at a time.
+struct CourseList: Decodable, Sendable {
+    let ok: Bool
+    let implicit: Bool?
+    let `default`: String
+    let active: String?
+    let courses: [Course]
+
+    struct Course: Decodable, Sendable, Identifiable, Hashable {
+        let id: String
+        let name: String
+        let short: String?
+        let kind: String
+        let `default`: Bool?
+        let sites: [String]?
+        let root: String
+        let vault_subdir: String?
+        let url: String?
+        let lectures: Int?
+        let drm_on: Bool?
+
+        var label: String { (short ?? "").isEmpty ? name : short! }
+        var selfPaced: Bool { kind == "self_paced" }
+    }
+
+    /// One real course or more: the picker only shows with two or more.
+    var choices: [Course] { implicit == true ? [] : courses }
+}
+
+/// The selected course, kept between launches. Paths and every tool run read it.
+enum CourseStore {
+    static let idKey = "course"
+    static let rootKey = "courseRoot"
+    static var id: String? { UserDefaults.standard.string(forKey: idKey).flatMap { $0.isEmpty ? nil : $0 } }
+    static var root: String? { UserDefaults.standard.string(forKey: rootKey).flatMap { $0.isEmpty ? nil : $0 } }
+
+    static func select(_ c: CourseList.Course?, defaults: UserDefaults = .standard) {
+        defaults.set(c?.id, forKey: idKey)
+        defaults.set(c?.root, forKey: rootKey)
+    }
+
+    /// The course to show: the stored one while it still exists, else the registry's default.
+    static func resolve(_ list: CourseList, stored: String?) -> CourseList.Course? {
+        let all = list.choices
+        return all.first { $0.id == stored } ?? all.first { $0.id == list.default } ?? all.first
+    }
+}
+
 /// `lecture next --json`: the next class from the programme calendar (lectures/calendar.json).
 struct NextClass: Decodable, Sendable {
     let week: Int

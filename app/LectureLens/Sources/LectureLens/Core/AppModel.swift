@@ -31,6 +31,9 @@ final class AppModel {
     private(set) var drmPagesConfigured = false
     /// Set when Start was refused because protected video would go black.
     var permissionBlock = false
+    // courses: one shown at a time; switching reloads the lectures and every screen
+    var courseList: CourseList?
+    var course: CourseList.Course?
     // lectures
     var sessions: [Session] = []
     var nextClass: NextClass?
@@ -151,7 +154,26 @@ final class AppModel {
         }
     }
 
+    /// Courses from the registry; keeps the stored choice while it still exists.
+    func loadCourses() async {
+        guard let l = try? await ToolRunner.json(CourseList.self, "lecture", ["courses", "--json"], timeout: 30) else { return }
+        courseList = l
+        let pick = CourseStore.resolve(l, stored: CourseStore.id)
+        if pick?.id != course?.id || pick?.root != CourseStore.root { CourseStore.select(pick) }
+        course = pick
+    }
+
+    /// Show another course: its lectures, study aids, review and Ask.
+    func selectCourse(_ c: CourseList.Course) {
+        guard c.id != course?.id else { return }
+        CourseStore.select(c)
+        course = c
+        sessions = []; nextClass = nil
+        Task { await loadSessions() }
+    }
+
     func refreshAll(probeVision: Bool) async {
+        await loadCourses()
         await refreshFast()
         await refreshDoctor(probeVision: probeVision)
         await loadSessions()

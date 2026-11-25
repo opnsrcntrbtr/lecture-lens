@@ -1,5 +1,6 @@
 # --- never publish: captured or course material -----------------------------
 lectures/
+courses/
 notes/
 feedback/
 private/

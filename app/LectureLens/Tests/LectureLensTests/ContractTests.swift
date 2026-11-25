@@ -332,3 +332,17 @@ import Testing
     let s = try JSONDecoder().decode(SceneLabels.self, from: Data(#"{"ok": true, "labels": [{"lecture": "L", "slide_id": "L/s/1", "slide_file": "01.jpg", "t_abs": "2030-01-05T10:00:00+00:00", "thumb": "/x/01.jpg", "label": "break", "source": "vlm_prelabel", "confirmed": false}], "confirmed": 0, "classes": ["slide", "shared_document", "gallery", "break", "other"]}"#.utf8))
     #expect(SceneText.progress(s) == "0 of 1 checked" && s.labels?.first?.label == "break")
 }
+
+@Test func decodesCoursesAndPicksOne() throws {
+    let json = #"{"ok": true, "registry": "/x/courses.json", "implicit": false, "default": "garden", "active": "garden", "courses": [{"id": "garden", "name": "Garden Basics", "short": "Garden", "kind": "live", "default": true, "sites": [], "root": "/x/lectures", "vault_subdir": "Lectures", "lectures": 12, "drm_on": false}, {"id": "ponds", "name": "Pond Keeping Path", "kind": "self_paced", "root": "/x/courses/ponds"}]}"#
+    let l = try JSONDecoder().decode(CourseList.self, from: Data(json.utf8))
+    #expect(l.choices.count == 2 && l.courses[1].selfPaced && l.courses[1].label == "Pond Keeping Path")
+    #expect(CourseStore.resolve(l, stored: "ponds")?.root == "/x/courses/ponds")
+    #expect(CourseStore.resolve(l, stored: "gone")?.id == "garden")
+    let one = try JSONDecoder().decode(CourseList.self, from: Data(#"{"ok": true, "implicit": true, "default": "default", "courses": [{"id": "default", "name": "default", "kind": "live", "root": "/x/lectures"}]}"#.utf8))
+    #expect(one.choices.isEmpty && CourseStore.resolve(one, stored: nil) == nil)
+    let d = UserDefaults(suiteName: "course-test")!
+    CourseStore.select(l.courses[1], defaults: d)
+    #expect(d.string(forKey: CourseStore.idKey) == "ponds" && d.string(forKey: CourseStore.rootKey) == "/x/courses/ponds")
+    d.removePersistentDomain(forName: "course-test")
+}

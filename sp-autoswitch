@@ -3,6 +3,8 @@
 # Signals: screenpipe's own meeting detector (/meetings/status, app ~ zoom) OR Zoom's in-meeting helper (CptHost).
 DIR="${0:A:h}"; S="$HOME/.screenpipe"
 set -a; source "$DIR/.env"; set +a
+course_drm="$(/usr/bin/python3 "$DIR/courses.py" drm 2>/dev/null)"   # courses whose player blanks (courses.py)
+[[ -n "$course_drm" ]] && SP_DRM_URLS="${SP_DRM_URLS:+$SP_DRM_URLS,}$course_drm"
 cool=$(( ${SP_LIVE_COOLDOWN_SEC:-$(( ${SP_LIVE_COOLDOWN_MIN:-2} * 60 ))} )); idle=0; POLL=${SP_SWITCH_POLL_SEC:-15}
 log() { echo "$(date '+%F %T') $*"; }
 token() { "$SP_BIN" auth token 2>/dev/null | tail -1; }

@@ -33,6 +33,10 @@ def load_dotenv():
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), os.path.expandvars(v.strip().strip('"').strip("'")))
 load_dotenv()
+import courses as _courses  # several programmes side by side: --course <id> or STUDY_COURSE (courses.py)
+_courses.activate()
+# What the course is for, so notes and cards relate ideas to it (a course sets its own).
+FOCUS = os.environ.get("STUDY_COURSE_FOCUS", "building AI products")
 
 OMLX = os.environ.get("OMLX_BASE_URL", "http://127.0.0.1:8001/v1").rstrip("/")
 MODEL = os.environ.get("OMLX_MODEL", "Swift-Qwen3.8-27b-oQ4e-mtp")
@@ -555,7 +559,7 @@ def cmd_flashcards(a):
     for i, part in enumerate(parts, 1):
         print(f"  generating cards {i}/{len(parts)}…", file=sys.stderr)
         raw = llm(SYS_TUTOR, f"Sources:\n{as_sources(part)}\n\nCreate {per} high-quality flashcards testing "
-            "understanding (not trivia): definitions, why/when, trade-offs, application to AI products. "
+            f"understanding (not trivia): definitions, why/when, trade-offs, application to {FOCUS}. "
             'Return ONLY a JSON array: [{"q": "...", "a": "...", "src": [n]}].', max_tokens=2500, temperature=0.2)
         m = re.search(r"\[.*\]", raw, re.S)
         try: cards += json.loads(m[0]) if m else []
