@@ -372,3 +372,16 @@ import Testing
     let l = try JSONDecoder().decode(CourseList.self, from: Data(#"{"ok": true, "default": "a", "courses": [{"id": "p", "name": "Ponds", "kind": "self_paced", "root": "/y", "sites": ["learn.example.org"]}]}"#.utf8))
     #expect(CaptureText.courseSites(l, besides: ["LEARN.example.org"]).isEmpty)
 }
+
+@Test func errorTextIsShortAndUseful() {
+    let tb = "Traceback (most recent call last):\n  File \"x.py\", line 1\nRuntimeError: screenpipe binary not found\n\n"
+    #expect(ErrorText.tail(tb) == "RuntimeError: screenpipe binary not found")
+    #expect(ErrorText.tail("") == "no details")
+    #expect(ErrorText.tail(String(repeating: "a", count: 300)).count == 221)
+    #expect(ErrorText.short(ToolError.launch("lecture: missing")).contains("Could not start tool"))
+}
+
+@Test func selfPacedLecturesHaveNoClassQA() {
+    #expect(!LectureTab.shown(selfPaced: true).contains(.qa) && LectureTab.shown(selfPaced: true).count == LectureTab.allCases.count - 1)
+    #expect(LectureTab.shown(selfPaced: false) == LectureTab.allCases)
+}

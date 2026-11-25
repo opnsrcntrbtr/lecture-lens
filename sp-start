@@ -7,6 +7,9 @@
 set -e
 DIR="${0:A:h}"; STATE="$HOME/.screenpipe"; mkdir -p "$STATE"
 set -a; source "$DIR/.env"; set +a
+# Capture serves every course, and the live follower writes the live class's notes: neither may
+# follow the course the app happens to show when Start is clicked (STUDY_COURSE from the app).
+unset STUDY_COURSE STUDY_COURSE_ID STUDY_COURSE_BASE STUDY_COURSE_APPLIED STUDY_COURSE_DEFAULT
 # Courses side by side (courses.py): their sites join the portal allowlist, and pages of a course
 # whose player blanks under capture (drm, or drm: auto once `lecture courses check-drm` saw it)
 # join the DRM list.

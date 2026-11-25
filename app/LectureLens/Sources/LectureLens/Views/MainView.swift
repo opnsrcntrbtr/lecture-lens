@@ -53,6 +53,20 @@ struct MainView: View {
                 }
             }
             .id(model.course?.id ?? "")     // a course switch rebuilds the screen with that course's data
+            .safeAreaInset(edge: .top) {
+                if let err = model.lastError {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityHidden(true)
+                        Text(err).font(.scaled(.callout)).textSelection(.enabled).lineLimit(3)
+                        Spacer()
+                        Button("Dismiss") { model.lastError = nil }.buttonStyle(.borderless).controlSize(.small)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(.orange.opacity(0.12))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Problem: \(err)")
+                }
+            }
         }
     }
 }

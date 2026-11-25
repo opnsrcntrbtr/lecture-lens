@@ -2886,6 +2886,24 @@ def _newest_frame_t():
         return None
 
 
+def _capture_root() -> Path:
+    """One engine records every course, so capture health (records, gaps, the class window) is
+    kept with the default course, whichever course the app shows."""
+    try:
+        import courses
+        reg = courses.load()
+        if not reg["courses"][0].get("implicit"):
+            return courses.root(reg, courses.get(reg, None))
+    except Exception:
+        pass
+    return LECTURES
+
+
+def _capture_calendar() -> dict:
+    p = _capture_root() / "calendar.json"
+    return course_calendar.load(p) if p.exists() else course_calendar.load()
+
+
 def health_probe(now=None) -> dict:
     """One CT-1 probe from the engine's outputs; appends to the day's capture_health.jsonl
     while capture runs or a class is scheduled now, and returns {record, alert}."""
@@ -2907,7 +2925,7 @@ def health_probe(now=None) -> dict:
     rec = capture_health.probe(now, running, chunk_t, level, _newest_frame_t() if running else None,
                                expected, drm_paused=bool(sp.get("drm_content_paused")))
     day = now.astimezone().strftime("%Y%m%d")
-    cal = course_calendar.session_on(now.astimezone().date())
+    cal = course_calendar.session_on(now.astimezone().date(), _capture_calendar())
     in_class = False
     if cal:
         try:
@@ -2917,7 +2935,7 @@ def health_probe(now=None) -> dict:
             in_class = False
     rows = [rec]
     if running or in_class:
-        rows = capture_health.append(LECTURES / "live" / day / "capture_health.jsonl", rec)
+        rows = capture_health.append(_capture_root() / "live" / day / "capture_health.jsonl", rec)
     recent = [r for r in rows if (now - capture_health.parse_t(r["t"])).total_seconds() <= 600]
     return {"ok": True, "record": rec, "alert": capture_health.alert(recent), "mode": mode.get("mode"),
             "in_class": in_class}
@@ -2946,7 +2964,7 @@ def lecture_gaps(folder: Path) -> list[dict]:
             start + dt.timedelta(minutes=float(man.get("minutes") or 0))
     day = cs.astimezone().strftime("%Y%m%d")
     live = LECTURES / "live" / day
-    hf = live / "capture_health.jsonl"
+    hf = _capture_root() / "live" / day / "capture_health.jsonl"   # shared by every course
     health = [json.loads(l) for l in hf.read_text().splitlines() if l.strip()] if hf.exists() else []
     filled = man.get("gap_filled") or []
     filled = filled if isinstance(filled, list) else [filled]
