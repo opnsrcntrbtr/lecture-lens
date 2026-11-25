@@ -25,8 +25,14 @@ if pgrep -f "^/[^ ]*/screenpipe record" >/dev/null; then
   echo "screenpipe already running in $(cat "$STATE/sp-mode.current" 2>/dev/null || echo '?') mode (use sp-mode to switch)"; exit 0
 fi
 
+# Live classes: the engine only records and saves audio. Speech-to-text comes from the live
+# follower and the after-class re-transcription. The engine's own Whisper shared the GPU with
+# them and the local model, and on 21 Nov saving fell minutes behind. SP_LIVE_AUDIO_ENGINE overrides.
+engine="${SP_AUDIO_ENGINE:-whisper-large-v3-turbo-quantized}"
+[[ "$mode" == live ]] && engine="${SP_LIVE_AUDIO_ENGINE:-disabled}"
+echo "speech-to-text in the engine: $engine"
 args=(record --port 3030 --disable-telemetry --language english
-      --audio-transcription-engine "${SP_AUDIO_ENGINE:-whisper-large-v3-turbo-quantized}"
+      --audio-transcription-engine "$engine"
       --use-pii-removal true --ignore-incognito-windows true
       --disable-keyboard-capture true --disable-clipboard-capture true
       --retention-days 0

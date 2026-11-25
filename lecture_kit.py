@@ -2724,8 +2724,9 @@ def health_probe(now=None) -> dict:
     mode = _mode_state()
     running = bool(mode.get("running"))
     newest = capture_health.newest_chunks(SP_DATA)
-    chunk_t = max((t for _, t in newest.values()), default=None)
-    fresh = [p for p, t in newest.values() if (now - t).total_seconds() < 120]   # devices still writing
+    chunk_t, lag = capture_health.newest_saved(newest)      # when the newest chunk was saved
+    saved = {p: capture_health.saved_t(p) for p, _ in newest.values()}
+    fresh = [p for p, w in saved.items() if w and (now - w).total_seconds() < 120]   # devices still writing
     level = capture_health.combined_level([capture_health.level_db(p) for p in fresh]) if running and fresh else None
     sp = {}
     if running:
@@ -2736,7 +2737,9 @@ def health_probe(now=None) -> dict:
             sp = {}
     expected = running and (_meeting_running() or mode.get("mode") == "live")
     rec = capture_health.probe(now, running, chunk_t, level, _newest_frame_t() if running else None,
-                               expected, drm_paused=bool(sp.get("drm_content_paused")))
+                               expected, drm_paused=bool(sp.get("drm_content_paused")),
+                               engine=capture_health.engine_signals(sp, now), audio_write_lag_s=lag if running else None,
+                               audio_unsaved_s=capture_health.unsaved_s(newest, now) if running else None)
     day = now.astimezone().strftime("%Y%m%d")
     cal = course_calendar.session_on(now.astimezone().date())
     in_class = False
@@ -2759,8 +2762,61 @@ def cmd_health(a):
     if a.json:
         print(json.dumps(rep)); return
     r = rep["record"]
-    print(f"capture {r['status']}: audio chunk {r['audio_chunk_age_s']} s old at {r['audio_level_db']} dB, "
-          f"newest frame {r['frame_age_s']} s old" + (f"\n  ALERT: {rep['alert']['message']}" if rep["alert"] else ""))
+    print(f"capture {r['status']}: audio chunk saved {r['audio_chunk_age_s']} s ago at {r['audio_level_db']} dB"
+          + (f" ({r['audio_unsaved_s']} s recorded but not saved)" if r.get("audio_unsaved_s") else "")
+          + f", newest frame {r['frame_age_s']} s old" + (f"\n  ALERT: {rep['alert']['message']}" if rep["alert"] else ""))
+
+
+def _sp_post(path: str, timeout: int = 20) -> tuple[bool, str]:
+    req = urllib.request.Request(f"http://127.0.0.1:3030{path}", data=b"{}", method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          **({"Authorization": f"Bearer {study.sp_key()}"} if study.sp_key() else {})})
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout) as r:
+            return 200 <= r.status < 300, ""
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def audio_restart(wait_s: int = 300, force: bool = False, settle_s: int = 75, sleep=None, now=None) -> dict:
+    """Restart audio capture only (the engine's /audio/stop then /audio/start; screen capture
+    keeps running). First wait until the audio already recorded is saved: a restart drops
+    whatever is still in memory (21 Nov: 5 minutes). Then check that a new chunk arrives."""
+    import time
+    sleep = sleep or time.sleep
+    now = now or (lambda: dt.datetime.now(dt.timezone.utc))
+    if not _mode_state().get("running"):
+        return {"ok": False, "error": "capture is not running"}
+    t0 = now()
+    unsaved = capture_health.unsaved_s(capture_health.newest_chunks(SP_DATA), now())
+    while unsaved is not None and unsaved > 45 and (now() - t0).total_seconds() < wait_s:
+        sleep(10)
+        unsaved = capture_health.unsaved_s(capture_health.newest_chunks(SP_DATA), now())
+    if unsaved is not None and unsaved > 45 and not force:
+        return {"ok": False, "unsaved_s": round(unsaved), "error": f"{round(unsaved)} s of recorded audio is not saved yet; "
+                "restarting now would drop it. Keep capturing and try again when saving has caught up."}
+    before = max((t for _, t in capture_health.newest_chunks(SP_DATA).values()), default=None)
+    ok, err = _sp_post("/audio/stop")
+    if not ok:
+        return {"ok": False, "error": f"audio stop failed: {err}"}
+    sleep(2)
+    ok, err = _sp_post("/audio/start")
+    if not ok:
+        return {"ok": False, "error": f"audio start failed: {err} (audio is stopped: press Stop, then Start capture)"}
+    waited = 0
+    while waited < settle_s:
+        sleep(5); waited += 5
+        newest = max((t for _, t in capture_health.newest_chunks(SP_DATA).values()), default=None)
+        if newest and (before is None or newest > before) and (now() - newest).total_seconds() < 120:
+            return {"ok": True, "waited_for_save_s": round((now() - t0).total_seconds()) - waited, "new_chunk_after_s": waited}
+    return {"ok": False, "error": f"audio restarted but no new chunk was saved within {settle_s} s"}
+
+
+def cmd_audio_restart(a):
+    rep = audio_restart(a.wait, a.force)
+    print(json.dumps(rep) if a.json else ("✓ audio restarted; new audio is being saved" if rep["ok"] else f"✗ {rep['error']}"))
+    if not rep["ok"]:
+        sys.exit(1)
 
 
 def lecture_gaps(folder: Path) -> list[dict]:
@@ -3555,6 +3611,12 @@ def main():
     p = sub.add_parser("glossary", help="CT-3: course terms from slides and the evidence bank (never names); suggestions for review")
     p.add_argument("action", choices=["build", "show", "add", "remove", "suggest"]); p.add_argument("id", nargs="?", default="last")
     p.add_argument("--term", default=""); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_glossary)
+
+
+    p = sub.add_parser("audio-restart", help="restart audio capture only, after recorded audio is saved (screen keeps running)")
+    p.add_argument("--wait", type=int, default=300, help="seconds to wait for saving to catch up first")
+    p.add_argument("--force", action="store_true", help="restart even if recorded audio is not saved yet")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_audio_restart)
     p = sub.add_parser("gaps", help="gap ledger for a built lecture (late start, holes) into gaps.json and the manifest")
     p.add_argument("id", nargs="?", default="last"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_gaps)
     p = sub.add_parser("gapfill", help="CT-6: fill a gap from the class recording (audio only); existing lines never change")
