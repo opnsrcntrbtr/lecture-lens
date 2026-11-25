@@ -54,6 +54,23 @@ struct MainView: View {
             }
             .id(model.course?.id ?? "")     // a course switch rebuilds the screen with that course's data
             .safeAreaInset(edge: .top) {
+                if let w = model.classModeWarning {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "video.badge.exclamationmark").foregroundStyle(.orange).accessibilityHidden(true)
+                        Text(w).font(.scaled(.callout)).lineLimit(3)
+                        Spacer()
+                        Button("Switch to Auto") { Task { await model.setMode("auto") } }
+                            .buttonStyle(.borderedProminent).controlSize(.small)
+                            .disabled(model.busyCapture)
+                            .help("Unpin the mode: capture follows meetings again (live during the class, portal otherwise)")
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(.orange.opacity(0.12))
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Capture mode warning: \(w)")
+                }
+            }
+            .safeAreaInset(edge: .top) {
                 if let err = model.lastError {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityHidden(true)
