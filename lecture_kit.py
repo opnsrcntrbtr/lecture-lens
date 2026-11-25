@@ -20,7 +20,7 @@ Design notes
     traced to a timestamp in the transcript or a keyframe image.
 """
 from __future__ import annotations
-import argparse, datetime as dt, hashlib, json, math, os, re, shutil, sqlite3, subprocess, sys, urllib.error, urllib.request, urllib.parse
+import argparse, datetime as dt, hashlib, json, math, os, re, shutil, sqlite3, statistics, subprocess, sys, urllib.error, urllib.request, urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -42,6 +42,10 @@ SITE = os.environ.get("STUDY_LECTURE_SITE", "learn.example.edu")   # your course
 # The portal's own name as it appears in window titles (stripped from titles; a bare match is a generic title).
 PORTAL = os.environ.get("STUDY_PORTAL_NAME", "").strip()
 COURSE = os.environ.get("STUDY_COURSE_NAME", "My course")
+# Window-title suffixes to drop and page titles that name the site, not the lecture; a course adds
+# its own (courses.json: title_strip, generic_titles).
+TITLE_STRIP = [t for t in os.environ.get("STUDY_TITLE_STRIP", "").split("|") if t.strip()]
+GENERIC_EXTRA = [t for t in os.environ.get("STUDY_GENERIC_TITLES", "").split("|") if t.strip()]
 # Native apps whose windows are live classes (Zoom webinars): no browser URL to match.
 LIVE_APPS = [a.strip() for a in os.environ.get("STUDY_LIVE_APPS", "zoom").split(",") if a.strip()]
 # A gap longer than this ends a lecture session.
@@ -233,11 +237,48 @@ def audio_between(con, start, end, device_filter=None):
             out.append({"ts": t, "text": text, "device": r["device"]})
     return out
 
+def fill_untranscribed(con, start, end, audio, say=lambda *a: None, transcribe=None):
+    """Audio the engine recorded but never transcribed (capture stopped before its queue caught
+    up, or a live class ran the engine without speech-to-text): transcribe those System Audio
+    chunks with whisper.cpp now, as the live follower does. Returns (audio, lines added)."""
+    if os.environ.get("STUDY_FILL_UNTRANSCRIBED", "1") != "1":
+        return audio, 0
+    try:
+        rows = con.execute(
+            "SELECT timestamp, file_path FROM audio_chunks WHERE datetime(timestamp) >= datetime(?) "
+            "AND datetime(timestamp) <= datetime(?) AND file_path LIKE ? ORDER BY timestamp",
+            (start.strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ"), "%System Audio%")).fetchall()
+    except Exception:
+        return audio, 0
+    import bisect
+    covered = sorted(a["ts"] for a in audio)
+    def near(t):   # a transcript line within one chunk's length of this chunk
+        i = bisect.bisect_left(covered, t - dt.timedelta(seconds=35))
+        return i < len(covered) and covered[i] <= t + dt.timedelta(seconds=35)
+    missing = [(t, Path(r[1]).name) for r in rows if (t := _ts(r[0])) and not near(t)]
+    if not missing:
+        return audio, 0
+    if transcribe is None:
+        import live_class
+        transcribe = live_class.transcribe
+    say(f"  {len(missing)} audio chunk(s) were never transcribed: transcribing them with whisper.cpp…")
+    segs = []
+    for i in range(0, len(missing), 10):
+        batch = missing[i:i + 10]
+        try:
+            segs += transcribe(batch, batch[0][0], "", 6)
+        except Exception as e:
+            say(f"  whisper fill stopped: {e}")
+            break
+    add = [{"ts": t, "text": re.sub(r"\s+", " ", x["text"]).strip(), "device": "whisper (filled)"}
+           for x in segs if (t := _ts(x.get("t"))) and (x.get("text") or "").strip()]
+    return sorted(audio + add, key=lambda a: a["ts"]), len(add)
+
 # ------------------------------------------------------- session segmentation
 def title_of(frames):
     """Lecture title: the most common browser window title, cleaned of chrome."""
     from collections import Counter
-    chrome = "|".join(["Google Chrome"] + ([re.escape(PORTAL)] if PORTAL else []))
+    chrome = "|".join(["Google Chrome"] + ([re.escape(PORTAL)] if PORTAL else []) + [re.escape(t.strip()) for t in TITLE_STRIP])
     names = [re.sub(rf"\s*[-–|]\s*({chrome}).*$", "", (f["window_name"] or "").strip())
              for f in frames if f["window_name"]]
     names = [n for n in names if len(n) > 3]
@@ -619,7 +660,7 @@ def make_notes(title, source):
     return study.llm(study.SYS_TUTOR,
         f"Lecture: {title}\n\n{source}\n\n"
         "Write study notes with these sections: ## TL;DR (5 bullets), ## Key concepts, "
-        "## Frameworks & models, ## Worked examples and numbers, ## How this applies to building AI products, "
+        "## Frameworks & models, ## Worked examples and numbers, " f"## How this applies to {study.FOCUS}, "
         "## Action items for the learner, ## Open questions. "
         "Cite timecodes like [00:12:30] and slides like [slide 4]. "
         "Ignore player UI and navigation text. Speech-to-text often misspells names and numbers: "
@@ -889,7 +930,8 @@ def digest_parts(title, parts, say=lambda *a: None):
 
 
 GENERIC_TITLE = re.compile(r"^(" + (re.escape(PORTAL) + r"\b.*|" if PORTAL else "")
-                           + r"learning experience platform|untitled lecture|zoom\b.*)$", re.I)
+                           + r"learning experience platform|untitled lecture|zoom\b.*"
+                           + "".join("|" + g for g in GENERIC_EXTRA) + r")$", re.I)
 
 def lecture_title(session, transcript):
     """A portal player's page title is often generic ('<Portal> - Learning Experience
@@ -938,31 +980,82 @@ def live_transcript(session, bucket_s=30, min_coverage=0.6):
 
 def deck_source(folder, budget=36000, notes_chars=260):
     """The class's own deck, when one was put in the lecture folder (deck.json from
-    tools/deck_text.py, or a .pptx that is converted here). Slide text is exact, unlike
-    keyframe descriptions; speaker notes are the instructor's, trimmed per slide."""
+    tools/deck_text.py, or a .pptx that is converted here), then any decks added after class
+    (`lecture resources add`), numbered on across them. Slide text is exact, unlike keyframe
+    descriptions; speaker notes are the instructor's, trimmed per slide."""
+    import resources
     dj = folder / "deck.json"
     if not dj.exists():
         decks = sorted(folder.glob("*.pptx"))
-        if not decks:
-            return "", []
-        sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
-        import deck_text
-        dj.write_text(json.dumps(deck_text.read_deck(str(decks[0])), ensure_ascii=False, indent=1))
-    deck = json.loads(dj.read_text())
-    lines = []
-    for s in deck:
-        body = re.sub(r"\s+", " ", s["text"]).strip()
-        note = re.sub(r"\s+", " ", s.get("notes", "")).strip()[:notes_chars]
-        lines.append(f"[deck {s['n']}] {s['title']} :: {body}" + (f" || speaker notes: {note}" if note else ""))
-    text = "CLASS DECK (the instructor's own slides, exact text; cite as [deck N]):\n" + "\n".join(lines)
+        if decks:
+            sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+            import deck_text
+            dj.write_text(json.dumps(deck_text.read_deck(str(decks[0])), ensure_ascii=False, indent=1))
+    deck = resources.combined_deck(folder, json.loads(dj.read_text()) if dj.exists() else [])
+    if not deck:
+        return "", []
+    several = len({s.get("deck") for s in deck}) > 1
+
+    def render(per):
+        lines = []
+        for s in deck:
+            if several and s.get("deck_n") == 1:
+                lines.append(f"-- deck: {s['deck']} --")
+            body = re.sub(r"\s+", " ", s["text"]).strip()[:per]
+            note = re.sub(r"\s+", " ", s.get("notes", "")).strip()[:notes_chars]
+            lines.append(f"[deck {s['n']}] {s['title']} :: {body}" + (f" || speaker notes: {note}" if note else ""))
+        return "CLASS DECK (the instructor's own slides, exact text; cite as [deck N]):\n" + "\n".join(lines)
+
+    text = render(None)
+    if len(text) > budget:   # several decks: an even share per slide rather than losing the last deck
+        text = render(max(160, budget // len(deck) - notes_chars - 60))
     return text[:budget], deck
+
+
+SOURCE_WEIGHTS = {"page": 2, "deck": 3, "slides": 3, "keyframes": 1, "qa": 2}
+
+
+def fit_blocks(blocks: dict, room: int, weights: dict | None = None) -> str:
+    """Join the notes' non-transcript sources (deck, keyframes, class Q&A, page text) within
+    `room` characters. When they don't fit, each gets a share by weight, a block needing less
+    than its share passes the rest on, and a cut block ends at a line end. (Before, the
+    source was cut at the end, so the Q&A, then the deck's last slides, were lost.)"""
+    text = "\n\n".join(v for v in blocks.values() if v)
+    if len(text) <= room:
+        return text
+    w = weights or SOURCE_WEIGHTS
+    left, alloc = {k: v for k, v in blocks.items() if v}, {}
+    avail = max(0, room - 2 * len(left))
+    while left:
+        tot = sum(w.get(k, 1) for k in left)
+        small = {k: v for k, v in left.items() if len(v) <= avail * w.get(k, 1) / tot}
+        if not small:
+            alloc.update({k: int(avail * w.get(k, 1) / tot) for k in left})
+            break
+        for k, v in small.items():
+            alloc[k] = len(v)
+            avail -= len(v)
+            del left[k]
+    out = []
+    for k, v in blocks.items():
+        cut = v[: alloc.get(k, 0)]
+        if len(cut) < len(v) and "\n" in cut:
+            cut = cut[: cut.rfind("\n")]
+        if cut:
+            out.append(cut)
+    return "\n\n".join(out)
 
 
 def live_qa_source(session, folder, budget=9000):
     """Write qa.md from live_class's Q&A threads and follow-ups; return a compact source block."""
+    import resources
     d = _live_dir(session)
+    sheet = resources.load_sheet(folder)   # the answered Q&A sheet added after class, if any
     if not (d / "qa_threads.json").exists():
-        return ""
+        if not sheet:
+            return ""
+        (folder / "qa.md").write_text("\n".join(resources.sheet_markdown(sheet, session["title"])) + "\n")
+        return resources.sheet_source(sheet, budget)
     try:
         import live_qa
     except Exception:
@@ -1005,6 +1098,8 @@ def live_qa_source(session, folder, budget=9000):
         say_src = "the meeting app's Q&A export" + (" and the live capture" if rest else "")
     else:
         say_src = "the live capture"
+    if sheet:   # questions the sheet answers are shown from it; the rest of the live capture follows
+        threads = [t for t in threads if not resources.in_sheet(t["q"], sheet)]
     md = [f"# Class Q&A — {session['title']}", "",
           f"_From {say_src}. Attendees are unnamed; staff replies as posted. Follow-ups are local-model drafts, not answers from the class._", ""]
     for t in threads:
@@ -1030,10 +1125,16 @@ def live_qa_source(session, folder, budget=9000):
                        f"  - Draft: {f['answer']}"]
             pm += [""]
         (folder / "qa_pruned.md").write_text("\n".join(pm) + "\n")
+    if sheet:
+        md[0] = "# Also captured live (not in the Q&A sheet)"
+        md = resources.sheet_markdown(sheet, session["title"]) + ["---", ""] + md
     (folder / "qa.md").write_text("\n".join(md) + "\n")
     lines = [f"Q ({t['time']}): {t['q'][:300]} | A: " + " / ".join(a["text"][:500] for a in t["answers"])
              for t in threads if live_qa.thread_kind(t) == "content" and t["answers"]]
-    return ("CLASS Q&A (quoted; attendee questions with staff replies, not the lecturer's words):\n" + "\n".join(lines))[:budget]
+    live_block = "CLASS Q&A (quoted; attendee questions with staff replies, not the lecturer's words):\n" + "\n".join(lines)
+    if sheet:
+        return (resources.sheet_source(sheet, budget) + ("\n\n" + live_block if lines else ""))[:budget]
+    return live_block[:budget]
 
 
 def studio_job(session, transcript_lines, deck_src, qa_src, cards, transcript_source="capture"):
@@ -1136,7 +1237,9 @@ def _name_allow(live_dir: Path | None = None) -> set[str]:
     """Words that look like names but are not: lectures/name_allow.txt, lectures/glossary.txt and
     the day's slide titles (deck headings name products and cases, not attendees)."""
     import name_guard
+    import glossary
     allow = name_guard.load_allow(LECTURES / "name_allow.txt") | name_guard.load_allow(LECTURES / "glossary.txt")
+    allow |= glossary.allow_words(glossary.load(LECTURES / "glossary.json"))   # CT-3: course terms are never names
     f = live_dir / "slides.jsonl" if live_dir else None
     if f and f.exists():
         for l in f.read_text().splitlines():
@@ -1236,6 +1339,12 @@ def build(session, con, describe=True, cards=20, quiet=False):
     if live:
         say(f"  using the live whisper re-transcription ({len(live)} parts) instead of screenpipe's ({len(audio)})")
         audio, transcript_source = live, "whisper_live"
+    else:
+        audio, filled = fill_untranscribed(con, session["start"] - dt.timedelta(seconds=45),
+                                           session["end"] + dt.timedelta(minutes=2), audio, say)
+        if filled:
+            say(f"  {filled} transcript line(s) filled from untranscribed audio")
+            transcript_source = "capture+whisper_fill"
     t0 = session["start"]
     transcript_lines = _guard_names(session, [f"[{hhmmss((a['ts']-t0).total_seconds())}] {a['text']}" for a in audio])
     transcript = "\n".join(transcript_lines)
@@ -1300,13 +1409,18 @@ def build(session, con, describe=True, cards=20, quiet=False):
     # 3. notes + cards (model, grounded in the two files above)
     slide_src = "SLIDES:\n" + "\n".join(f"[slide {s['n']} @ {s['at']}] {s['description'] or s['screen_text']}"
                                          for s in slides)
+    blocks = {"slides": slide_src}   # the non-transcript sources, fitted to the room left (fit_blocks)
     deck_src, deck = deck_source(folder)
     if deck_src:   # the deck replaces keyframe descriptions as the slide source (slides.md stays)
-        slide_src = deck_src + "\n\nKEYFRAME TIMES (when each captured slide was on screen):\n" + "\n".join(
-            f"[slide {s['n']} @ {s['at']}] {(s['description'] or s['screen_text'])[:90]}" for s in slides)
+        blocks = {"deck": deck_src, "keyframes": "KEYFRAME TIMES (when each captured slide was on screen):\n" + "\n".join(
+            f"[slide {s['n']} @ {s['at']}] {(s['description'] or s['screen_text'])[:90]}" for s in slides)}
+        slide_src = "\n\n".join(blocks.values())
         say(f"  class deck used as the slide source ({len(deck)} slides)")
-    qa_src = live_qa_source(session, folder)
+        import resources
+        (folder / "deck_index.md").write_text(resources.deck_index_markdown(deck))
+    qa_src = live_qa_source(session, folder, budget=16000)
     if qa_src:   # class Q&A: attendee questions and staff replies, names already removed
+        blocks["qa"] = qa_src
         slide_src = slide_src + "\n\n" + qa_src
         say(f"  class Q&A added to the notes source ({qa_src.count(chr(10)) + 1} lines)")
     # A reference transcript merged in by transcript_ref.py (e.g. Zoom's own export) is more
@@ -1315,6 +1429,13 @@ def build(session, con, describe=True, cards=20, quiet=False):
     if merged.exists():
         src_lines = _guard_names(session, [l for l in merged.read_text().splitlines()[3:] if l.strip()], report=False)
         say(f"  using merged reference transcript ({len(src_lines)} lines)")
+    pre = folder / "transcript_pre.jsonl"
+    if pre.exists():   # CT-6: lines filled from the recording, merged in by time and labelled
+        import gapfill
+        pre_lines = _guard_names(session, gapfill.source_lines(folder, t0), report=False)
+        tsec = lambda l: (lambda m: int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]) if m else 0)(re.match(r"\[(\d\d):(\d\d):(\d\d)\]", l))
+        src_lines = sorted(list(src_lines) + pre_lines, key=tsec)
+        say(f"  {len(pre_lines)} lines filled from the recording added to the notes source")
     transcript_src = "\n".join(src_lines)
     dur_s = float(session["minutes"]) * 60.0
     aligned = align_segments(slides, src_lines, deck=deck, duration_s=dur_s)
@@ -1340,10 +1461,11 @@ def build(session, con, describe=True, cards=20, quiet=False):
         digests = digest_parts(session["title"], parts, say)
         (folder / "digest.md").write_text(f"# Part digests — {session['title']}\n\n" + "\n\n".join(
             f"## Part {i}\n\n{d}" for i, d in enumerate(digests, 1)) + "\n")
-        source = ("DIGEST OF THE FULL TRANSCRIPT (timecoded):\n" + "\n\n".join(digests)
-                  + "\n\n" + slide_src)[: study.CTX]
+        head = "DIGEST OF THE FULL TRANSCRIPT (timecoded):\n" + "\n\n".join(digests) + "\n\n"
+        source = (head + fit_blocks(blocks, study.CTX - len(head)))[: study.CTX]
     else:
-        source = (f"TRANSCRIPT (timecoded):\n{transcript_src}\n\n" + slide_src)[: study.CTX]
+        head = f"TRANSCRIPT (timecoded):\n{transcript_src}\n\n"
+        source = (head + fit_blocks(blocks, study.CTX - len(head)))[: study.CTX]
     if not browser:
         notes = make_notes(session["title"], source)
 
@@ -1423,19 +1545,23 @@ def build(session, con, describe=True, cards=20, quiet=False):
 
 # ------------------------------------------------------------------ commands
 def cmd_list(a):
-    con = db(); ss = sessions(frames_since(con, parse_since(a.since)))
+    import lecture_manage
+    folded = lecture_manage.consolidated_ids(LECTURES)   # sessions consolidated into another lecture
+    con = db(); ss = [s for s in sessions(frames_since(con, parse_since(a.since))) if s["id"] not in folded]
     if a.json:
         out = []
         for s in ss:
             folder = LECTURES / f"{s['id']}_{slugify(s['title'])}"
             man = folder / "manifest.json"
-            title = s["title"]
+            title, mj = s["title"], {}
             if man.exists():
-                try: title = json.loads(man.read_text()).get("title") or title
+                try: mj = json.loads(man.read_text()); title = mj.get("title") or title
                 except Exception: pass
-            out.append({"id": s["id"], "title": title, "start": s["start"].isoformat(),
-                        "end": s["end"].isoformat(), "minutes": s["minutes"], "frames": len(s["frames"]),
-                        "built": (folder / "manifest.json").exists(), "folder": str(folder)})
+            out.append({"id": s["id"], "title": title, "start": (mj.get("start") if mj.get("consolidated") else None) or s["start"].isoformat(),
+                        "end": (mj.get("end") if mj.get("consolidated") else None) or s["end"].isoformat(),
+                        "minutes": (mj.get("minutes") if mj.get("consolidated") else None) or s["minutes"], "frames": len(s["frames"]),
+                        "built": (folder / "manifest.json").exists(), "folder": str(folder),
+                        "consolidated": bool(mj.get("consolidated_at"))})
         # built lectures whose frames aged out of the window still belong in the library
         seen = {o["folder"] for o in out}
         for m in sorted(LECTURES.glob("*/manifest.json")) if LECTURES.exists() else []:
@@ -1443,7 +1569,8 @@ def cmd_list(a):
             try: j = json.loads(m.read_text())
             except Exception: continue
             out.append({"id": j.get("id"), "title": j.get("title"), "start": j.get("start"), "end": j.get("end"),
-                        "minutes": j.get("minutes"), "frames": j.get("frames"), "built": True, "folder": str(m.parent)})
+                        "minutes": j.get("minutes"), "frames": j.get("frames"), "built": True, "folder": str(m.parent),
+                        "consolidated": bool(j.get("consolidated_at"))})
         print(json.dumps({"sessions": sorted(out, key=lambda o: o.get("start") or "", reverse=True)})); return
     if not ss: print("no lecture sessions found (is screenpipe capturing the portal?)"); return
     for s in ss:
@@ -1488,6 +1615,22 @@ def _manifest_window(con, ident):
     return []
 
 
+def _auto_drm(con, quiet=False):
+    """A drm: auto course decides once, from the frames behind its first build: if the player is
+    blanked, its pages join the DRM list (screen paused there, audio kept) from the next capture."""
+    import courses
+    c = courses.active()
+    if not c or c.get("drm") != "auto" or (courses.load_state().get("drm") or {}).get(c["id"]):
+        return None
+    try:
+        r = check_drm(con, hours=72)
+    except Exception:
+        return None
+    if not quiet and r.get("blanked") is not None:
+        print(f"  DRM check for {c['id']}: {r['reason']}" + (f" · {r['next']}" if r.get("next") else ""), file=sys.stderr)
+    return r
+
+
 def cmd_build(a):
     con = db()
     if a.start:
@@ -1508,16 +1651,232 @@ def cmd_build(a):
         targets = _manifest_window(con, a.id)
     if not targets: sys.exit(f"no session with id {a.id} (try: lecture list)")
     for s in targets:
+        cons = LECTURES / f"{s['id']}_{slugify(s['title'])}"
+        if not (cons / "manifest.json").exists():
+            cons = next((d for d in LECTURES.glob(f"{s['id']}_*") if (d / "manifest.json").exists()), cons)
+        try: is_cons = bool(json.loads((cons / "manifest.json").read_text()).get("consolidated"))
+        except Exception: is_cons = False
+        if is_cons:   # its parts span several capture windows: rebuild from the merged files
+            print(f"rebuilding consolidated {cons.name} from its files", file=sys.stderr)
+            r = rebuild_from_files(cons, cards=a.cards)
+            print(json.dumps({"ok": True, "folder": str(cons), "rebuild": r}) if a.json else f"✓ {cons}"); continue
         print(f"building {s['id']} — {s['title']} ({s['minutes']} min)", file=sys.stderr)
         folder, man = build(s, con, describe=not a.no_vision, cards=a.cards)
         if a.json:
             print(json.dumps({"ok": True, "folder": str(folder), "manifest": man})); continue
         print(f"✓ {folder}\n  {man['transcript_segments']} transcript segments · "
               f"{man['slides']} slides ({man['slides_described']} described) · {man['cards']} cards")
+    _auto_drm(con, quiet=a.json)
+
+def rebuild_from_files(folder, cards=20, say=lambda *a: print(*a, file=sys.stderr)):
+    """Notes, cards and the concept map again from a lecture's own files (transcript, slides,
+    deck, Q&A, page text): for a consolidated lecture, whose parts no one capture window covers."""
+    import lecture_manage, study_graph
+    folder = Path(folder)
+    man = json.loads((folder / "manifest.json").read_text())
+    title = man.get("title") or folder.name
+    start = dt.datetime.fromisoformat(str(man.get("start")).replace("Z", "+00:00")) if man.get("start") else None
+    merged = folder / "transcript_merged.md"
+    src_lines = lecture_manage._timed_lines(merged) or lecture_manage._timed_lines(folder / "transcript.md")
+    slides = []
+    for b in lecture_manage._slides(folder):
+        text = re.sub(r"!\[\[[^\]]+\]\]", "", b["body"]).replace("> On-screen text:", "").strip()
+        slides.append({"n": b["n"], "at": b["at"], "description": re.sub(r"\s+", " ", text)[:600], "screen_text": ""})
+    slide_src = "SLIDES:\n" + "\n".join(f"[slide {x['n']} @ {x['at']}] {x['description']}" for x in slides)
+    blocks = {"slides": slide_src}
+    deck_src, deck = deck_source(folder)
+    if deck_src:
+        blocks = {"deck": deck_src, "keyframes": "KEYFRAME TIMES (when each captured slide was on screen):\n" + "\n".join(
+            f"[slide {x['n']} @ {x['at']}] {x['description'][:90]}" for x in slides)}
+    if (folder / "qa.md").exists():
+        blocks["qa"] = "CLASS Q&A (names removed):\n" + (folder / "qa.md").read_text()[:16000]
+    if (folder / "page_text.md").exists():
+        blocks = {"page": "PORTAL PAGE TEXT:\n" + (folder / "page_text.md").read_text()[:20000], **blocks}
+    other = sum(len(v) for v in blocks.values())
+    transcript_src = "\n".join(src_lines)
+    dur_s = float(man.get("minutes") or 0) * 60.0
+    parts = _split_lines(src_lines, PART_CHARS) if len(transcript_src) + other > study.CTX else []
+    if parts:
+        digests = digest_parts(title, parts, say)
+        (folder / "digest.md").write_text(f"# Part digests — {title}\n\n" + "\n\n".join(
+            f"## Part {i}\n\n{d}" for i, d in enumerate(digests, 1)) + "\n")
+        head = "DIGEST OF THE FULL TRANSCRIPT (timecoded):\n" + "\n\n".join(digests) + "\n\n"
+    else:
+        head = f"TRANSCRIPT (timecoded):\n{transcript_src}\n\n"
+    _fit = globals().get("fit_blocks") or (lambda b, room: "\n\n".join(b.values())[:max(0, room)])
+    source = (head + _fit(blocks, study.CTX - len(head)))[: study.CTX]
+    say(f"  notes from {len(src_lines)} transcript lines and {len(slides)} slides…")
+    notes = make_notes(title, source)
+    when = f"{start.astimezone():%a %d %b %Y %H:%M} · " if start else ""
+    k = len(man.get("timeline") or []) or 1
+    (folder / "notes.md").write_text(f"# {title}\n\n_{when}{man.get('minutes')} min · notes by {study.MODEL} from "
+                                     f"this lecture's own files ({k} parts)_\n\n{notes}\n")
+    if cards and parts:
+        card_rows, per = [], max(3, -(-cards // len(parts)))
+        for i, part in enumerate(parts, 1):
+            say(f"  cards from part {i}/{len(parts)}…")
+            card_rows += make_cards(title, f"TRANSCRIPT (timecoded):\n{part}", per, say)
+    else:
+        card_rows = make_cards(title, source, cards, say) if cards else []
+    if card_rows:
+        (folder / "cards.tsv").write_text("\n".join(
+            f"{c['q'].replace(chr(9),' ')}\t{c['a'].replace(chr(9),' ')}\t{title} {c.get('at','')}" for c in card_rows) + "\n")
+    segs = [{"at": m[1], "text": m[2]} for m in (re.match(r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.*)", l) for l in src_lines) if m]
+    warnings = cite.verify_citations(notes, slides, segs, duration_s=dur_s or None)
+    cmap = None
+    if os.environ.get("STUDY_CONCEPT_MAP", "1") == "1":
+        try:
+            import study_aids
+            cmap = study_aids.concept_map(title, notes)
+        except Exception as e:   # no concept-map module here, or the model's output did not parse
+            say(f"  concept map skipped: {e}")
+        if cmap:
+            (folder / "concept_map.mmd").write_text(cmap + "\n")
+    man.update({"cards": len(card_rows) or man.get("cards", 0), "citation_warnings": warnings, "concept_map": bool(cmap),
+                "llm": study.MODEL, "rebuild_pending": False, "built_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "built_from": "files"})
+    (folder / "manifest.json").write_text(json.dumps(man, indent=2, ensure_ascii=False))
+    # vault note (the build's layout, from files)
+    vault_dir = VAULT / VAULT_SUB
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    concepts = re.findall(r"^\s*[-*]\s+\*\*(.+?)\*\*", notes, re.M)[:12]
+    links = " ".join(f"[[{c.strip()}]]" for c in dict.fromkeys(concepts))
+    try:
+        g_con = study_graph.connect(LECTURES / "study_graph.sqlite")
+        try:
+            study_graph.ingest_lecture(g_con, folder)
+            links = " ".join(study_graph.canonical_concept_links(g_con, concepts)) or links
+        finally:
+            g_con.close()
+    except Exception as e:
+        say(f"  study_graph warning: {e}")
+    cmap_md = f"## Concept map\n\n```mermaid\n{cmap}\n```\n\n" if cmap else ""
+    parts_md = "".join(f"- {t.get('title')} ({round(t.get('minutes') or 0)} min, from {hhmmss(t.get('offset_s') or 0)})\n"
+                       for t in man.get("timeline") or [])
+    lecture_manage.vault_note(vault_dir, man).write_text(
+        "---\n" + (f"date: {start.astimezone():%Y-%m-%d}\n" if start else "") + f"screenpipe_session: {man.get('id')}\n"
+        f"duration_min: {man.get('minutes')}\ncourse: {COURSE}\nmodule: {json.dumps(man.get('module') or '')}\n"
+        f"concepts: {json.dumps([c.strip() for c in dict.fromkeys(concepts)])}\n"
+        f"artefacts: {folder}\ntags: [lecture]\n---\n\n# {title}\n\n{notes}\n\n## Concepts\n{links or '_none extracted_'}\n\n{cmap_md}"
+        + (f"## Parts\n{parts_md}\n" if parts_md else "")
+        + f"## Artefacts\n- Transcript: `{folder/'transcript.md'}`\n- Slides: `{folder/'slides.md'}`\n"
+        f"- Flashcards: `{folder/'cards.tsv'}` ({len(card_rows)} cards)\n")
+    return {"ok": True, "lecture": folder.name, "cards": len(card_rows), "concept_map": bool(cmap),
+            "citation_warnings": len(warnings), "transcript_lines": len(src_lines), "slides": len(slides)}
+
+
+def _drop_from_indexes(lecture_ids):
+    """Remove lectures (folder names / session ids) from the search index and the concept graph."""
+    import sqlite3
+    for path, sqls in ((INDEX, ["DELETE FROM chunks_fts WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE lecture_id=?)",
+                                "DELETE FROM lines WHERE lecture_id=?", "DELETE FROM chunks WHERE lecture_id=?"]),
+                       (LECTURES / "study_graph.sqlite", ["DELETE FROM evidence_links WHERE lecture_id=?"])):
+        if not path.exists():
+            continue
+        try:
+            con = sqlite3.connect(path)
+            for i in lecture_ids:
+                for q in sqls:
+                    try:
+                        con.execute(q, (i,))
+                    except sqlite3.Error:
+                        pass
+            con.commit(); con.close()
+        except sqlite3.Error:
+            continue
+
+
+def _reindex(folder):
+    try:
+        build_index(folder.name, say=lambda *a: None)
+    except Exception:
+        pass
+
+
+def cmd_rename_lecture(a):
+    import lecture_manage, study_graph
+    folder = find_folder(a.id)
+    r = lecture_manage.rename(folder, a.title, VAULT / VAULT_SUB)
+    if r.get("ok") and r.get("changed"):
+        _reindex(folder)
+        try:
+            g = study_graph.connect(LECTURES / "study_graph.sqlite")
+            try: study_graph.ingest_lecture(g, folder)
+            finally: g.close()
+        except Exception:
+            pass
+    print(json.dumps(r) if a.json else (f"✓ renamed: {r.get('old_title')} → {r['title']}" if r.get("ok") else f"✗ {r['error']}"))
+
+
+def cmd_merge_lectures(a):
+    """Consolidate lectures into one: files joined on one timeline, sources to _superseded/,
+    then notes, cards and the concept map rebuilt from the merged files."""
+    import lecture_manage
+    dest = find_folder(a.id)
+    sources = [find_folder(x) for x in a.sources]
+    r = lecture_manage.merge(dest, sources, LECTURES / "_superseded", VAULT / VAULT_SUB)
+    if r.get("ok"):
+        _drop_from_indexes([Path(m).name.split(".merged-into-")[0] for m in r["moved"]] + r["source_ids"])
+        if not a.no_rebuild:
+            try:
+                r["rebuild"] = rebuild_from_files(dest, cards=a.cards, say=(lambda *x: None) if a.json else
+                                                  (lambda *x: print(*x, file=sys.stderr)))
+            except Exception as e:   # the merged files stay; `lecture build <id>` retries the rebuild
+                r["rebuild"] = {"ok": False, "error": str(e)[:300]}
+        _reindex(dest)
+    if a.json:
+        print(json.dumps(r)); return
+    if not r.get("ok"):
+        sys.exit(f"✗ {r['error']}")
+    print(f"✓ {r['parts']} lectures → {r['title']} ({r['minutes']} min, {r['transcript_lines']} lines, {r['slides']} slides)")
+    print(f"  sources and a copy of the destination as it was: {Path(r['backup']).parent}")
+    rb = r.get("rebuild") or {}
+    print("  notes and cards rebuilt" if rb.get("ok") else f"  rebuild: {rb.get('error') or 'skipped'}")
+
+
+def cmd_unmerge_lecture(a):
+    """Undo the latest consolidation into a lecture: it and its sources come back as they were."""
+    import lecture_manage, study_graph
+    dest = find_folder(a.id)
+    r = lecture_manage.unmerge(dest, LECTURES / "_superseded", VAULT / VAULT_SUB, leave=a.leave)
+    if r.get("ok"):
+        _drop_from_indexes([dest.name, dest.name.split("_", 1)[0]])
+        for name in [dest.name] + r["restored"]:
+            folder = LECTURES / name
+            _reindex(folder)
+            try:
+                g = study_graph.connect(LECTURES / "study_graph.sqlite")
+                try: study_graph.ingest_lecture(g, folder)
+                finally: g.close()
+            except Exception as e:
+                r.setdefault("graph_warnings", []).append(f"{name}: {str(e)[:120]}")
+    if a.json:
+        print(json.dumps(r)); return
+    if not r.get("ok"):
+        sys.exit(f"✗ {r['error']}")
+    print(f"✓ {r['title']}: back as it was before the merge")
+    for n in r["restored"]:
+        print(f"  restored {n}")
+    for n in r["left_out"]:
+        print(f"  left in _superseded: {n}")
+    print(f"  the merged version: {r['merged_copy']}")
+
+
+def cmd_library_check(a):
+    """What looks wrong in the library (read only): copies of a class, wrong dates, shared ids."""
+    import lecture_manage
+    r = lecture_manage.library_check(LECTURES)
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False)); return
+    print(f"{r['lectures']} lectures, {len(r['issues'])} thing(s) to look at")
+    for t in r["issues"]:
+        print(f"  [{t['kind']}] {t['message']}")
+
 
 def cmd_watch(a):
     import time
-    con = db(); seen = set()
+    import lecture_manage
+    con = db(); seen = set(lecture_manage.consolidated_ids(LECTURES))
     print(f"watching for finished lectures (idle {a.idle} min) — ctrl-c to stop", file=sys.stderr)
     while True:
         for s in sessions(frames_since(con, parse_since("2d"))):
@@ -1558,6 +1917,25 @@ def run_checks(vision_probe=True):
         chk("app_audio", n_tap > 0, f"{n_tap} transcript segments from {label}",
             None if n_tap else f"allow audio capture for the app that launches screenpipe: {PRIVACY}")
         chk("transcripts", n_a > 0, f"{n_a} segments; devices: {', '.join(devs) or '—'}", level="ok" if n_a else "warn")
+    try:   # a 3-hour class needs a few GB; macOS itself slows down when the disk is nearly full
+        du = _sh.disk_usage(Path.home())
+        free_gb, used = du.free / 1e9, du.used / du.total
+        lvl = "fail" if free_gb < 15 else ("warn" if free_gb < 40 or used > 0.95 else "ok")
+        chk("disk", lvl == "ok", f"{free_gb:.0f} GB free ({used:.0%} used)",
+            None if lvl == "ok" else "free some space before the next class", level=lvl)
+    except OSError:
+        pass
+    try:
+        import lecture_manage
+        lib = lecture_manage.library_check(LECTURES)
+        bad = [t for t in lib["issues"] if t["kind"] != "copies"]
+        cop = lib["counts"].get("copies", 0)
+        chk("library", not bad, (f"{lib['lectures']} lectures" + (f"; {cop} class(es) built twice" if cop else "")) if not bad
+            else "; ".join(t["message"] for t in bad[:2]),
+            None if not bad else "see `lecture library-check`; Lectures › right-click › Undo consolidation",
+            level="ok" if not bad else "warn")
+    except Exception as e:
+        chk("library", True, f"library check skipped: {str(e)[:80]}", level="ok")
     chk("ffmpeg", _sh.which("ffmpeg"), "ffmpeg " + ("found" if _sh.which("ffmpeg") else "missing"),
         None if _sh.which("ffmpeg") else "brew install ffmpeg")
     try:
@@ -2025,7 +2403,8 @@ def _lecture_lines(folder: Path) -> list[dict]:
         except (ValueError, AttributeError):
             return ""
     return [{"line_id": f"{key}/{r['kind']}/{r['idx']}", "t": local(r.get("t_abs") or ""), "t_abs": r.get("t_abs"),
-             "text": r["text"]} for r in recs if r["text"].strip()]
+             "text": r["text"], **({"source": "gapfill", "approx": r.get("approx", False)} if r.get("gapfill") else {})}
+            for r in recs if r["text"].strip()]
 
 
 def quiz_items(folder: Path) -> list[dict]:
@@ -2642,6 +3021,24 @@ def _newest_frame_t():
         return None
 
 
+def _capture_root() -> Path:
+    """One engine records every course, so capture health (records, gaps, the class window) is
+    kept with the default course, whichever course the app shows."""
+    try:
+        import courses
+        reg = courses.load()
+        if not reg["courses"][0].get("implicit"):
+            return courses.root(reg, courses.get(reg, None))
+    except Exception:
+        pass
+    return LECTURES
+
+
+def _capture_calendar() -> dict:
+    p = _capture_root() / "calendar.json"
+    return course_calendar.load(p) if p.exists() else course_calendar.load()
+
+
 def health_probe(now=None) -> dict:
     """One CT-1 probe from the engine's outputs; appends to the day's capture_health.jsonl
     while capture runs or a class is scheduled now, and returns {record, alert}."""
@@ -2649,8 +3046,9 @@ def health_probe(now=None) -> dict:
     mode = _mode_state()
     running = bool(mode.get("running"))
     newest = capture_health.newest_chunks(SP_DATA)
-    chunk_t = max((t for _, t in newest.values()), default=None)
-    fresh = [p for p, t in newest.values() if (now - t).total_seconds() < 120]   # devices still writing
+    chunk_t, lag = capture_health.newest_saved(newest)      # when the newest chunk was saved
+    saved = {p: capture_health.saved_t(p) for p, _ in newest.values()}
+    fresh = [p for p, w in saved.items() if w and (now - w).total_seconds() < 120]   # devices still writing
     level = capture_health.combined_level([capture_health.level_db(p) for p in fresh]) if running and fresh else None
     sp = {}
     if running:
@@ -2661,9 +3059,11 @@ def health_probe(now=None) -> dict:
             sp = {}
     expected = running and (_meeting_running() or mode.get("mode") == "live")
     rec = capture_health.probe(now, running, chunk_t, level, _newest_frame_t() if running else None,
-                               expected, drm_paused=bool(sp.get("drm_content_paused")))
+                               expected, drm_paused=bool(sp.get("drm_content_paused")),
+                               engine=capture_health.engine_signals(sp, now), audio_write_lag_s=lag if running else None,
+                               audio_unsaved_s=capture_health.unsaved_s(newest, now) if running else None)
     day = now.astimezone().strftime("%Y%m%d")
-    cal = course_calendar.session_on(now.astimezone().date())
+    cal = course_calendar.session_on(now.astimezone().date(), _capture_calendar())
     in_class = False
     if cal:
         try:
@@ -2673,7 +3073,7 @@ def health_probe(now=None) -> dict:
             in_class = False
     rows = [rec]
     if running or in_class:
-        rows = capture_health.append(LECTURES / "live" / day / "capture_health.jsonl", rec)
+        rows = capture_health.append(_capture_root() / "live" / day / "capture_health.jsonl", rec)
     recent = [r for r in rows if (now - capture_health.parse_t(r["t"])).total_seconds() <= 600]
     return {"ok": True, "record": rec, "alert": capture_health.alert(recent), "mode": mode.get("mode"),
             "in_class": in_class}
@@ -2684,8 +3084,61 @@ def cmd_health(a):
     if a.json:
         print(json.dumps(rep)); return
     r = rep["record"]
-    print(f"capture {r['status']}: audio chunk {r['audio_chunk_age_s']} s old at {r['audio_level_db']} dB, "
-          f"newest frame {r['frame_age_s']} s old" + (f"\n  ALERT: {rep['alert']['message']}" if rep["alert"] else ""))
+    print(f"capture {r['status']}: audio chunk saved {r['audio_chunk_age_s']} s ago at {r['audio_level_db']} dB"
+          + (f" ({r['audio_unsaved_s']} s recorded but not saved)" if r.get("audio_unsaved_s") else "")
+          + f", newest frame {r['frame_age_s']} s old" + (f"\n  ALERT: {rep['alert']['message']}" if rep["alert"] else ""))
+
+
+def _sp_post(path: str, timeout: int = 20) -> tuple[bool, str]:
+    req = urllib.request.Request(f"http://127.0.0.1:3030{path}", data=b"{}", method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          **({"Authorization": f"Bearer {study.sp_key()}"} if study.sp_key() else {})})
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout) as r:
+            return 200 <= r.status < 300, ""
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def audio_restart(wait_s: int = 300, force: bool = False, settle_s: int = 75, sleep=None, now=None) -> dict:
+    """Restart audio capture only (the engine's /audio/stop then /audio/start; screen capture
+    keeps running). First wait until the audio already recorded is saved: a restart drops
+    whatever is still in memory (21 Nov: 5 minutes). Then check that a new chunk arrives."""
+    import time
+    sleep = sleep or time.sleep
+    now = now or (lambda: dt.datetime.now(dt.timezone.utc))
+    if not _mode_state().get("running"):
+        return {"ok": False, "error": "capture is not running"}
+    t0 = now()
+    unsaved = capture_health.unsaved_s(capture_health.newest_chunks(SP_DATA), now())
+    while unsaved is not None and unsaved > 45 and (now() - t0).total_seconds() < wait_s:
+        sleep(10)
+        unsaved = capture_health.unsaved_s(capture_health.newest_chunks(SP_DATA), now())
+    if unsaved is not None and unsaved > 45 and not force:
+        return {"ok": False, "unsaved_s": round(unsaved), "error": f"{round(unsaved)} s of recorded audio is not saved yet; "
+                "restarting now would drop it. Keep capturing and try again when saving has caught up."}
+    before = max((t for _, t in capture_health.newest_chunks(SP_DATA).values()), default=None)
+    ok, err = _sp_post("/audio/stop")
+    if not ok:
+        return {"ok": False, "error": f"audio stop failed: {err}"}
+    sleep(2)
+    ok, err = _sp_post("/audio/start")
+    if not ok:
+        return {"ok": False, "error": f"audio start failed: {err} (audio is stopped: press Stop, then Start capture)"}
+    waited = 0
+    while waited < settle_s:
+        sleep(5); waited += 5
+        newest = max((t for _, t in capture_health.newest_chunks(SP_DATA).values()), default=None)
+        if newest and (before is None or newest > before) and (now() - newest).total_seconds() < 120:
+            return {"ok": True, "waited_for_save_s": round((now() - t0).total_seconds()) - waited, "new_chunk_after_s": waited}
+    return {"ok": False, "error": f"audio restarted but no new chunk was saved within {settle_s} s"}
+
+
+def cmd_audio_restart(a):
+    rep = audio_restart(a.wait, a.force)
+    print(json.dumps(rep) if a.json else ("✓ audio restarted; new audio is being saved" if rep["ok"] else f"✗ {rep['error']}"))
+    if not rep["ok"]:
+        sys.exit(1)
 
 
 def lecture_gaps(folder: Path) -> list[dict]:
@@ -2702,7 +3155,7 @@ def lecture_gaps(folder: Path) -> list[dict]:
             start + dt.timedelta(minutes=float(man.get("minutes") or 0))
     day = cs.astimezone().strftime("%Y%m%d")
     live = LECTURES / "live" / day
-    hf = live / "capture_health.jsonl"
+    hf = _capture_root() / "live" / day / "capture_health.jsonl"   # shared by every course
     health = [json.loads(l) for l in hf.read_text().splitlines() if l.strip()] if hf.exists() else []
     filled = man.get("gap_filled") or []
     filled = filled if isinstance(filled, list) else [filled]
@@ -2712,6 +3165,118 @@ def lecture_gaps(folder: Path) -> list[dict]:
     man["gaps"] = g
     (folder / "manifest.json").write_text(json.dumps(man, indent=1, ensure_ascii=False))
     return g
+
+
+def lecture_gapfill(folder: Path, audio: Path | None = None, replay: tuple | None = None, frm: str | None = None,
+                    to: str | None = None, dry_run: bool = False, say=print) -> dict:
+    """CT-6: fill a gap in a built lecture's transcript from the class recording (gapfill.py).
+    `audio` is a recording file (its audio track is used); `replay` (t0, t1) joins the audio
+    chunks captured while the recording was replayed on this Mac. `frm`/`to` are local HH:MM
+    on the class day; without them the first unfilled gap in the ledger is used. Existing
+    transcript lines are never changed; the filled lines go to transcript_pre.jsonl/.md."""
+    import evidence, gapfill, tempfile
+    man = json.loads((folder / "manifest.json").read_text())
+    start = dt.datetime.fromisoformat(man["start"].replace("Z", "+00:00"))
+    day = start.astimezone().strftime("%Y%m%d")
+    if frm and to:
+        local = lambda hm: dt.datetime.strptime(f"{day} {hm}", "%Y%m%d %H:%M").astimezone()
+        w0, w1 = local(frm), local(to)
+    else:
+        open_gaps = [g for g in lecture_gaps(folder) if not g.get("filled")]
+        if not open_gaps:
+            return {"ok": False, "error": "no unfilled gap in this lecture's ledger; pass --from and --to"}
+        w0, w1 = (dt.datetime.fromisoformat(open_gaps[0][k]) for k in ("from", "to"))
+    _, recs = evidence.lecture_records(folder, lambda xs: xs)
+    lines = [(dt.datetime.fromisoformat(r["t_abs"]).timestamp(), r["text"]) for r in recs
+             if r["kind"] == "t" and not r.get("gapfill") and r.get("t_abs")]
+    words = gapfill.line_words(lines)
+    with tempfile.TemporaryDirectory() as td:
+        if replay:
+            rec, _ = gapfill.replay_audio(SP_DATA, replay[0], replay[1], Path(td) / "replay.m4a")
+            source = f"replay {replay[0].astimezone():%d %b %H:%M}"
+        else:
+            rec = Path(audio).expanduser()
+            source = rec.name
+            if not rec.is_file():
+                return {"ok": False, "error": f"recording not found: {rec.name}"}
+        res = gapfill.fill(words, w0.timestamp(), w1.timestamp(), rec, gapfill.media_length(rec),
+                           gapfill.whisper_transcribe, guess_offset=start.timestamp(), log=say)
+    out = {"ok": bool(res["lines"]) and not res.get("error"), "error": res.get("error"), "holes": res["holes"],
+           "lines": len(res["lines"]), "approx_lines": sum(1 for l in res["lines"] if l["approx"]),
+           "conf_median": round(statistics.median(l["align_conf"] for l in res["lines"]), 2) if res["lines"] else None,
+           "coarse_offset_s": res.get("coarse_offset_s"), "from": w0.isoformat(timespec="seconds"),
+           "to": w1.isoformat(timespec="seconds"), "dry_run": dry_run}
+    if not out["ok"] or dry_run:
+        return out
+    rows = gapfill.write_pre(folder, evidence.lecture_key(folder.name), start, res, w0.timestamp(), w1.timestamp(),
+                             source, _day_guard(day))
+    man = json.loads((folder / "manifest.json").read_text())
+    filled = man.get("gap_filled") or []
+    filled = [f for f in (filled if isinstance(filled, list) else [filled])
+              if not (f.get("from") == out["from"] and f.get("to") == out["to"])]
+    filled.append({"from": out["from"], "to": out["to"], "source": "recording", "file": source, "lines": len(rows),
+                   "approx_lines": out["approx_lines"], "conf_median": out["conf_median"],
+                   "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")})
+    man["gap_filled"] = filled
+    (folder / "manifest.json").write_text(json.dumps(man, indent=1, ensure_ascii=False))
+    lecture_gaps(folder)
+    out["written"] = len(rows)
+    return out
+
+
+def cmd_gapfill(a):
+    folder = find_folder(a.id)
+    replay = None
+    if a.replay_from:
+        t0 = dt.datetime.fromisoformat(a.replay_from).astimezone()
+        replay = (t0, t0 + dt.timedelta(minutes=a.replay_minutes))
+    elif not a.audio:
+        sys.exit("give --audio <recording file> or --replay-from <local ISO time>")
+    r = lecture_gapfill(folder, audio=a.audio, replay=replay, frm=a.frm, to=a.to, dry_run=a.dry_run,
+                        say=(lambda *m: None) if a.json else print)
+    if a.json:
+        print(json.dumps(r)); return
+    if not r["ok"]:
+        print("gap fill:", r.get("error") or "nothing filled"); return
+    print(f"{r['from']} → {r['to']}: {r['lines']} lines ({r['approx_lines']} approximate), median confidence {r['conf_median']}"
+          + ("  [dry run]" if r["dry_run"] else "  → transcript_pre.md; rebuild to use them in the notes"))
+
+
+def cmd_glossary(a):
+    """CT-3: the course glossary (glossary.py). build | show | add TERM | remove TERM | suggest [ID]."""
+    import glossary, name_guard
+    path = LECTURES / "glossary.json"
+    g = glossary.load(path)
+    out = lambda o: print(json.dumps(o, ensure_ascii=False))
+    if a.action == "build":
+        roster = name_guard.Roster(name_guard.load_roster(PRIVATE), keep=name_guard.staff_names())
+        removed = {t.lower() for t, d in name_guard.load_decisions(PRIVATE).items() if d == "remove"}
+        words = name_guard.load_lower_dictionary()
+        g = glossary.build(LECTURES, lambda w: w.lower() in removed or roster.match(w) is not None,
+                           lambda w: name_guard.in_dictionary(w, words), old=g)
+    elif a.action in ("add", "remove"):
+        if not a.term.strip():
+            return out({"ok": False, "error": "give a term"})
+        g = (glossary.add if a.action == "add" else glossary.remove)(g, a.term.strip())
+    elif a.action == "suggest":
+        folder = find_folder(a.id)
+        lines = [l for l in _lecture_lines(folder) if "/t/" in l["line_id"]]
+        words = name_guard.load_lower_dictionary()
+        rows = glossary.suggestions(lines, g, name_guard.similarity, in_dictionary=lambda w: name_guard.in_dictionary(w, words))
+        (folder / "glossary_suggestions.json").write_text(json.dumps(rows, indent=1, ensure_ascii=False))
+        return out({"ok": True, "lecture": folder.name, "suggestions": len(rows), "top": rows[:10],
+                    "note": "for review only; the transcript is unchanged"})
+    if a.action != "show":
+        path.write_text(json.dumps(g, indent=1, ensure_ascii=False))
+    act = glossary.active(g)
+    kinds = {}
+    for e in act:
+        kinds[e.get("kind", "?")] = kinds.get(e.get("kind", "?"), 0) + 1
+    res = {"ok": True, "terms": len(act), "by_kind": kinds, "manual": sum(1 for e in act if e.get("source") == "manual"),
+           "to_review": len(glossary.review(g)), "removed": sum(1 for e in g.get("terms", []) if e.get("status") == "removed")}
+    if a.json and a.action == "show":
+        res["glossary"], res["review"] = act, [e["term"] for e in glossary.review(g)]
+    out(res)
 
 
 def cmd_gaps(a):
@@ -3133,6 +3698,57 @@ def cmd_qa(a):
     print(f"✓ {folder / 'qa.md'}" + (f" · pruned: {folder / 'qa_pruned.md'}" if (folder / "qa_pruned.md").exists() else ""))
 
 
+def cmd_resources(a):
+    """The class's files posted after it (deck .pptx/.pdf, agenda .docx, answered Q&A sheet
+    .xlsx, readings): `add` decides what each is and writes the form the build reads; `list`
+    shows what was added. Rebuild the lecture afterwards to use them."""
+    import resources, name_guard
+    try:   # readings (packs, exports) where the study integrations are installed
+        import study_integrations
+        import_reading = lambda f, path, title: study_integrations.import_reading(f, path, title=title)
+    except ImportError:
+        import_reading = None
+    folder = find_folder(a.id)
+    man = json.loads((folder / "manifest.json").read_text())
+    day = dt.datetime.fromisoformat(man["start"]).astimezone().strftime("%Y%m%d")
+    live = LECTURES / "live" / day
+    if a.action == "list":
+        rows = [{k: v for k, v in e.items() if k != "sha256"} for e in resources.load_index(folder)]
+        if a.json:
+            print(json.dumps({"lecture": folder.name, "resources": rows}))
+        else:
+            print(f"{len(rows)} resource(s) for {folder.name}")
+            for e in rows:
+                print(f"  {e['kind']:<9} {e['file']} — {e.get('summary', '')}")
+        return
+    if not a.files:
+        sys.exit("give one or more files to add")
+    staff = name_guard.staff_names()
+
+    def guard(lines):
+        out, _ = name_guard.guard(lines, panel_authors=set(), allow=_name_allow(live), roster=_name_roster(),
+                                  decisions=name_guard.load_decisions(PRIVATE))
+        return out
+
+    def learn(people):   # the sheet's asked-by names strengthen the private roster (never printed)
+        name_guard.update_roster(PRIVATE, {day: {p for p in people if p not in staff}})
+
+    sys.path.insert(0, str(HERE / "tools"))
+    import deck_text
+    rep = resources.add(folder, a.files, live_dir=live, read_deck=deck_text.read_deck,
+                        import_reading=import_reading,
+                        guard=guard, learn=learn, keep=staff)
+    if a.json:
+        print(json.dumps(rep))
+        return
+    for e in rep["added"]:
+        print(f"✓ {e['kind']:<9} {e['file']} — {e.get('summary', '')}")
+    for e in rep["skipped"]:
+        print(f"· skipped   {e['file']} — {e['reason']}")
+    if rep["rebuild"]:
+        print(f"  rebuild to use them: lecture build {man['id']}")
+
+
 def cmd_ingest(a):
     """After class: find the meeting app's files beside the class (live folder or the built
     lecture folder), then clean the live transcript, import the Q&A export, merge and score
@@ -3204,10 +3820,89 @@ def cmd_finish(a):
             print(f"~ {e}")
 
 
+def check_drm(con, hours=24, sample=24):
+    """Is the active course's player blanked by DRM under screen capture? Looks at frames kept
+    from the course's sites in the last `hours` (markers carry no image and are skipped)."""
+    import tempfile
+    import courses
+    from PIL import Image
+    c = courses.active()
+    if c is None:
+        return {"ok": False, "error": "no course registry: nothing to check"}
+    start = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
+    sites = c.get("sites") or [SITE]
+    frames = [f for f in frames_since(con, start)
+              if f.get("capture_trigger") != "drm_marker" and any(courses.site_matches(x, f.get("browser_url") or "") for x in sites)]
+    step = max(1, len(frames) // sample)
+    shares = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in frames[::step][:sample]:
+            img = frame_image(con, f, tmp)
+            if not img:
+                continue
+            try:
+                with Image.open(img) as im:
+                    shares.append(courses.dark_share(im))
+            except OSError:
+                continue
+    verdict = courses.drm_verdict(shares)
+    out = {"ok": True, "course": c["id"], "frames_seen": len(frames), "drm_setting": c.get("drm", False), **verdict}
+    if c.get("drm") == "auto":
+        st = courses.record_drm(c["id"], verdict)
+        out["drm_on"] = courses.drm_on(c, st)
+        if verdict.get("blanked"):
+            out["next"] = "Restart capture from the app: the engine then pauses the screen on these pages and keeps audio."
+    return out
+
+
+def cmd_courses(a):
+    import courses
+    if a.action == "list":
+        s = courses.summary()
+        s["active"] = os.environ.get("STUDY_COURSE_ID") or s["default"]
+        if a.json: print(json.dumps(s)); return
+        for c in s["courses"]:
+            mark = "*" if c["id"] == s["active"] else " "
+            print(f"{mark} {c['id']:<30} {c['kind']:<10} {c['lectures']:>3} lectures · {', '.join(c['sites']) or 'calendar'} · {c['root']}")
+        return
+    if a.action == "which":
+        cid = courses.for_url(a.url or "")
+        print(json.dumps({"ok": True, "url": a.url, "course": cid}) if a.json else (cid or "no course matches")); return
+    if a.action == "tabs":
+        r = courses.chrome_tabs()
+    elif a.action == "add":
+        r = courses.add(a.name or "", a.url or "", a.title, a.focus, a.kind, a.short)
+    elif a.action == "rename":
+        r = courses.rename(a.url or os.environ.get("STUDY_COURSE_ID") or "", a.name, a.short)
+    else:
+        r = check_drm(db(), hours=a.hours)
+    print(json.dumps(r) if a.json else json.dumps(r, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser(prog="lecture", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("courses", help="courses side by side: list, which <url>, check-drm (pick one with --course <id>)")
+    p.add_argument("action", nargs="?", default="list", choices=["list", "which", "check-drm", "tabs", "add", "rename"])
+    p.add_argument("url", nargs="?", help="which/add: the page URL; rename: the course id")
+    p.add_argument("--hours", type=int, default=24)
+    p.add_argument("--name"); p.add_argument("--short"); p.add_argument("--title", help="add: the page title (from a tab)")
+    p.add_argument("--focus"); p.add_argument("--kind", choices=["live", "self_paced"])
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_courses)
+    p = sub.add_parser("rename-lecture", help="rename a built lecture: title everywhere, vault note, index (folder keeps its id)")
+    p.add_argument("id"); p.add_argument("--title", required=True)
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_rename_lecture)
+    p = sub.add_parser("library-check", help="copies of a class, lectures dated away from their capture day, shared ids (read only)")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_library_check)
+    p = sub.add_parser("unmerge-lecture", help="undo the latest consolidation into a lecture")
+    p.add_argument("id", help="the destination lecture (id or folder name)")
+    p.add_argument("--leave", action="append", default=[], help="a source folder to keep out of the library")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_unmerge_lecture)
+    p = sub.add_parser("merge-lectures", help="consolidate lectures into a destination lecture, then rebuild notes and cards")
+    p.add_argument("id", help="destination lecture"); p.add_argument("--from", dest="sources", nargs="+", required=True)
+    p.add_argument("--no-rebuild", action="store_true"); p.add_argument("--cards", type=int, default=20)
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_merge_lectures)
     p = sub.add_parser("list"); p.add_argument("--since", default="7d")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_list)
     p = sub.add_parser("build"); p.add_argument("id", nargs="?", default="last",
@@ -3314,8 +4009,24 @@ def main():
     p.add_argument("rest", nargs=argparse.REMAINDER); p.set_defaults(fn=lambda a: __import__("capstone_cli").main(a.rest))
     p = sub.add_parser("health", help="capture health: one probe (audio age and level, newest frame) and any alert")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_health)
+    p = sub.add_parser("glossary", help="CT-3: course terms from slides and the evidence bank (never names); suggestions for review")
+    p.add_argument("action", choices=["build", "show", "add", "remove", "suggest"]); p.add_argument("id", nargs="?", default="last")
+    p.add_argument("--term", default=""); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_glossary)
+
+
+    p = sub.add_parser("audio-restart", help="restart audio capture only, after recorded audio is saved (screen keeps running)")
+    p.add_argument("--wait", type=int, default=300, help="seconds to wait for saving to catch up first")
+    p.add_argument("--force", action="store_true", help="restart even if recorded audio is not saved yet")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_audio_restart)
     p = sub.add_parser("gaps", help="gap ledger for a built lecture (late start, holes) into gaps.json and the manifest")
     p.add_argument("id", nargs="?", default="last"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_gaps)
+    p = sub.add_parser("gapfill", help="CT-6: fill a gap from the class recording (audio only); existing lines never change")
+    p.add_argument("id", nargs="?", default="last"); p.add_argument("--audio", help="recording file (its audio is used)")
+    p.add_argument("--replay-from", dest="replay_from", help="local ISO time the recording was replayed on this Mac")
+    p.add_argument("--replay-minutes", dest="replay_minutes", type=float, default=240)
+    p.add_argument("--from", dest="frm", help="local HH:MM (default: the first unfilled gap)"); p.add_argument("--to")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true"); p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_gapfill)
     p = sub.add_parser("gates", help="the After-class regression gates for a built lecture (model-free)")
     p.add_argument("id", nargs="?", default="last"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_gates)
     p = sub.add_parser("index", help="build the evidence store (lectures/index.sqlite) from guarded text")
@@ -3341,6 +4052,9 @@ def main():
     p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_qa)
     p = sub.add_parser("finish", help="after Lecture Lens Studio ran a lecture (browser mode): vault note and manifest")
     p.add_argument("id", nargs="?", default="last", help="session id, 'last' or 'all'"); p.set_defaults(fn=cmd_finish)
+    p = sub.add_parser("resources", help="add the class's files posted after it: deck (.pptx/.pdf), agenda (.docx), answered Q&A sheet (.xlsx), readings")
+    p.add_argument("action", choices=["add", "list"]); p.add_argument("id")
+    p.add_argument("files", nargs="*"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_resources)
     p = sub.add_parser("ingest", help="after class: use the meeting app's transcript/Q&A export/deck found beside the class")
     p.add_argument("id", nargs="?", default="last"); p.set_defaults(fn=cmd_ingest)
     a = ap.parse_args(); a.fn(a)

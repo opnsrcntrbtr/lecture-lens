@@ -25,6 +25,12 @@ struct MainView: View {
             List(Screen.allCases, selection: $model.screen) { s in
                 Label(s.rawValue, systemImage: s.symbol).font(.scaled(.body)).tag(s)
             }
+            .safeAreaInset(edge: .top) {
+                if let list = model.courseList {
+                    CoursePicker(model: model, courses: list.choices)
+                        .padding(.horizontal, 10).padding(.top, 6)
+                }
+            }
             .navigationSplitViewColumnWidth(min: 150, ideal: 150 + 40 * (TextScale.current - 1) * 2, max: 320)
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 6) {
@@ -34,16 +40,88 @@ struct MainView: View {
                 }.padding(10)
             }
         } detail: {
-            switch model.screen ?? .capture {
-            case .capture: CaptureView(model: model)
-            case .live: LiveView(model: model)
-            case .lectures: LecturesView(model: model)
-            case .review: ReviewView(model: model)
-            case .ask: AskView(model: model)
-            case .capstone: CapstoneView(model: model)
-            case .evals: EvalsView(model: model)
-            case .settings: SettingsView(model: model)
+            Group {
+                switch model.screen ?? .capture {
+                case .capture: CaptureView(model: model)
+                case .live: LiveView(model: model)
+                case .lectures: LecturesView(model: model)
+                case .review: ReviewView(model: model)
+                case .ask: AskView(model: model)
+                case .capstone: CapstoneView(model: model)
+                case .evals: EvalsView(model: model)
+                case .settings: SettingsView(model: model)
+                }
+            }
+            .id(model.course?.id ?? "")     // a course switch rebuilds the screen with that course's data
+            .safeAreaInset(edge: .top) {
+                if let w = model.classModeWarning {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "video.badge.exclamationmark").foregroundStyle(.orange).accessibilityHidden(true)
+                        Text(w).font(.scaled(.callout)).lineLimit(3)
+                        Spacer()
+                        Button("Switch to Auto") { Task { await model.setMode("auto") } }
+                            .buttonStyle(.borderedProminent).controlSize(.small)
+                            .disabled(model.busyCapture)
+                            .help("Unpin the mode: capture follows meetings again (live during the class, portal otherwise)")
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(.orange.opacity(0.12))
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Capture mode warning: \(w)")
+                }
+            }
+            .safeAreaInset(edge: .top) {
+                if let err = model.lastError {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityHidden(true)
+                        Text(err).font(.scaled(.callout)).textSelection(.enabled).lineLimit(3)
+                        Spacer()
+                        Button("Dismiss") { model.lastError = nil }.buttonStyle(.borderless).controlSize(.small)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(.orange.opacity(0.12))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Problem: \(err)")
+                }
             }
         }
+    }
+}
+
+/// Which course the app shows. Capture is shared; each course keeps its own lectures,
+/// study aids, review, Ask, vault folder and NotebookLM folder.
+struct CoursePicker: View {
+    @Bindable var model: AppModel
+    let courses: [CourseList.Course]
+    @State private var adding = false
+    @State private var renaming: CourseList.Course?
+
+    var body: some View {
+        Menu {
+            ForEach(courses) { c in
+                Button {
+                    model.selectCourse(c)
+                } label: {
+                    if c.id == model.course?.id { Label(c.name, systemImage: "checkmark") } else { Text(c.name) }
+                }
+            }
+            if !courses.isEmpty { Divider() }
+            Button("Add course…", systemImage: "plus") { adding = true }
+            Button("Rename course…", systemImage: "pencil") { renaming = model.course }
+                .disabled(model.course == nil)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: model.course?.selfPaced == true ? "play.rectangle" : "person.3")
+                    .accessibilityHidden(true)
+                Text(model.course?.label ?? "Courses").font(.scaled(.callout)).lineLimit(1).truncationMode(.middle)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .help(model.course.map { "Showing \($0.name). Capture records every course's sites; switch to see another course's lectures." } ?? "Pick a course")
+        .accessibilityLabel("Course: \(model.course?.name ?? "none")")
+        .accessibilityHint("Shows another course's lectures, study aids and review")
+        .accessibilityIdentifier("course.picker")
+        .sheet(isPresented: $adding) { AddCourseSheet(model: model) }
+        .sheet(item: $renaming) { c in RenameCourseSheet(model: model, course: c) }
     }
 }

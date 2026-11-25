@@ -787,6 +787,8 @@ def run(a):
             "until": until.isoformat(), "idea": os.environ.get("LIVE_CAPSTONE_IDEA", "").strip()}))
         log("browser mode: outline, questions and Q&A follow-ups are left to Lecture Lens Studio")
 
+    asr = None   # set below when the event-driven pass is on
+
     def whisper_pass(now, final=False):
         """Transcribe finished audio not yet done, through the hallucination filter, then the
         microphone backup. The loop calls it every whisper interval; run() calls it once more
@@ -795,7 +797,7 @@ def run(a):
         files = [f for f in finished_files(names, AUDIO_DEVICE, start, now) if f[1] not in done]
         titles = [s["title"] for s in load(slide_f) if s.get("kind", "slide") == "slide"][-3:]
         prompt = (a.prompt + " " + " ".join(titles)).strip()[:600]
-        for b in batches(files):
+        for b in (batches(files) if asr is None else []):   # event mode: the thread does these
             prev = [f for f in finished_files(names, AUDIO_DEVICE, start, now)
                     if f[0] < b[0][0] and (b[0][0] - f[0]).total_seconds() <= CHUNK_S + 15][-1:]
             loud, silent = split_silent_files(prev + b)
@@ -889,6 +891,31 @@ def run(a):
     except Exception:
         sched_end = None
     ended = False
+    # CT-2: STUDY_ASR_EVENT=1 (or STUDY_ASR_MODE=event) transcribes each closed chunk at once in a
+    # thread; read once, at start-up, so nothing changes during a class. The default stays the timer.
+    asr, asr_stop = None, None
+    event_mode = os.environ.get("STUDY_ASR_MODE", "timer") == "event" or \
+        os.environ.get("STUDY_ASR_EVENT", "").lower() in ("1", "true", "on", "yes")
+    if event_mode and not a.no_whisper:
+        import threading
+        import live_asr
+        asr_prompt = lambda: (a.prompt + " " + " ".join([s["title"] for s in load(slide_f)
+                                                         if s.get("kind", "slide") == "slide"][-3:])).strip()[:600]
+        clean = lambda rows: transcript_clean.clean_segments(load(seg_f)[-40:] + rows, asr_prompt())[0]
+        asr = live_asr.EventASR(DATA, AUDIO_DEVICE, start, out, f"live-{today.strftime('%Y%m%d')}", prompt_fn=asr_prompt,
+                                clean=clean, log=log, done=done)
+        asr_stop = threading.Event()
+
+        def asr_loop():
+            while not asr_stop.is_set():
+                try:
+                    if audio_ok(health()):
+                        asr.poll()
+                except Exception as e:
+                    log("asr error", e)
+                asr_stop.wait(2)
+        threading.Thread(target=asr_loop, daemon=True, name="event-asr").start()
+        log("asr: event-driven second pass")
     while dt.datetime.now(dt.timezone.utc) < until and not STOP_REQUEST.exists():
         h = health()
         ok = healthy(h)
@@ -1055,6 +1082,13 @@ def run(a):
             whisper_pass(dt.datetime.now(dt.timezone.utc), final=True)
         except Exception as e:
             log("final whisper error", e)
+    if asr is not None:
+        asr_stop.set()
+        try:
+            asr.poll(final=True)
+            asr.flush()
+        except Exception as e:
+            log("asr drain error", e)
     write_snapshot(dt.datetime.now(dt.timezone.utc))
     STOP_REQUEST.unlink(missing_ok=True)
     log("stopped")

@@ -37,6 +37,18 @@ def test_parse_agenda_parts():
     assert "drip lines" in ps[1]["detail"] and "Close" not in ps[2]["detail"]
 
 
+def test_breaks_and_closing_lines_stay_out_of_a_part():
+    ps = agenda.parse_agenda("""Part 1 · Beds (about 40 minutes)
+- Raised beds and drainage.
+A ten-minute break follows Part 1.
+Part 2 · Seeds (about 30 minutes)
+- How to break seed dormancy.
+The session closes with questions to ask your supplier.
+""")
+    assert ps[0]["detail"] == "- Raised beds and drainage."
+    assert ps[1]["detail"] == "- How to break seed dormancy."     # 'break' as a verb is content
+
+
 def test_reconcile_moved_skipped_unplanned():
     # class: 15 min recap, watering 25 min, soil 20 min, no pests
     ls = lines([(0, 15, "last week we planted seeds recap"), (15, 25, "drip lines and mulch keep water"),

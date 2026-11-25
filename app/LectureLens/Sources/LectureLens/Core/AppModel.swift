@@ -31,8 +31,13 @@ final class AppModel {
     private(set) var drmPagesConfigured = false
     /// Set when Start was refused because protected video would go black.
     var permissionBlock = false
+    // courses: one shown at a time; switching reloads the lectures and every screen
+    var courseList: CourseList?
+    var course: CourseList.Course?
     // lectures
     var sessions: [Session] = []
+    /// Why the lecture list could not be read (shown instead of an empty library).
+    var sessionsError: String?
     var nextClass: NextClass?
     var loadingSessions = false
     // jobs / evals
@@ -121,9 +126,18 @@ final class AppModel {
     /// Class-start reminders sent this run (ClassReminder.key).
     private var remindersSent: Set<String> = []
 
-    /// A notification when today's class starts without Live capture (ClassReminder).
+    /// Set when the next class is near but capture is pinned to Portal (it would miss the meeting).
+    var classModeWarning: String? { ClassMode.warning(next: nextClass, pinned: mode.pinned, now: .now) }
+
+    /// A notification when today's class starts without Live capture (ClassReminder), and one an
+    /// hour before it when capture is pinned to Portal.
     func checkClassStart(now: Date = .now) {
         guard let c = nextClass else { return }
+        if let w = ClassMode.warning(next: c, pinned: mode.pinned, now: now), !remindersSent.contains("pin-" + c.date),
+           let start = ClassReminder.window(c)?.start, now >= start.addingTimeInterval(-3600) {
+            remindersSent.insert("pin-" + c.date)
+            ClassReminder.notify(id: "pin-" + c.date, title: "Capture is pinned to Portal", body: w)
+        }
         guard let stage = ClassReminder.due(c, now: now, liveRunning: mode.running, sent: remindersSent) else { return }
         remindersSent.insert(stage == .late ? ClassReminder.lateKey(c, now: now) : ClassReminder.key(c, stage))
         ClassReminder.post(c, stage, now: now)
@@ -151,7 +165,43 @@ final class AppModel {
         }
     }
 
+    /// Courses from the registry; keeps the stored choice while it still exists.
+    func loadCourses() async {
+        guard let l = try? await ToolRunner.json(CourseList.self, "lecture", ["courses", "--json"], timeout: 30) else { return }
+        courseList = l
+        let pick = CourseStore.resolve(l, stored: CourseStore.id)
+        if pick?.id != course?.id || pick?.root != CourseStore.root { CourseStore.select(pick) }
+        course = pick
+    }
+
+    /// Show another course: its lectures, study aids, review and Ask.
+    func selectCourse(_ c: CourseList.Course) {
+        guard c.id != course?.id else { return }
+        CourseStore.select(c)
+        course = c
+        sessions = []; nextClass = nil
+        Task { await loadSessions() }
+    }
+
+    /// Fold lectures into a destination lecture (background job; it rebuilds notes and cards).
+    /// Undo the latest consolidation into a lecture (`lecture unmerge-lecture`).
+    func unconsolidate(_ s: Session) {
+        jobs.enqueue("Undo consolidation of \(s.displayTitle)", Paths.tool("lecture"),
+                     ["unmerge-lecture", CourseForm.lectureArg(s)]) { [weak self] _ in
+            Task { await self?.loadSessions() }
+        }
+    }
+
+    func consolidate(into dest: Session, from sources: [Session]) {
+        guard !sources.isEmpty else { return }
+        jobs.enqueue("Consolidate into \(dest.displayTitle)", Paths.tool("lecture"),
+                     ["merge-lectures", CourseForm.lectureArg(dest), "--from"] + sources.map(CourseForm.lectureArg)) { [weak self] _ in
+            Task { await self?.loadSessions() }
+        }
+    }
+
     func refreshAll(probeVision: Bool) async {
+        await loadCourses()
         await refreshFast()
         await refreshDoctor(probeVision: probeVision)
         await loadSessions()
@@ -192,7 +242,7 @@ final class AppModel {
         var s: [Signal] = []
         s.append(Signal(id: "capture", label: "Capture",
                         state: mode.running ? .ok : .down,
-                        detail: mode.running ? "running · \(mode.mode) mode\(mode.autoswitch ? " · auto-switch" : "")" : "stopped",
+                        detail: ModeText.healthDetail(mode),
                         fix: mode.running ? nil : "Start capture"))
         let frames = check("frames")
         let frameLive = screenpipe?.frame_status.map { $0 == "ok" || $0 == "running" } ?? false
@@ -325,13 +375,19 @@ final class AppModel {
 
     func stopCapture() async {
         busyCapture = true; defer { busyCapture = false }
-        _ = try? await ToolRunner.run("sp-stop", [], timeout: 60)
+        do {
+            let r = try await ToolRunner.run("sp-stop", [], timeout: 60)
+            if !r.ok { lastError = "Stop failed: " + ErrorText.tail(r.stderr) }
+        } catch { lastError = "Stop failed: " + ErrorText.short(error) }
         await refreshFast()
     }
 
     func setMode(_ m: String) async {
         busyCapture = true; defer { busyCapture = false }
-        _ = try? await ToolRunner.run("sp-mode", [m], timeout: 90)
+        do {
+            let r = try await ToolRunner.run("sp-mode", [m], timeout: 90)
+            if !r.ok { lastError = "Mode change failed: " + ErrorText.tail(r.stderr) }
+        } catch { lastError = "Mode change failed: " + ErrorText.short(error) }
         await refreshFast()
     }
 
@@ -341,12 +397,17 @@ final class AppModel {
     }
 
     // MARK: lectures
+    /// `lecture library-check`: copies of a class, wrong dates, shared ids (shown above the lecture list).
+    var libraryCheck: LibraryCheck?
+
     func loadSessions() async {
         loadingSessions = true; defer { loadingSessions = false }
-        if let l = try? await ToolRunner.json(SessionList.self, "lecture", ["list", "--json", "--since", "90d"], timeout: 60) {
-            sessions = l.sessions
-        }
-        nextClass = try? await ToolRunner.json(NextClass.self, "lecture", ["next", "--json"], timeout: 30)
+        do {
+            sessions = try await ToolRunner.json(SessionList.self, "lecture", ["list", "--json", "--since", "90d"], timeout: 60).sessions
+            sessionsError = nil
+        } catch { sessionsError = ErrorText.short(error) }
+        nextClass = try? await ToolRunner.json(NextClass.self, "lecture", ClassMode.liveCourseArgs(courseList) + ["next", "--json"], timeout: 30)
+        libraryCheck = try? await ToolRunner.json(LibraryCheck.self, "lecture", ["library-check", "--json"], timeout: 30)
     }
 
     func build(_ s: Session) {
@@ -394,6 +455,20 @@ final class AppModel {
         }
     }
 
+    /// CT-6: `lecture gapfill` for one gap from a recording file; existing lines never change.
+    func gapfill(_ folderName: String, audio: String, from: String, to: String, done: @escaping @MainActor () -> Void) {
+        jobs.enqueue("Fill gap from recording", Paths.tool("lecture"),
+                     ["gapfill", folderName, "--audio", audio, "--from", from, "--to", to]) { _ in done() }
+    }
+
+    /// Restart audio capture only, once recorded audio is saved (`lecture audio-restart`).
+    func restartAudio() {
+        jobs.enqueue("Restart audio", Paths.tool("lecture"), ["audio-restart"]) { [weak self] _ in
+            Task { await self?.refreshFast() }
+            self?.checkCaptureHealth()
+        }
+    }
+
     func ingest(_ folderName: String) {
         jobs.enqueue("Import Zoom files", Paths.tool("lecture"), ["ingest", folderName]) { [weak self] _ in
             Task { await self?.loadSessions() }
@@ -437,5 +512,39 @@ final class AppModel {
     func runJudgeBenchmark() {
         jobs.enqueue("Judge benchmark: Laya vs oMLX", Paths.study.appendingPathComponent("tests/evals/run_judge_bench.sh"),
                      []) { [weak self] _ in self?.loadEvalRuns() }
+    }
+}
+
+/// Short, readable error text for banners (the full output stays in job logs).
+enum ErrorText {
+    static func short(_ e: Error, limit: Int = 220) -> String {
+        tail((e as? LocalizedError)?.errorDescription ?? e.localizedDescription, limit: limit)
+    }
+
+    /// The last meaningful line(s) of a tool's stderr: tracebacks end with the actual error.
+    static func tail(_ s: String, limit: Int = 220) -> String {
+        let lines = s.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let last: String = lines.last ?? "no details"
+        return last.count > limit ? String(last.prefix(limit)) + "…" : last
+    }
+}
+
+/// The live class and the capture mode: which course's calendar says when the class is, and a
+/// warning when a pinned Portal mode would miss it.
+enum ClassMode {
+    /// `--course <default course>` when courses are kept apart, so `next` reads the live calendar
+    /// whichever course is shown.
+    static func liveCourseArgs(_ list: CourseList?) -> [String] {
+        guard let l = list, l.implicit != true, !l.default.isEmpty else { return [] }
+        return ["--course", l.default]
+    }
+
+    /// A warning from 18 hours before the class until its end when capture is pinned to Portal.
+    static func warning(next: NextClass?, pinned: String?, now: Date) -> String? {
+        guard let c = next, (pinned ?? "") == "portal", let w = ClassReminder.window(c) else { return nil }
+        guard now >= w.start.addingTimeInterval(-18 * 3600), now <= w.end else { return nil }
+        let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
+        f.timeZone = c.tz.flatMap(TimeZone.init(identifier:)) ?? .current
+        return "The class on \(f.string(from: w.start)) is a meeting, but capture is pinned to Portal: the meeting would not be recorded and the live follower would not start. Switch to Auto."
     }
 }

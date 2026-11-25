@@ -5,6 +5,8 @@ struct CaptureView: View {
     @State private var domains: [String] = []
     @State private var newDomain = ""
     @State private var probing = false
+    /// Restart guard: seconds of unsaved audio a stop would drop, while asking to confirm.
+    @State private var stopWarning: Int?
 
     var body: some View {
         ScrollView {
@@ -59,6 +61,16 @@ struct CaptureView: View {
                                     .buttonStyle(.borderless)
                             }
                         }
+                        ForEach(CaptureText.courseSites(model.courseList, besides: domains), id: \.site) { cs in
+                            HStack {
+                                Image(systemName: "graduationcap").foregroundStyle(.secondary).accessibilityHidden(true)
+                                Text(cs.site).font(.scaled(.body, design: .monospaced))
+                                Text("from \(cs.course)").font(.scaled(.caption)).foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .help("Added at each start because the course \(cs.course) lists it; change it in the course registry")
+                            .accessibilityElement(children: .combine)
+                        }
                         HStack {
                             TextField("domain.com or domain.com:subdomains", text: $newDomain)
                                 .textFieldStyle(.roundedBorder).onSubmit { add() }
@@ -86,17 +98,39 @@ struct CaptureView: View {
                 .font(.system(size: 34 * TextScale.current)).foregroundStyle(model.mode.running ? .red : .secondary)
             VStack(alignment: .leading) {
                 Text(model.mode.running ? "Capturing" : "Not capturing").font(.scaled(.title2, weight: .bold))
-                Text(model.mode.running ? "\(model.mode.mode.capitalized) mode\(model.mode.autoswitch ? " · switches to Live during Zoom meetings" : "")"
-                                        : "Start capture before a lecture").foregroundStyle(.secondary)
+                Text(ModeText.subtitle(model.mode)).foregroundStyle(.secondary)
             }
             Spacer()
             if model.busyCapture { ProgressView().controlSize(.small) }
+            // shown while stopped too: a pin set earlier still decides what the next start records
+            Picker("Mode", selection: Binding(get: { model.mode.pinned?.isEmpty == false ? model.mode.pinned! : "auto" },
+                                              set: { m in Task { await model.setMode(m) } })) {
+                Text("Auto").tag("auto"); Text("Portal").tag("portal"); Text("Live").tag("live")
+            }.pickerStyle(.segmented).frame(width: 220)
             if model.mode.running {
-                Picker("Mode", selection: Binding(get: { model.mode.pinned?.isEmpty == false ? model.mode.pinned! : "auto" },
-                                                  set: { m in Task { await model.setMode(m) } })) {
-                    Text("Auto").tag("auto"); Text("Portal").tag("portal"); Text("Live").tag("live")
-                }.pickerStyle(.segmented).frame(width: 220)
-                Button("Stop", systemImage: "stop.fill") { Task { await model.stopCapture() } }.controlSize(.large)
+                Button("Stop", systemImage: "stop.fill") {
+                    if let h = model.captureHealth, let s = CaptureHealth.unsavedAudioSeconds(h.record) {
+                        stopWarning = s
+                    } else {
+                        Task { await model.stopCapture() }
+                    }
+                }
+                    .controlSize(.large)
+                    .confirmationDialog("Stop capture now?", isPresented: Binding(get: { stopWarning != nil },
+                                                                                  set: { if !$0 { stopWarning = nil } }),
+                                        titleVisibility: .visible) {
+                        Button("Stop anyway", role: .destructive) { stopWarning = nil; Task { await model.stopCapture() } }
+                        Button("Keep capturing", role: .cancel) { stopWarning = nil }
+                    } message: {
+                        Text("About \(stopWarning ?? 60) s of audio is recorded but not saved yet and would be lost. "
+                             + "If a health alert brought you here, wait two minutes first: saving usually catches up, "
+                             + "and audio keeps arriving.")
+                    }
+                Button("Restart audio", systemImage: "arrow.clockwise") { model.restartAudio() }
+                    .controlSize(.large)
+                    .disabled(model.jobs.jobs.contains { $0.running && $0.title == "Restart audio" })
+                    .help("Restart audio capture only. It first waits until recorded audio is saved, so nothing is dropped; screen capture keeps running.")
+                    .accessibilityLabel("Restart audio capture")
             } else {
                 Button("Start capture", systemImage: "record.circle") { Task { await model.startCapture() } }
                     .controlSize(.large).buttonStyle(.borderedProminent)
@@ -139,5 +173,35 @@ struct CaptureView: View {
         guard let r = try? await ToolRunner.run("sp-domains", ["list"], timeout: 10) else { return }
         domains = String(decoding: r.stdout, as: UTF8.self).split(separator: "\n").map(String.init)
             .filter { !$0.hasPrefix("(") && !$0.isEmpty }
+    }
+}
+
+enum CaptureText {
+    /// Sites every start adds from the course registry (sp-start), beside the hand-kept allowlist.
+    static func courseSites(_ list: CourseList?, besides kept: [String] = []) -> [(site: String, course: String)] {
+        var seen = Set(kept.map { $0.lowercased() }), out: [(site: String, course: String)] = []
+        for c in list?.choices ?? [] {
+            for s in c.sites ?? [] where !s.contains("/") && seen.insert(s.lowercased()).inserted { out.append((s, c.label)) }
+        }
+        return out
+    }
+}
+
+/// What the capture header and the health light say about the mode, including a pin.
+enum ModeText {
+    static func subtitle(_ m: ModeState) -> String {
+        let pin = (m.pinned ?? "").trimmingCharacters(in: .whitespaces)
+        if m.running {
+            if !pin.isEmpty { return "\(m.mode.capitalized) mode · pinned: does not switch for meetings" }
+            return "\(m.mode.capitalized) mode" + (m.autoswitch ? " · switches to Live during meetings" : "")
+        }
+        if !pin.isEmpty { return "Start capture before a lecture · pinned to \(pin.capitalized)" }
+        return "Start capture before a lecture · Auto: Live during meetings, Portal otherwise"
+    }
+
+    static func healthDetail(_ m: ModeState) -> String {
+        guard m.running else { return "stopped" }
+        let pin = (m.pinned ?? "").trimmingCharacters(in: .whitespaces)
+        return "running · \(m.mode) mode" + (!pin.isEmpty ? " · pinned" : (m.autoswitch ? " · auto-switch" : ""))
     }
 }

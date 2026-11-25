@@ -33,6 +33,10 @@ def load_dotenv():
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), os.path.expandvars(v.strip().strip('"').strip("'")))
 load_dotenv()
+import courses as _courses  # several programmes side by side: --course <id> or STUDY_COURSE (courses.py)
+_courses.activate()
+# What the course is for, so notes and cards relate ideas to it (a course sets its own).
+FOCUS = os.environ.get("STUDY_COURSE_FOCUS", "building AI products")
 
 OMLX = os.environ.get("OMLX_BASE_URL", "http://127.0.0.1:8001/v1").rstrip("/")
 MODEL = os.environ.get("OMLX_MODEL", "Swift-Qwen3.8-27b-oQ4e-mtp")
@@ -320,13 +324,56 @@ def chunks(rows, budget=CTX, per_item=1500):
     if cur: yield cur
 
 # ---------------------------------------------------------------- commands
-SYS_TUTOR = ("You are a rigorous study tutor for an executive AI product management programme. "
+_COURSE = os.environ.get("STUDY_COURSE_NAME", "").strip()
+SYS_TUTOR = ("You are a rigorous study tutor for "
+             + (f"the course \u201c{_COURSE}\u201d (what it is for: {FOCUS}). " if _COURSE
+                else "an executive AI product management programme. ") +
              "Use ONLY the numbered sources (the learner's own screen captures and lecture transcripts). "
              "Cite sources inline like [3]. If the sources don't contain the answer, say so plainly and "
              "suggest what to review. Never invent facts.")
 
 ANSWER_INSTRUCTIONS = "Answer clearly, then list 'Sources used' with their timestamps."
 PROMPT_VERSION = "ask-v1"
+
+
+def course_rows(rows, environ=None, near_s=120):
+    """Only the active course's captures. A course with sites keeps text from its own sites; the
+    default course keeps everything except other courses' sites. Audio carries no URL, so it goes
+    with the text captured around it (within near_s): kept near the course's pages, dropped near
+    another course's pages only. Without a course registry nothing is filtered."""
+    env = os.environ if environ is None else environ
+    try:
+        reg = _courses.load(environ=env)
+    except Exception:
+        return rows
+    if reg["courses"][0].get("implicit"):
+        return rows
+    c = _courses.get(reg, env.get("STUDY_COURSE_ID") or env.get("STUDY_COURSE")) or _courses.get(reg, None)
+    mine = c.get("sites") or []
+    others = [st for o in reg["courses"] if o["id"] != c["id"] for st in o.get("sites") or []]
+    is_default = _courses.is_default(reg, c)
+    match = lambda sites, r: any(_courses.site_matches(st, r.get("where") or "") for st in sites)
+    def ts(r):
+        try:
+            return dt.datetime.fromisoformat(str(r.get("ts")).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    text = [r for r in rows if r.get("src") != "audio"]
+    own = [r for r in text if (match(mine, r) if (mine and not is_default) else not match(others, r))]
+    foreign = [r for r in text if match(others, r)] if (is_default or not mine) else [r for r in text if not match(mine, r)]
+    own_t = [t for t in map(ts, own) if t is not None]
+    foreign_t = [t for t in map(ts, foreign) if t is not None]
+    near = lambda t, pool: t is not None and any(abs(t - x) <= near_s for x in pool)
+    keep = []
+    for r in rows:
+        if r.get("src") != "audio":
+            if r in own:
+                keep.append(r)
+            continue
+        t = ts(r)
+        if near(t, own_t) or (is_default and not near(t, foreign_t)):
+            keep.append(r)
+    return keep
 
 
 def retrieve(question, start, end, app=None, log=sys.stderr):
@@ -344,9 +391,9 @@ def retrieve(question, start, end, app=None, log=sys.stderr):
     for q in queries:
         try: rows += [normalize(x) for x in search(q=q, start=start, end=end, app=app, limit=20)]
         except Exception as e: print(f"  search '{q}' failed: {e}", file=log)
-    rows = dedupe(rows)
+    rows = course_rows(dedupe(rows))
     if len(rows) < 5:  # thin keyword hits: add the most recent captures in the window as context
-        rows = dedupe(rows + fetch_window(start, end, app, cap=300)[-60:])
+        rows = course_rows(dedupe(rows + fetch_window(start, end, app, cap=300)[-60:]))
     return queries, rows
 
 
@@ -555,7 +602,7 @@ def cmd_flashcards(a):
     for i, part in enumerate(parts, 1):
         print(f"  generating cards {i}/{len(parts)}…", file=sys.stderr)
         raw = llm(SYS_TUTOR, f"Sources:\n{as_sources(part)}\n\nCreate {per} high-quality flashcards testing "
-            "understanding (not trivia): definitions, why/when, trade-offs, application to AI products. "
+            f"understanding (not trivia): definitions, why/when, trade-offs, application to {FOCUS}. "
             'Return ONLY a JSON array: [{"q": "...", "a": "...", "src": [n]}].', max_tokens=2500, temperature=0.2)
         m = re.search(r"\[.*\]", raw, re.S)
         try: cards += json.loads(m[0]) if m else []

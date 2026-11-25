@@ -16,6 +16,55 @@ struct DoctorResult: Decodable, Sendable {
     }
 }
 
+/// `lecture courses --json`: the courses kept side by side (courses/courses.json). Each has its own
+/// lecture folder, vault folder and sites; the app shows one at a time.
+struct CourseList: Decodable, Sendable {
+    let ok: Bool
+    let implicit: Bool?
+    let `default`: String
+    let active: String?
+    let courses: [Course]
+
+    struct Course: Decodable, Sendable, Identifiable, Hashable {
+        let id: String
+        let name: String
+        let short: String?
+        let kind: String
+        let `default`: Bool?
+        let sites: [String]?
+        let root: String
+        let vault_subdir: String?
+        let url: String?
+        let lectures: Int?
+        let drm_on: Bool?
+
+        var label: String { (short ?? "").isEmpty ? name : short! }
+        var selfPaced: Bool { kind == "self_paced" }
+    }
+
+    /// One real course or more: the picker only shows with two or more.
+    var choices: [Course] { implicit == true ? [] : courses }
+}
+
+/// The selected course, kept between launches. Paths and every tool run read it.
+enum CourseStore {
+    static let idKey = "course"
+    static let rootKey = "courseRoot"
+    static var id: String? { UserDefaults.standard.string(forKey: idKey).flatMap { $0.isEmpty ? nil : $0 } }
+    static var root: String? { UserDefaults.standard.string(forKey: rootKey).flatMap { $0.isEmpty ? nil : $0 } }
+
+    static func select(_ c: CourseList.Course?, defaults: UserDefaults = .standard) {
+        defaults.set(c?.id, forKey: idKey)
+        defaults.set(c?.root, forKey: rootKey)
+    }
+
+    /// The course to show: the stored one while it still exists, else the registry's default.
+    static func resolve(_ list: CourseList, stored: String?) -> CourseList.Course? {
+        let all = list.choices
+        return all.first { $0.id == stored } ?? all.first { $0.id == list.default } ?? all.first
+    }
+}
+
 /// `lecture next --json`: the next class from the programme calendar (lectures/calendar.json).
 struct NextClass: Decodable, Sendable {
     let week: Int
@@ -87,6 +136,11 @@ struct CaptureHealth: Decodable, Sendable {
     struct Record: Decodable, Sendable {
         let t: String; let capture_running: Bool; let audio_chunk_age_s: Double?; let audio_level_db: Double?
         let frame_age_s: Double?; let frames_expected: Bool?; let status: String
+        /// How far behind the engine saves audio (s after a 30-s chunk ends), and what the
+        /// engine itself reports; absent from older records.
+        var audio_write_lag_s: Double? = nil
+        var audio_unsaved_s: Double? = nil
+        var engine_audio_active: Bool? = nil
     }
     struct Alert: Decodable, Sendable { let status: String; let since: String; let lasted_s: Int; let message: String }
 
@@ -94,15 +148,24 @@ struct CaptureHealth: Decodable, Sendable {
         switch status {
         case "silent_audio": "silent audio"
         case "audio_stalled": "audio stopped"
+        case "audio_behind": "audio saving behind"
         case "no_frames": "no screen frames"
         case "stopped": "not capturing"
         default: "ok"
         }
     }
 
+    /// Restart guard: about how many seconds of audio a stop would drop now (the chunk being
+    /// recorded plus what is waiting to be saved), or nil when nothing would be lost.
+    static func unsavedAudioSeconds(_ r: Record) -> Int? {
+        guard r.capture_running, r.status != "stopped" else { return nil }
+        return 30 + Int(max(0, r.audio_unsaved_s ?? r.audio_write_lag_s ?? 30))
+    }
+
     static func detail(_ r: Record) -> String {
         var parts: [String] = []
-        if let a = r.audio_chunk_age_s { parts.append("audio \(Int(a)) s ago") }
+        if let a = r.audio_chunk_age_s { parts.append("audio saved \(Int(a)) s ago") }
+        if let u = r.audio_unsaved_s, u >= 60 { parts.append("\(Int(u)) s not saved yet") }
         if let l = r.audio_level_db { parts.append(String(format: "%.0f dB", l)) }
         if r.frames_expected == true, let f = r.frame_age_s { parts.append("frame \(Int(f)) s ago") }
         return parts.isEmpty ? label(r.status) : label(r.status) + " · " + parts.joined(separator: " · ")
@@ -129,6 +192,8 @@ struct Session: Decodable, Sendable, Identifiable, Hashable {
     let frames: Int?
     let built: Bool
     let folder: String
+    /// Other lectures were consolidated into this one (`lecture unmerge-lecture` can undo it).
+    var consolidated: Bool? = nil
     var key: String { id ?? folder }
     var displayTitle: String { title ?? "Untitled lecture" }
 }
@@ -214,4 +279,24 @@ struct OmlxStatus: Decodable, Sendable {
     let status: String?
     let loaded_models: [String]?
     let active_requests: Int?
+}
+
+/// `lecture library-check --json` (lecture_manage.library_check): read only.
+struct LibraryCheck: Decodable, Sendable, Equatable {
+    struct Issue: Decodable, Sendable, Equatable, Hashable {
+        let kind: String
+        let folders: [String]
+        let message: String
+    }
+    let ok: Bool
+    let lectures: Int?
+    let issues: [Issue]
+
+    /// Wrong dates and merges across days come first; copies of a class last (often deliberate).
+    var ordered: [Issue] { issues.sorted { ($0.kind == "copies" ? 1 : 0) < ($1.kind == "copies" ? 1 : 0) } }
+    var summary: String {
+        let copies = issues.filter { $0.kind == "copies" }.count, other = issues.count - copies
+        return [other > 0 ? "\(other) to fix" : nil, copies > 0 ? "\(copies) class(es) built twice" : nil]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
 }

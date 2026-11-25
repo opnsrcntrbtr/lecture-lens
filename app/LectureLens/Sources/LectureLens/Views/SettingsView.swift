@@ -40,6 +40,9 @@ struct SettingsView: View {
             Field(key: "STUDY_VL_MAX_EDGE", label: "Slide image max edge (px)",
                   help: "Slides are downscaled to this before the vision model sees them.", kind: .number(512...2048, 128)),
             Field(key: "STUDY_AUDIO_DEVICE", label: "Lecture audio device", help: "Name of the app-audio tap device used for transcripts."),
+            Field(key: "STUDY_ASR_EVENT", label: "Transcribe each chunk as it closes",
+                  help: "Live transcript about 5 s behind instead of 2 to 3 minutes. Read when the live follower starts, so change it between classes, not during one.",
+                  kind: .toggle),
         ]),
         ("Audio sources (next Start capture)", [
             Field(key: "SP_RECORD_MIC", label: "Record my microphone",

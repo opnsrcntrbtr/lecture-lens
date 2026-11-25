@@ -197,7 +197,7 @@ import Testing
 
 @Test func liveDayPickerListsPastFolders() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("live-\(UUID().uuidString)")
-    for n in ["20300101", "20300108", "20300115", "notes"] {
+    for n in ["20300101", "20300108", "20300115", "20300122", "notes"] {
         try FileManager.default.createDirectory(at: root.appendingPathComponent(n), withIntermediateDirectories: true)
     }
     let today = try #require(LiveData.date("20300115"))
@@ -218,6 +218,15 @@ import Testing
     #expect(LiveData.prequestionDay(nextClassDate: "2030-01-05", today: thu, root: root) == "20300103")   // today's come first
 }
 
+@Test func voiceTurnContractAndAutoStopRule() throws {
+    let v = try JSONDecoder().decode(CapVoice.self, from: Data(#"{"ok": true, "audio": "/tmp/q3.aiff", "voice": "Karen", "transcript": "We measured a drop", "speech": {"words": 4, "wpm": null, "fillers": 1, "fillers_per_100": 25.0, "long_pauses": 0}, "timing": {"transcribe_s": 0.9, "model_s": 1.2, "speak_s": 0.6, "processing_s": 2.7}}"#.utf8))
+    #expect(v.audio == "/tmp/q3.aiff" && v.timing?.processing_s == 2.7)
+    #expect(CapVoice.speechLine(v.speech!).hasPrefix("too short for a pace · 25.0 fillers per 100 words"))
+    #expect(VoiceRecorder.shouldStop(heardSpeech: true, quietFor: 2.1))
+    #expect(!VoiceRecorder.shouldStop(heardSpeech: false, quietFor: 9))      // silence before speaking never stops it
+    #expect(!VoiceRecorder.shouldStop(heardSpeech: true, quietFor: 1.0))
+}
+
 @Test func askResultCarriesRetrievalNote() throws {
     let r = try JSONDecoder().decode(AskResult.self, from: Data(#"{"ok": true, "question": "q", "answer": "a [1]", "sources": [], "model": "m", "prompt_version": "ask-v1", "latency_s": 1.2, "retrieval": "lecture index", "note": "screenpipe is not running; answered from built lectures only"}"#.utf8))
     #expect(r.retrieval == "lecture index" && r.note?.hasPrefix("screenpipe is not running") == true)
@@ -226,7 +235,11 @@ import Testing
 @Test func decodesCaptureHealthAndGates() throws {
     let h = try JSONDecoder().decode(CaptureHealth.self, from: Data(#"{"ok": true, "record": {"t": "2030-01-05T04:31:30+00:00", "capture_running": true, "audio_chunk_age_s": 12.0, "audio_level_db": -120.0, "frame_age_s": 4.0, "frames_expected": true, "status": "silent_audio"}, "alert": {"status": "silent_audio", "since": "2030-01-05T04:30:00+00:00", "lasted_s": 90, "message": "Audio is digital silence"}, "mode": "live", "in_class": true}"#.utf8))
     #expect(h.alert?.status == "silent_audio" && CaptureHealth.label("no_frames") == "no screen frames")
-    #expect(CaptureHealth.detail(h.record).hasPrefix("silent audio · audio 12 s ago"))
+    #expect(CaptureHealth.detail(h.record).hasPrefix("silent audio · audio saved 12 s ago"))
+    #expect(CaptureHealth.unsavedAudioSeconds(h.record) == 60)          // older records: assume 30 s behind
+    let behind = try JSONDecoder().decode(CaptureHealth.Record.self, from: Data(#"{"t": "2030-01-05T04:40:00+00:00", "capture_running": true, "audio_chunk_age_s": 100.0, "audio_level_db": -4.0, "frame_age_s": 5.0, "frames_expected": true, "status": "audio_behind", "audio_write_lag_s": 70.0, "audio_unsaved_s": 95.0, "engine_audio_active": true}"#.utf8))
+    #expect(CaptureHealth.label(behind.status) == "audio saving behind" && CaptureHealth.unsavedAudioSeconds(behind) == 125)
+    #expect(CaptureHealth.detail(behind).contains("95 s not saved yet") && behind.engine_audio_active == true)
     let r = try JSONDecoder().decode(AfterClassReport.self, from: Data(#"{"ok": true, "steps": [], "gates": [{"name": "names_left", "value": 0, "threshold": 0, "ok": true}, {"name": "title_from_candidates", "value": "Garden", "threshold": "calendar|portal|first slide", "ok": false}, {"name": "quiz_lint_pass_rate", "value": null, "threshold": 1.0, "ok": true}], "needs_review": true}"#.utf8))
     #expect(r.needs_review == true && r.gates?.count == 3 && r.gates?[1].value?.description == "Garden")
     #expect(r.gates?[0].value?.description == "0")
@@ -318,4 +331,90 @@ import Testing
 @Test func sceneLabelsContract() throws {
     let s = try JSONDecoder().decode(SceneLabels.self, from: Data(#"{"ok": true, "labels": [{"lecture": "L", "slide_id": "L/s/1", "slide_file": "01.jpg", "t_abs": "2030-01-05T10:00:00+00:00", "thumb": "/x/01.jpg", "label": "break", "source": "vlm_prelabel", "confirmed": false}], "confirmed": 0, "classes": ["slide", "shared_document", "gallery", "break", "other"]}"#.utf8))
     #expect(SceneText.progress(s) == "0 of 1 checked" && s.labels?.first?.label == "break")
+}
+
+@Test func decodesCoursesAndPicksOne() throws {
+    let json = #"{"ok": true, "registry": "/x/courses.json", "implicit": false, "default": "garden", "active": "garden", "courses": [{"id": "garden", "name": "Garden Basics", "short": "Garden", "kind": "live", "default": true, "sites": [], "root": "/x/lectures", "vault_subdir": "Lectures", "lectures": 12, "drm_on": false}, {"id": "ponds", "name": "Pond Keeping Path", "kind": "self_paced", "root": "/x/courses/ponds"}]}"#
+    let l = try JSONDecoder().decode(CourseList.self, from: Data(json.utf8))
+    #expect(l.choices.count == 2 && l.courses[1].selfPaced && l.courses[1].label == "Pond Keeping Path")
+    #expect(CourseStore.resolve(l, stored: "ponds")?.root == "/x/courses/ponds")
+    #expect(CourseStore.resolve(l, stored: "gone")?.id == "garden")
+    let one = try JSONDecoder().decode(CourseList.self, from: Data(#"{"ok": true, "implicit": true, "default": "default", "courses": [{"id": "default", "name": "default", "kind": "live", "root": "/x/lectures"}]}"#.utf8))
+    #expect(one.choices.isEmpty && CourseStore.resolve(one, stored: nil) == nil)
+    let d = UserDefaults(suiteName: "course-test")!
+    CourseStore.select(l.courses[1], defaults: d)
+    #expect(d.string(forKey: CourseStore.idKey) == "ponds" && d.string(forKey: CourseStore.rootKey) == "/x/courses/ponds")
+    d.removePersistentDomain(forName: "course-test")
+}
+
+@Test func manageContractsAndForms() throws {
+    let tabs = try JSONDecoder().decode(ChromeTabs.self, from: Data(#"{"ok": true, "tabs": [{"title": "Pond Keeping Path - Example Learn", "url": "https://learn.example.org/p/42", "active": true, "course": null}, {"title": "Inbox", "url": "https://mail.example.com/", "active": false, "course": "main"}]}"#.utf8))
+    #expect(tabs.tabs?.count == 2 && tabs.tabs?.first?.active == true && tabs.tabs?[1].course == "main")
+    let denied = try JSONDecoder().decode(ChromeTabs.self, from: Data(#"{"ok": false, "tabs": [], "error": "Allow it in Automation"}"#.utf8))
+    #expect(!denied.ok && denied.error?.contains("Automation") == true)
+    #expect(CourseForm.name(fromTitle: "Pond Keeping Path - Example Learn") == "Pond Keeping Path")
+    #expect(CourseForm.name(fromTitle: "A | B | Site") == "A - B")
+    #expect(CourseForm.name(fromTitle: "Just a title") == "Just a title")
+    #expect(CourseForm.validURL("https://learn.example.org/x") && !CourseForm.validURL("learn.example.org") && !CourseForm.validURL("ftp://x.org"))
+    #expect(CourseForm.args(name: " Ponds ", url: "https://learn.example.org/x", title: "T", focus: "") ==
+            ["courses", "add", "https://learn.example.org/x", "--name", "Ponds", "--json", "--title", "T"])
+    let s = try JSONDecoder().decode(Session.self, from: Data(#"{"id": "a1", "title": "Soil", "built": true, "folder": "/x/lectures/20300105-1000_Soil"}"#.utf8))
+    #expect(CourseForm.lectureArg(s) == "20300105-1000_Soil")
+    let r = try JSONDecoder().decode(ManageResult.self, from: Data(#"{"ok": false, "error": "learn.example.org already belongs to “Ponds”", "course": "ponds"}"#.utf8))
+    #expect(!r.ok && r.course == "ponds")
+}
+
+@Test func libraryAndCaptureWording() throws {
+    let l = try JSONDecoder().decode(CourseList.self, from: Data(#"{"ok": true, "default": "a", "courses": [{"id": "a", "name": "Garden", "kind": "live", "root": "/x", "sites": []}, {"id": "p", "name": "Pond Keeping", "short": "Ponds", "kind": "self_paced", "root": "/y", "sites": ["learn.example.org", "learn.example.org/path"]}]}"#.utf8))
+    #expect(LectureText.emptyLibrary(l.courses[1]).contains("learn.example.org"))
+    #expect(LectureText.emptyLibrary(l.courses[0]).contains("Zoom"))
+    #expect(CaptureText.courseSites(l).map(\.site) == ["learn.example.org"] && CaptureText.courseSites(l).first?.course == "Ponds")
+    #expect(LectureText.rebuildWarning(["consolidated": [1]]).contains("merged files"))
+    #expect(!LectureText.rebuildWarning([:]).contains("merged"))
+}
+
+@Test func recallFirstAndAskSuggestions() throws {
+    let d = UserDefaults(suiteName: "recall-test")!
+    defer { d.removePersistentDomain(forName: "recall-test") }
+    #expect(RecallFirst.due("L1", defaults: d))
+    RecallFirst.markDone("L1", defaults: d)
+    #expect(!RecallFirst.due("L1", defaults: d))
+    #expect(RecallFirst.due("L1", now: .now.addingTimeInterval(86_400 * 2), defaults: d))
+    d.set(false, forKey: RecallFirst.enabledKey)
+    #expect(!RecallFirst.due("L2", defaults: d))
+    let l = try JSONDecoder().decode(CourseList.self, from: Data(#"{"ok": true, "default": "a", "courses": [{"id": "p", "name": "Ponds", "kind": "self_paced", "root": "/y", "sites": ["learn.example.org"]}]}"#.utf8))
+    #expect(CaptureText.courseSites(l, besides: ["LEARN.example.org"]).isEmpty)
+}
+
+@Test func errorTextIsShortAndUseful() {
+    let tb = "Traceback (most recent call last):\n  File \"x.py\", line 1\nRuntimeError: screenpipe binary not found\n\n"
+    #expect(ErrorText.tail(tb) == "RuntimeError: screenpipe binary not found")
+    #expect(ErrorText.tail("") == "no details")
+    #expect(ErrorText.tail(String(repeating: "a", count: 300)).count == 221)
+    #expect(ErrorText.short(ToolError.launch("lecture: missing")).contains("Could not start tool"))
+}
+
+@Test func selfPacedLecturesHaveNoClassQA() {
+    #expect(!LectureTab.shown(selfPaced: true).contains(.qa) && LectureTab.shown(selfPaced: true).count == LectureTab.allCases.count - 1)
+    #expect(LectureTab.shown(selfPaced: false) == LectureTab.allCases)
+}
+
+@Test func portalPinBeforeAClassIsFlagged() throws {
+    let c = try JSONDecoder().decode(NextClass.self, from: Data(#"{"week": 6, "title": "Soil", "date": "2030-01-05", "start": "10:00", "end": "13:00", "tz": "UTC"}"#.utf8))
+    let start = ClassReminder.window(c)!.start
+    #expect(ClassMode.warning(next: c, pinned: "portal", now: start.addingTimeInterval(-3600))?.contains("pinned to Portal") == true)
+    #expect(ClassMode.warning(next: c, pinned: "portal", now: start.addingTimeInterval(-20 * 3600)) == nil)
+    #expect(ClassMode.warning(next: c, pinned: "", now: start) == nil && ClassMode.warning(next: c, pinned: "live", now: start) == nil)
+    #expect(ClassMode.warning(next: c, pinned: "portal", now: start.addingTimeInterval(4 * 3600)) == nil)
+    let l = try JSONDecoder().decode(CourseList.self, from: Data(#"{"ok": true, "default": "main", "courses": [{"id": "main", "name": "M", "kind": "live", "root": "/x"}]}"#.utf8))
+    #expect(ClassMode.liveCourseArgs(l) == ["--course", "main"] && ClassMode.liveCourseArgs(nil).isEmpty)
+}
+
+@Test func modeTextTellsTheTruthAboutPins() throws {
+    let pinned = try JSONDecoder().decode(ModeState.self, from: Data(#"{"running": true, "mode": "portal", "pinned": "portal", "autoswitch": true}"#.utf8))
+    #expect(ModeText.subtitle(pinned).contains("does not switch for meetings") && ModeText.healthDetail(pinned).hasSuffix("· pinned"))
+    let auto = try JSONDecoder().decode(ModeState.self, from: Data(#"{"running": true, "mode": "portal", "pinned": "", "autoswitch": true}"#.utf8))
+    #expect(ModeText.subtitle(auto).contains("switches to Live") && ModeText.healthDetail(auto).hasSuffix("auto-switch"))
+    let stopped = try JSONDecoder().decode(ModeState.self, from: Data(#"{"running": false, "mode": "stopped", "pinned": "portal", "autoswitch": false}"#.utf8))
+    #expect(ModeText.subtitle(stopped).hasSuffix("pinned to Portal") && ModeText.healthDetail(stopped) == "stopped")
 }

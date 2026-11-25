@@ -136,3 +136,55 @@ def test_regression_gates_on_a_fixture_lecture(tmp_path, monkeypatch):
     assert g["notes_citation_warnings"]["ok"]
     assert not g["drafts_does_not_specify"]["ok"] and g["drafts_does_not_specify"]["value"] == 1
     assert not k.regression_gates(d, 2)[0]["ok"]
+
+
+def test_slow_saves_while_audio_arrives_are_behind_not_stalled():
+    # 21 Nov: chunks saved 40-90 s late while the engine heard audio all along
+    eng = {"audio_active": True, "frame_ok": True}
+    recs = [ch.probe(s(i * 30), True, s(i * 30) - dt.timedelta(seconds=100), -4.0,
+                     s(i * 30) - dt.timedelta(seconds=5), True, engine=eng, audio_write_lag_s=70.0)
+            for i in range(10)]
+    assert {r["status"] for r in recs} == {"audio_behind"} and recs[0]["audio_write_lag_s"] == 70.0
+    assert first_alert_after(recs[:6]) == (None, None)            # 150 s: under the 180-s delay
+    t, a = first_alert_after(recs)
+    assert a["status"] == "audio_behind" and t == 180 and "Keep capturing" in a["message"]
+    # the engine hears nothing (or cannot save): a real stall, as before
+    t, a = first_alert_after(run(10, chunk_age=200))
+    assert a["status"] == "audio_stalled" and "restart" in a["message"]
+    stalled = ch.probe(s(0), True, s(-200), -4.0, s(-5), True, engine=ch.engine_signals(
+        {"device_status_details": "System Audio (output): active (last activity: 0s ago)",
+         "audio_db_write_stalled": True}, s(0)))
+    assert stalled["status"] == "audio_stalled"
+
+
+def test_minutes_of_unsaved_audio_are_behind_even_while_chunks_are_saved():
+    # 21 Nov 11:04: a chunk was saved every 30 s, but each was 4 minutes old
+    eng = {"audio_active": True, "frame_ok": True}
+    r = ch.probe(s(0), True, s(-5), -4.0, s(-5), True, engine=eng, audio_write_lag_s=240.0, audio_unsaved_s=250.0)
+    assert r["status"] == "audio_behind" and r["audio_unsaved_s"] == 250.0
+    assert ch.probe(s(0), True, s(-5), -4.0, s(-5), True, engine=eng, audio_unsaved_s=40.0)["status"] == "ok"
+    newest = {"System Audio (output)": (Path("x.mp4"), s(-310))}
+    assert ch.unsaved_s(newest, s(0)) == 280.0
+
+
+def test_an_unchanged_screen_is_not_no_frames_while_the_frame_loop_is_healthy():
+    ok = ch.probe(s(0), True, s(-10), -4.0, s(-300), True, engine={"frame_ok": True})
+    assert ok["status"] == "ok" and ok["engine_frame_ok"] is True
+    assert ch.probe(s(0), True, s(-10), -4.0, s(-700), True, engine={"frame_ok": True})["status"] == "no_frames"
+    assert ch.probe(s(0), True, s(-10), -4.0, s(-300), True, engine={"frame_ok": False})["status"] == "no_frames"
+
+
+def test_engine_signals_and_save_times(tmp_path):
+    now = s(0)
+    sig = ch.engine_signals({"device_status_details": "System Audio (output): active (last activity: 3s ago)",
+                             "frame_status": "ok"}, now)
+    assert sig == {"audio_active": True, "frame_ok": True}
+    assert ch.engine_signals({"last_audio_timestamp": "2030-01-05T09:57:00+05:30"}, now) == {"audio_active": False}
+    assert ch.engine_signals({}, now) == {}
+    import os
+    f = tmp_path / "System Audio (output)_2030-01-05_04-28-00.mp4"
+    f.write_bytes(b"x")
+    saved = s(-60)                                              # saved at 04:29:00, 30 s after its span ended
+    os.utime(f, (saved.timestamp(), saved.timestamp()))
+    t, lag = ch.newest_saved(ch.newest_chunks(tmp_path))
+    assert t == saved and lag == 30.0
