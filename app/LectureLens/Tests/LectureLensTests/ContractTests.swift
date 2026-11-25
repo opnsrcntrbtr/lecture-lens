@@ -197,7 +197,7 @@ import Testing
 
 @Test func liveDayPickerListsPastFolders() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("live-\(UUID().uuidString)")
-    for n in ["20300101", "20300108", "20300115", "notes"] {
+    for n in ["20300101", "20300108", "20300115", "20300122", "notes"] {
         try FileManager.default.createDirectory(at: root.appendingPathComponent(n), withIntermediateDirectories: true)
     }
     let today = try #require(LiveData.date("20300115"))

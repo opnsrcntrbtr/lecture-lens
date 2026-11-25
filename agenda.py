@@ -35,6 +35,10 @@ UNPLANNED_MIN = 10
 PART = re.compile(r"^\s*(?:\d+[.)]\s*)?part\s+(\w+)\s*[·:.\-–—)]*\s*(.+)$", re.I)
 MINUTES = re.compile(r"(?:about|~|approx\.?|around)?\s*(\d{2,3})\s*(?:minutes|mins?)\b", re.I)
 END = re.compile(r"^\s*(?:close|pre-?read|question to bring|there is a|break\b|homework|before the next)", re.I)
+# logistics written inside a part (a line announcing a break, or saying how the session
+# closes): kept out of the part's detail, which is matched against what was taught
+ASIDE = re.compile(r"\b(?:[\w-]+[- ]minute|short|coffee|lunch|tea)\s+break\b|\bbreak\s+(?:follows|after|before)\b"
+                   r"|\bsession\s+(?:closes|ends|wraps\s+up)\b", re.I)
 STOP = set("""a an the and or but of to in on for with by from as at is are was were be this that these those
 it its you your we our can how what when which who why will would should could more most about into""".split())
 
@@ -57,7 +61,7 @@ def parse_agenda(text: str) -> list[dict]:
         if cur is not None:
             if END.match(line):
                 cur = None
-            elif line.strip():
+            elif line.strip() and not ASIDE.search(line):
                 cur["detail"] = (cur["detail"] + " " + line.strip()).strip()
     return parts
 
