@@ -1873,6 +1873,85 @@ def cmd_library_check(a):
         print(f"  [{t['kind']}] {t['message']}")
 
 
+def cmd_tutor_session(a):
+    """Guided tutor v2 (tutor_session.py): committed answer kept out of the hints, a persistent ladder,
+    an AI-free closing check."""
+    import tutor_session as ts
+    kw = dict(lectures_dir=LECTURES, practice_dir=STUDY_DIR)
+    act = a.action
+    if act == "start":
+        res = ts.start(a.question_opt or a.question, lecture_id=a.lecture_id, item_ref=a.item, **kw)
+    elif act == "attempt":
+        res = ts.attempt(a.id, a.text, **kw)
+    elif act == "hint":
+        res = ts.hint(a.id, **kw)
+    elif act == "reveal":
+        res = ts.reveal(a.id, just_tell_me=a.just_tell_me, **kw)
+    elif act == "exit":
+        res = ts.exit_check(a.id, seed=a.seed, **kw)
+    elif act == "answer":
+        res = ts.answer_exit(a.id, a.choice, **kw)
+    elif act == "stats":
+        res = ts.stats(**kw)
+    else:
+        res = ts.show(a.id, **kw)
+    if a.json:
+        print(json.dumps(res, ensure_ascii=False))
+    elif not res.get("ok"):
+        print(f"[error] {res.get('error')}", file=sys.stderr)
+    else:
+        print(json.dumps(res, ensure_ascii=False, indent=1))
+    if not res.get("ok"):
+        sys.exit(1)
+
+
+def cmd_learner(a):
+    """The plain-text learner brief for a lecture (learner.py)."""
+    import learner
+    kw = dict(lectures_dir=LECTURES, practice_dir=STUDY_DIR)
+    lid = a.lecture
+    if a.json:
+        print(json.dumps({"ok": True, "brief": learner.brief(lid, **kw), "facts": learner.facts(lid, **kw)}, ensure_ascii=False))
+    else:
+        print(learner.brief(lid, **kw))
+
+
+def cmd_mastery_check(a):
+    """Cumulative mastery check (mastery_check.py): status, start, submit, history."""
+    import mastery_check as mastery
+    kw = dict(lectures_dir=LECTURES, practice_dir=STUDY_DIR)
+    if a.action == "start":
+        res = mastery.start(per_lecture=a.per_lecture, max_items=a.max_items, seed=a.seed, **kw)
+    elif a.action == "submit":
+        res = mastery.submit(a.check_id, a.answers_json, a.elapsed_seconds, **kw)
+    elif a.action == "history":
+        res = mastery.history(limit=a.limit, **kw)
+    elif a.action == "relearned":
+        res = mastery.relearned(a.check_id, a.items, a.rounds, **kw)
+    else:
+        res = mastery.status(**kw)
+    if a.json:
+        print(json.dumps(res, ensure_ascii=False))
+    elif not res.get("ok"):
+        print(f"[error] {res.get('error', 'mastery failed')}", file=sys.stderr)
+    elif a.action == "start":
+        print(f"[mastery-check] attempt {res['attempt']}: {res['item_count']} questions from {res['lecture_count']} "
+              f"lecture(s), {res['retry_count']} retried; pass at {res['bar']}% (id {res['check_id']})")
+    elif a.action == "submit":
+        print(f"[mastery-check] {res.get('score_pct')}% ({'passed' if res.get('passed') else 'not yet'}). {res.get('next')}")
+        if res.get("calibration", {}).get("line"):
+            print(f"  {res['calibration']['line']}. {res['calibration']['verdict']}")
+    elif a.action == "relearned":
+        print(f"[mastery-check] {res['message']}")
+    elif a.action == "history":
+        for h in res["history"]:
+            print(f"  {str(h.get('at'))[:16]}  try {h.get('attempt')}  {h.get('score_pct')}%  {'pass' if h.get('passed') else ''}")
+    else:
+        print(f"[mastery-check] {res['message']}")
+    if not res.get("ok"):
+        sys.exit(1)
+
+
 def cmd_watch(a):
     import time
     import lecture_manage
@@ -3893,6 +3972,33 @@ def main():
     p = sub.add_parser("rename-lecture", help="rename a built lecture: title everywhere, vault note, index (folder keeps its id)")
     p.add_argument("id"); p.add_argument("--title", required=True)
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_rename_lecture)
+    p = sub.add_parser("tutor-session", help="guided tutor v2: hidden answer, persistent hint ladder, closed-book exit check")
+    p.add_argument("action", choices=["start", "attempt", "hint", "reveal", "exit", "answer", "show", "stats"])
+    p.add_argument("question", nargs="?", default="")
+    p.add_argument("--id", default="")
+    p.add_argument("--lecture", dest="lecture_id", default=None)
+    p.add_argument("--item", default=None, help="mastery:<check_id>:<item_id>")
+    p.add_argument("--question", dest="question_opt", default="", help="the question (use --question=TEXT if it starts with -)")
+    p.add_argument("--text", default="")
+    p.add_argument("--just-tell-me", dest="just_tell_me", action="store_true")
+    p.add_argument("--choice", type=int, default=-1)
+    p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_tutor_session)
+    p = sub.add_parser("learner", help="plain-text learner brief for a lecture (computed from the logs)")
+    p.add_argument("lecture", help="lecture id")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_learner)
+    p = sub.add_parser("mastery-check", help="cumulative mastery check: every lecture, pass at 90%%, retry as often as you like")
+    p.add_argument("action", nargs="?", default="status", choices=["status", "start", "submit", "history", "relearned"])
+    p.add_argument("--items", type=int, default=0)
+    p.add_argument("--rounds", type=int, default=1)
+    p.add_argument("--per-lecture", dest="per_lecture", type=int, default=2)
+    p.add_argument("--max-items", dest="max_items", type=int, default=30)
+    p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--check-id", dest="check_id", default="")
+    p.add_argument("--answers-json", dest="answers_json", default="[]")
+    p.add_argument("--elapsed-seconds", dest="elapsed_seconds", type=int, default=0)
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_mastery_check)
     p = sub.add_parser("library-check", help="copies of a class, lectures dated away from their capture day, shared ids (read only)")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_library_check)
     p = sub.add_parser("unmerge-lecture", help="undo the latest consolidation into a lecture")

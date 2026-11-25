@@ -18,16 +18,34 @@ struct AskView: View {
     @State private var think = false
     @State private var turns: [Turn] = []
     @State private var busy = false
+    @State private var guidedMode = false
+    @State private var guided: [GuidedSeed] = []
     @FocusState private var focused: Bool
 
     private let windows = [("Last 3 hours", "3h"), ("Today", "24h"), ("7 days", "7d"), ("30 days", "30d"), ("90 days", "90d")]
 
     var body: some View {
         VStack(spacing: 0) {
+            Picker("Mode", selection: $guidedMode) {
+                Text("Direct answer").tag(false)
+                Text("Guided tutor").tag(true)
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 320).padding(.top, 10)
+            .help("Guided tutor: hints first, the answer after you have tried, then one question without help")
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
-                        if turns.isEmpty {
+                        if guidedMode {
+                            if guided.isEmpty {
+                                ContentUnavailableView {
+                                    Label("Work it out with the tutor", systemImage: "graduationcap")
+                                } description: {
+                                    Text("Ask about something from your lectures. The tutor keeps the answer back while you reason it out, gives hints in steps, then asks one question without help.")
+                                }
+                                .padding(.top, 60)
+                            }
+                            ForEach(guided) { g in GuidedTutorPanel(seed: g).id(g.id) }
+                        } else if turns.isEmpty {
                             ContentUnavailableView {
                                 Label("Ask about what you studied", systemImage: "questionmark.bubble")
                             } description: {
@@ -35,11 +53,14 @@ struct AskView: View {
                             }
                             .padding(.top, 60)
                         }
-                        ForEach(turns) { t in TurnView(turn: t).id(t.id) }
+                        if !guidedMode { ForEach(turns) { t in TurnView(turn: t).id(t.id) } }
                     }
                     .frame(maxWidth: 820, alignment: .leading)
                     .padding(20)
                     .frame(maxWidth: .infinity)
+                }
+                .onChange(of: guided.count) { _, _ in
+                    if let last = guided.last { withAnimation { proxy.scrollTo(last.id, anchor: .top) } }
                 }
                 .onChange(of: turns.count) { _, _ in
                     if let last = turns.last { withAnimation { proxy.scrollTo(last.id, anchor: .top) } }
@@ -51,10 +72,11 @@ struct AskView: View {
                       systemImage: "hourglass").font(.scaled(.caption)).foregroundStyle(.orange).padding(.top, 8)
             }
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("Ask a question about your lectures…", text: $question, axis: .vertical)
+                TextField(guidedMode ? "A question to work through with the tutor…" : "Ask a question about your lectures…",
+                          text: $question, axis: .vertical)
                     .textFieldStyle(.roundedBorder).lineLimit(1...5)
                     .focused($focused)
-                    .onSubmit(ask)
+                    .onSubmit(submit)
                 Picker("", selection: $window) {
                     ForEach(windows, id: \.1) { Text($0.0).tag($0.1) }
                 }
@@ -62,7 +84,7 @@ struct AskView: View {
                 .help("How far back to search")
                 Toggle("Think", isOn: $think).toggleStyle(.checkbox)
                     .help("Let the model reason first — slower, sometimes better on multi-part questions")
-                Button(action: ask) {
+                Button(action: submit) {
                     if busy { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up.circle.fill").font(.scaled(.title2)) }
                 }
                 .buttonStyle(.borderless)
@@ -73,9 +95,27 @@ struct AskView: View {
         }
         .navigationTitle("Ask")
         .toolbar {
-            if !turns.isEmpty { Button("Clear", systemImage: "trash") { turns = [] } }
+            if !turns.isEmpty || !guided.isEmpty { Button("Clear", systemImage: "trash") { turns = []; guided = [] } }
         }
-        .onAppear { focused = true }
+        .onAppear { consumeGuided(); focused = true }
+        .onChange(of: model.pendingGuidedItem) { _, _ in consumeGuided() }
+    }
+
+    private func submit() { guidedMode ? startGuided() : ask() }
+
+    private func startGuided() {
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !model.judgeLoaded else { return }
+        question = ""
+        guided.append(GuidedSeed(question: q))
+    }
+
+    /// A missed mastery-check item sent here from Review.
+    private func consumeGuided() {
+        guard let ref = model.pendingGuidedItem else { return }
+        model.pendingGuidedItem = nil
+        guidedMode = true
+        guided.append(GuidedSeed(itemRef: ref))
     }
 
     private func ask() {
