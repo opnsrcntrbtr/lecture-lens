@@ -184,6 +184,14 @@ final class AppModel {
     }
 
     /// Fold lectures into a destination lecture (background job; it rebuilds notes and cards).
+    /// Undo the latest consolidation into a lecture (`lecture unmerge-lecture`).
+    func unconsolidate(_ s: Session) {
+        jobs.enqueue("Undo consolidation of \(s.displayTitle)", Paths.tool("lecture"),
+                     ["unmerge-lecture", CourseForm.lectureArg(s)]) { [weak self] _ in
+            Task { await self?.loadSessions() }
+        }
+    }
+
     func consolidate(into dest: Session, from sources: [Session]) {
         guard !sources.isEmpty else { return }
         jobs.enqueue("Consolidate into \(dest.displayTitle)", Paths.tool("lecture"),
@@ -389,6 +397,9 @@ final class AppModel {
     }
 
     // MARK: lectures
+    /// `lecture library-check`: copies of a class, wrong dates, shared ids (shown above the lecture list).
+    var libraryCheck: LibraryCheck?
+
     func loadSessions() async {
         loadingSessions = true; defer { loadingSessions = false }
         do {
@@ -396,6 +407,7 @@ final class AppModel {
             sessionsError = nil
         } catch { sessionsError = ErrorText.short(error) }
         nextClass = try? await ToolRunner.json(NextClass.self, "lecture", ClassMode.liveCourseArgs(courseList) + ["next", "--json"], timeout: 30)
+        libraryCheck = try? await ToolRunner.json(LibraryCheck.self, "lecture", ["library-check", "--json"], timeout: 30)
     }
 
     func build(_ s: Session) {

@@ -3,6 +3,10 @@
   rename(folder, title, vault_dir)      the new title everywhere: manifest, file headings, card
                                         tags, the vault note (renamed in place). The folder keeps
                                         its id, so links, review history and sync records still work.
+  unmerge(dest, superseded, ...)        undo the latest consolidation into dest: the destination as
+                                        it was and every source come back; the merged folder moves
+                                        to _superseded/ (…merge-undone-…). `leave` keeps named
+                                        sources out (e.g. a partial copy of a class already covered).
   merge(dest, sources, ...)             the sources' transcript, slides, Q&A, page text, decks,
                                         resources and readings join the destination, on one
                                         timeline in start order. The sources (and a copy of the
@@ -187,6 +191,8 @@ def merge(dest: Path, sources: list[Path], superseded: Path, vault_dir: Path | N
     superseded.mkdir(parents=True, exist_ok=True)
     backup = superseded / f"{dest.name}.before-merge-{stamp}"
     shutil.copytree(dest, backup)
+    if vault_dir and vault_note(vault_dir, _manifest(dest)).exists():   # so an undo restores it too
+        shutil.copy2(vault_note(vault_dir, _manifest(dest)), backup / "_vault_note.md")
     parts = plan(dest, sources)
     dman = _manifest(dest)
     title = dman.get("title") or dest.name
@@ -319,9 +325,141 @@ def merge(dest: Path, sources: list[Path], superseded: Path, vault_dir: Path | N
             "backup": str(backup), "source_ids": [r["id"] for r in record if not r["destination"]]}
 
 
+def unmerge(dest: Path, superseded: Path, vault_dir: Path | None = None, leave=(),
+            now: dt.datetime | None = None) -> dict:
+    """Undo the latest consolidation into `dest` from the copies merge() kept in _superseded/."""
+    dest, superseded = Path(dest), Path(superseded)
+    man = _manifest(dest)
+    if not man.get("consolidated_at"):
+        return {"ok": False, "error": f"{dest.name} was not consolidated"}
+    t = _parse_t(man["consolidated_at"])
+    stamp = t.strftime("%Y%m%d-%H%M%S") if t else ""
+    backup = superseded / f"{dest.name}.before-merge-{stamp}"
+    if not backup.is_dir():
+        found = sorted(superseded.glob(f"{dest.name}.before-merge-*"))
+        if not found:
+            return {"ok": False, "error": f"no copy of {dest.name} from before the merge in {superseded}"}
+        backup = found[-1]
+        stamp = backup.name.rsplit(".before-merge-", 1)[1]
+    sources = sorted(superseded.glob(f"*.merged-into-{dest.name.split('_', 1)[0]}-{stamp}"))
+    leave = set(leave or ())
+    back = [(src, dest.parent / src.name.split(".merged-into-")[0]) for src in sources]
+    clash = [orig.name for _, orig in back if orig.name not in leave and orig.exists()]
+    if clash:
+        return {"ok": False, "error": f"already in the library: {', '.join(clash)}"}
+    now = now or dt.datetime.now(dt.timezone.utc)
+    nstamp = now.strftime("%Y%m%d-%H%M%S")
+    undone = superseded / f"{dest.name}.merge-undone-{nstamp}"
+    old_note = vault_note(vault_dir, man) if vault_dir else None
+    shutil.move(str(dest), undone)
+    shutil.move(str(backup), dest)
+    restored, left, vault_back = [], [], []
+    for src, orig in back:
+        if orig.name in leave:
+            target = superseded / f"{orig.name}.left-out-{nstamp}"
+            shutil.move(str(src), target)
+            left.append(target.name)
+            hide_sessions(dest.parent, [_manifest(target).get("id")], f"left out when undoing the merge into {dest.name}")
+            continue
+        shutil.move(str(src), orig)
+        restored.append(orig.name)
+        if vault_dir:
+            note = vault_note(vault_dir, _manifest(orig))
+            kept = Path(vault_dir) / "_superseded" / note.name
+            if kept.exists() and not note.exists():
+                shutil.move(str(kept), note)
+                vault_back.append(note.name)
+    note_restored = False
+    if vault_dir:
+        if old_note and old_note.exists():
+            shutil.move(str(old_note), undone / "_vault_note.md")   # the merged note goes with the merged folder
+        kept = dest / "_vault_note.md"
+        if kept.exists():
+            shutil.move(str(kept), vault_note(vault_dir, _manifest(dest)))
+            note_restored = True
+    return {"ok": True, "lecture": dest.name, "title": _manifest(dest).get("title"), "restored": restored,
+            "left_out": left, "merged_copy": str(undone), "vault_restored": vault_back,
+            "vault_note_restored": note_restored}
+
+
+HIDDEN = ".hidden_sessions.json"   # captures kept out of the library (a copy of a class already built)
+
+
+def hide_sessions(lectures: Path, ids, reason: str) -> None:
+    p = Path(lectures) / HIDDEN
+    try:
+        rows = json.loads(p.read_text())
+    except (OSError, ValueError):
+        rows = []
+    have = {r.get("id") for r in rows}
+    rows += [{"id": i, "reason": reason, "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+             for i in dict.fromkeys(ids) if i and i not in have]
+    p.write_text(json.dumps(rows, indent=1, ensure_ascii=False) + "\n")
+
+
+def library_check(lectures: Path) -> dict:
+    """What looks wrong in the library, without changing it: two built lectures covering the same
+    class (overlap over half the shorter), a lecture dated away from its own capture day, one id in
+    two folders, a consolidation spanning days, and a rebuild left pending."""
+    rows = []
+    for m in sorted(Path(lectures).glob("*/manifest.json")) if Path(lectures).exists() else []:
+        try:
+            j = json.loads(m.read_text())
+        except (OSError, ValueError):
+            continue
+        a, b = _parse_t(j.get("start")), _parse_t(j.get("end"))
+        if a and not b and j.get("minutes"):
+            b = a + dt.timedelta(minutes=float(j["minutes"]))
+        rows.append({"folder": m.parent.name, "id": str(j.get("id") or ""), "title": j.get("title") or m.parent.name,
+                     "start": a, "end": b, "man": j})
+    issues = []
+    def add(kind, folders, message):
+        issues.append({"kind": kind, "folders": folders, "message": message})
+    for i, x in enumerate(rows):
+        for y in rows[i + 1:]:
+            if not (x["start"] and x["end"] and y["start"] and y["end"]):
+                continue
+            ov = (min(x["end"], y["end"]) - max(x["start"], y["start"])).total_seconds()
+            short = min((x["end"] - x["start"]).total_seconds(), (y["end"] - y["start"]).total_seconds())
+            if short > 0 and ov > 0.5 * short:
+                inner = x if (x["end"] - x["start"]) <= (y["end"] - y["start"]) else y
+                outer = y if inner is x else x
+                part = ov >= 0.95 * short
+                add("copies", [x["folder"], y["folder"]],
+                    f"{outer['start'].astimezone():%d %b}: “{inner['title']}” "
+                    + (f"lies inside “{outer['title']}” (a part of the same class captured twice)" if part else
+                       f"overlaps “{outer['title']}” by {int(ov // 60)} min (the same class captured twice)"))
+    for x in rows:
+        day = re.match(r"^(\d{8})", x["folder"])
+        if day and x["start"]:
+            cap = dt.datetime.strptime(day[1], "%Y%m%d").date()
+            if abs((x["start"].astimezone().date() - cap).days) > 1:
+                add("dated_away", [x["folder"]], f"“{x['title']}” was captured {cap:%d %b} but is dated "
+                    f"{x['start'].astimezone():%d %b}, so the library lists it there")
+        tl = [_parse_t(t.get("start")) for t in x["man"].get("timeline") or [] if t.get("start")]
+        if len({t.astimezone().date() for t in tl if t}) > 1:
+            add("multi_day_merge", [x["folder"]], f"“{x['title']}” joins lectures from different days; "
+                "right-click › Undo consolidation if that was not meant")
+        if x["man"].get("rebuild_pending"):
+            add("rebuild_pending", [x["folder"]], f"“{x['title']}” still needs its notes and cards rebuilt")
+    ids = {}
+    for x in rows:
+        if x["id"]:
+            ids.setdefault(x["id"], []).append(x["folder"])
+    for i, fs in ids.items():
+        if len(fs) > 1:
+            add("same_id", fs, f"{len(fs)} folders share the session id {i}: the app may show only one of them")
+    return {"ok": True, "lectures": len(rows), "issues": issues,
+            "counts": {k: sum(1 for t in issues if t["kind"] == k) for k in dict.fromkeys(t["kind"] for t in issues)}}
+
+
 def consolidated_ids(lectures: Path) -> set[str]:
-    """Session ids folded into another lecture: the library and the watcher skip them."""
-    out = set()
+    """Session ids folded into another lecture, or hidden as a copy: the library and the watcher
+    skip them as captures (a built lecture folder is still listed)."""
+    try:
+        out = {str(r["id"]) for r in json.loads((Path(lectures) / HIDDEN).read_text()) if r.get("id")}
+    except (OSError, ValueError, TypeError, KeyError):
+        out = set()
     for m in Path(lectures).glob("*/manifest.json") if Path(lectures).exists() else []:
         try:
             out |= {str(c.get("id")) for c in json.loads(m.read_text()).get("consolidated") or [] if c.get("id")}

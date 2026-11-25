@@ -219,27 +219,83 @@ struct RenameLectureSheet: View {
     }
 }
 
+/// What consolidating would do, said before it happens: lectures from different days are joined
+/// back to back (the result is dated by the earliest), and a lecture that overlaps the destination in
+/// time is usually a second copy of the same class (joining repeats the shared part).
+enum ConsolidatePlan {
+    static func date(_ s: String?) -> Date? {
+        guard let s else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: s) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: s)
+    }
+
+    static func range(_ s: Session) -> (Date, Date)? {
+        guard let a = date(s.start) else { return nil }
+        let b = date(s.end) ?? a.addingTimeInterval((s.minutes ?? 0) * 60)
+        return (a, max(a, b))
+    }
+
+    static func sameDay(_ a: Session, _ b: Session, calendar: Calendar = .current) -> Bool {
+        guard let x = date(a.start), let y = date(b.start) else { return false }
+        return calendar.isDate(x, inSameDayAs: y)
+    }
+
+    static func overlaps(_ a: Session, _ b: Session) -> Bool {
+        guard let x = range(a), let y = range(b) else { return false }
+        return x.0 < y.1 && y.0 < x.1
+    }
+
+    /// The destination offered first: another lecture recorded the same day, else none (choose).
+    static func defaultDestination(for start: Session, among built: [Session]) -> Session? {
+        built.filter { $0.key != start.key && sameDay($0, start) }
+            .min { abs((date($0.start) ?? .distantPast).timeIntervalSince(date(start.start) ?? .distantPast))
+                 < abs((date($1.start) ?? .distantPast).timeIntervalSince(date(start.start) ?? .distantPast)) }
+    }
+
+    static func warnings(destination d: Session, sources: [Session], calendar: Calendar = .current) -> [String] {
+        var out: [String] = []
+        let f = DateFormatter(); f.dateFormat = "d MMM"
+        let all = [d] + sources
+        let days = Set(all.compactMap { date($0.start).map { calendar.startOfDay(for: $0) } })
+        if days.count > 1, let first = all.compactMap({ date($0.start) }).min() {
+            out.append("These lectures are from \(days.count) different days. They will be joined back to back, and the result will be dated \(f.string(from: first)) and listed there. Use this for one class that was captured in pieces.")
+        }
+        for s in sources where overlaps(s, d) {
+            out.append("“\(s.displayTitle)” overlaps “\(d.displayTitle)” in time: it looks like a second copy of the same class, and joining them repeats the shared part. Usually it is better to keep the fuller copy.")
+        }
+        return out
+    }
+}
+
 struct ConsolidateSheet: View {
     @Bindable var model: AppModel
     let start: Session
     @Environment(\.dismiss) private var dismiss
     @State private var destination: String = ""
     @State private var sources: Set<String> = []
+    @State private var understood = false
 
     private var built: [Session] { model.sessions.filter(\.built).sorted { ($0.start ?? "") < ($1.start ?? "") } }
+    private var dest: Session? { built.first { $0.key == destination } }
+    private var chosen: [Session] { built.filter { sources.contains($0.key) } }
+    private var warnings: [String] { dest.map { ConsolidatePlan.warnings(destination: $0, sources: chosen) } ?? [] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Consolidate lectures").font(.scaled(.title2)).bold()
-            Text("The chosen lectures join the destination on one timeline, in the order they were recorded: transcript, slides, Q&A, decks, resources and readings. Then notes and cards are rebuilt with the local model. The originals move to _superseded, so nothing is lost.")
+            Text("For one class captured in pieces: the chosen lectures join the destination on one timeline, in the order they were recorded (transcript, slides, Q&A, decks, resources and readings). Notes and cards are then rebuilt with the local model. The originals move to _superseded, and Undo consolidation in the lecture's menu brings them back.")
                 .font(.scaled(.callout)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Picker("Destination", selection: $destination) {
-                ForEach(built) { s in Text(s.displayTitle).tag(s.key) }
+                Text("Choose a lecture…").tag("")
+                ForEach(built) { s in Text("\(LecturesView.day(s.start) ?? "") · \(s.displayTitle)").tag(s.key) }
             }
             GroupBox("Lectures to fold in") {
                 List(built.filter { $0.key != destination }) { s in
                     Toggle(isOn: Binding(get: { sources.contains(s.key) },
-                                         set: { on in if on { sources.insert(s.key) } else { sources.remove(s.key) } })) {
+                                         set: { on in if on { sources.insert(s.key) } else { sources.remove(s.key) }; understood = false })) {
                         VStack(alignment: .leading) {
                             Text(s.displayTitle).lineLimit(1)
                             Text([s.start.map { String($0.prefix(16)).replacingOccurrences(of: "T", with: " ") }, s.minutes.map { "\(Int($0)) min" }]
@@ -249,30 +305,71 @@ struct ConsolidateSheet: View {
                 }
                 .frame(minHeight: 180, maxHeight: 260)
             }
+            if !warnings.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(warnings, id: \.self) { w in
+                        Label(w, systemImage: "exclamationmark.triangle.fill").font(.scaled(.callout))
+                            .foregroundStyle(.primary).symbolRenderingMode(.multicolor)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Toggle("I checked: consolidate anyway", isOn: $understood)
+                }
+                .padding(10)
+                .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityElement(children: .contain)
+            }
             HStack {
-                Text(sources.isEmpty ? "Choose at least one lecture" : "\(sources.count) lecture(s) into “\(built.first { $0.key == destination }?.displayTitle ?? "")”")
+                Text(destination.isEmpty ? "Choose the destination lecture"
+                     : sources.isEmpty ? "Choose at least one lecture"
+                     : "\(sources.count) lecture(s) into “\(dest?.displayTitle ?? "")”")
                     .font(.scaled(.caption)).foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                 Button("Consolidate") { run() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(sources.isEmpty || destination.isEmpty || model.jobs.busy)
+                    .disabled(sources.isEmpty || destination.isEmpty || model.jobs.busy || (!warnings.isEmpty && !understood))
                     .help(model.jobs.busy ? "Another job is running" : "Runs as a background job; rebuilding notes uses the local model")
             }
         }
-        .padding(20).frame(width: 560)
+        .padding(20).frame(width: 600)
         .onAppear {
-            // the lecture you started from goes into the latest other one by default
-            destination = built.last { $0.key != start.key }?.key ?? start.key
-            if start.key != destination { sources = [start.key] }
+            // offered only when a lecture was recorded the same day; otherwise you choose
+            if let d = ConsolidatePlan.defaultDestination(for: start, among: built) {
+                destination = d.key
+                sources = [start.key]
+            }
         }
-        .onChange(of: destination) { _, d in sources.remove(d) }
+        .onChange(of: destination) { _, d in sources.remove(d); understood = false }
     }
 
     private func run() {
-        guard let dest = built.first(where: { $0.key == destination }) else { return }
-        let from = built.filter { sources.contains($0.key) }
-        model.consolidate(into: dest, from: from)
+        guard let d = dest else { return }
+        model.consolidate(into: d, from: chosen)
         dismiss()
+    }
+}
+
+/// Above the lecture list: what `lecture library-check` found. Read only.
+struct LibraryIssuesBanner: View {
+    let check: LibraryCheck
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(check.ordered, id: \.self) { t in
+                    Text(t.message).font(.scaled(.caption)).fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(t.kind == "copies" ? Color.secondary : Color.primary)
+                }
+                Text("Nothing is changed for you. Right-click a lecture to rename it, consolidate, or undo a consolidation.")
+                    .font(.scaled(.caption2)).foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+        } label: {
+            Label("Library: \(check.summary)", systemImage: "exclamationmark.magnifyingglass")
+                .font(.scaled(.caption, weight: .semibold))
+        }
+        .padding(.horizontal, 10).padding(.bottom, 6)
+        .accessibilityHint("Shows what looks wrong in the lecture library")
     }
 }

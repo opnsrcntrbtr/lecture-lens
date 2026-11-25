@@ -10,6 +10,7 @@ struct LecturesView: View {
     @State private var showNames = false
     @State private var renamingLecture: Session?
     @State private var consolidating: Session?
+    @State private var undoing: Session?
 
     private var shown: [Session] {
         let s = model.sessions.sorted { ($0.start ?? "") > ($1.start ?? "") }
@@ -23,6 +24,9 @@ struct LecturesView: View {
             TextField("Filter lectures", text: $filter)
                 .textFieldStyle(.roundedBorder).padding(8)
                 .accessibilityLabel("Filter lectures by title")
+            if let lib = model.libraryCheck, !lib.issues.isEmpty {
+                LibraryIssuesBanner(check: lib)
+            }
             List(shown, selection: $selection) { s in
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
@@ -41,6 +45,9 @@ struct LecturesView: View {
                         .disabled(!s.built)
                     Button("Consolidate into another lecture…", systemImage: "arrow.triangle.merge") { consolidating = s }
                         .disabled(!s.built || model.sessions.filter(\.built).count < 2)
+                    if s.consolidated == true {
+                        Button("Undo consolidation…", systemImage: "arrow.uturn.backward") { undoing = s }
+                    }
                 }
             }
             .overlay {
@@ -80,6 +87,13 @@ struct LecturesView: View {
         .sheet(isPresented: $showNames) { NamesReviewSheet(model: model) }
         .sheet(item: $renamingLecture) { s in RenameLectureSheet(model: model, session: s) }
         .sheet(item: $consolidating) { s in ConsolidateSheet(model: model, start: s) }
+        .confirmationDialog("Undo the consolidation into “\(undoing?.displayTitle ?? "")”?", isPresented: Binding(
+            get: { undoing != nil }, set: { if !$0 { undoing = nil } }), titleVisibility: .visible) {
+            Button("Undo consolidation") { if let u = undoing { model.unconsolidate(u) }; undoing = nil }
+            Button("Cancel", role: .cancel) { undoing = nil }
+        } message: {
+            Text("The lecture goes back to how it was before the merge, and the lectures folded into it return to the library. The merged version is kept in _superseded.")
+        }
     }
 
     static func day(_ iso: String?) -> String? {
