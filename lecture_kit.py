@@ -1486,7 +1486,8 @@ def cmd_list(a):
             out.append({"id": s["id"], "title": title, "start": (mj.get("start") if mj.get("consolidated") else None) or s["start"].isoformat(),
                         "end": (mj.get("end") if mj.get("consolidated") else None) or s["end"].isoformat(),
                         "minutes": (mj.get("minutes") if mj.get("consolidated") else None) or s["minutes"], "frames": len(s["frames"]),
-                        "built": (folder / "manifest.json").exists(), "folder": str(folder)})
+                        "built": (folder / "manifest.json").exists(), "folder": str(folder),
+                        "consolidated": bool(mj.get("consolidated_at"))})
         # built lectures whose frames aged out of the window still belong in the library
         seen = {o["folder"] for o in out}
         for m in sorted(LECTURES.glob("*/manifest.json")) if LECTURES.exists() else []:
@@ -1494,7 +1495,8 @@ def cmd_list(a):
             try: j = json.loads(m.read_text())
             except Exception: continue
             out.append({"id": j.get("id"), "title": j.get("title"), "start": j.get("start"), "end": j.get("end"),
-                        "minutes": j.get("minutes"), "frames": j.get("frames"), "built": True, "folder": str(m.parent)})
+                        "minutes": j.get("minutes"), "frames": j.get("frames"), "built": True, "folder": str(m.parent),
+                        "consolidated": bool(j.get("consolidated_at"))})
         print(json.dumps({"sessions": sorted(out, key=lambda o: o.get("start") or "", reverse=True)})); return
     if not ss: print("no lecture sessions found (is screenpipe capturing the portal?)"); return
     for s in ss:
@@ -1758,6 +1760,45 @@ def cmd_merge_lectures(a):
     print("  notes and cards rebuilt" if rb.get("ok") else f"  rebuild: {rb.get('error') or 'skipped'}")
 
 
+def cmd_unmerge_lecture(a):
+    """Undo the latest consolidation into a lecture: it and its sources come back as they were."""
+    import lecture_manage, study_graph
+    dest = find_folder(a.id)
+    r = lecture_manage.unmerge(dest, LECTURES / "_superseded", VAULT / VAULT_SUB, leave=a.leave)
+    if r.get("ok"):
+        _drop_from_indexes([dest.name, dest.name.split("_", 1)[0]])
+        for name in [dest.name] + r["restored"]:
+            folder = LECTURES / name
+            _reindex(folder)
+            try:
+                g = study_graph.connect(LECTURES / "study_graph.sqlite")
+                try: study_graph.ingest_lecture(g, folder)
+                finally: g.close()
+            except Exception as e:
+                r.setdefault("graph_warnings", []).append(f"{name}: {str(e)[:120]}")
+    if a.json:
+        print(json.dumps(r)); return
+    if not r.get("ok"):
+        sys.exit(f"✗ {r['error']}")
+    print(f"✓ {r['title']}: back as it was before the merge")
+    for n in r["restored"]:
+        print(f"  restored {n}")
+    for n in r["left_out"]:
+        print(f"  left in _superseded: {n}")
+    print(f"  the merged version: {r['merged_copy']}")
+
+
+def cmd_library_check(a):
+    """What looks wrong in the library (read only): copies of a class, wrong dates, shared ids."""
+    import lecture_manage
+    r = lecture_manage.library_check(LECTURES)
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False)); return
+    print(f"{r['lectures']} lectures, {len(r['issues'])} thing(s) to look at")
+    for t in r["issues"]:
+        print(f"  [{t['kind']}] {t['message']}")
+
+
 def cmd_watch(a):
     import time
     import lecture_manage
@@ -1802,6 +1843,25 @@ def run_checks(vision_probe=True):
         chk("app_audio", n_tap > 0, f"{n_tap} transcript segments from {label}",
             None if n_tap else f"allow audio capture for the app that launches screenpipe: {PRIVACY}")
         chk("transcripts", n_a > 0, f"{n_a} segments; devices: {', '.join(devs) or '—'}", level="ok" if n_a else "warn")
+    try:   # a 3-hour class needs a few GB; macOS itself slows down when the disk is nearly full
+        du = _sh.disk_usage(Path.home())
+        free_gb, used = du.free / 1e9, du.used / du.total
+        lvl = "fail" if free_gb < 15 else ("warn" if free_gb < 40 or used > 0.95 else "ok")
+        chk("disk", lvl == "ok", f"{free_gb:.0f} GB free ({used:.0%} used)",
+            None if lvl == "ok" else "free some space before the next class", level=lvl)
+    except OSError:
+        pass
+    try:
+        import lecture_manage
+        lib = lecture_manage.library_check(LECTURES)
+        bad = [t for t in lib["issues"] if t["kind"] != "copies"]
+        cop = lib["counts"].get("copies", 0)
+        chk("library", not bad, (f"{lib['lectures']} lectures" + (f"; {cop} class(es) built twice" if cop else "")) if not bad
+            else "; ".join(t["message"] for t in bad[:2]),
+            None if not bad else "see `lecture library-check`; Lectures › right-click › Undo consolidation",
+            level="ok" if not bad else "warn")
+    except Exception as e:
+        chk("library", True, f"library check skipped: {str(e)[:80]}", level="ok")
     chk("ffmpeg", _sh.which("ffmpeg"), "ffmpeg " + ("found" if _sh.which("ffmpeg") else "missing"),
         None if _sh.which("ffmpeg") else "brew install ffmpeg")
     try:
@@ -3539,6 +3599,12 @@ def main():
     p = sub.add_parser("rename-lecture", help="rename a built lecture: title everywhere, vault note, index (folder keeps its id)")
     p.add_argument("id"); p.add_argument("--title", required=True)
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_rename_lecture)
+    p = sub.add_parser("library-check", help="copies of a class, lectures dated away from their capture day, shared ids (read only)")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_library_check)
+    p = sub.add_parser("unmerge-lecture", help="undo the latest consolidation into a lecture")
+    p.add_argument("id", help="the destination lecture (id or folder name)")
+    p.add_argument("--leave", action="append", default=[], help="a source folder to keep out of the library")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_unmerge_lecture)
     p = sub.add_parser("merge-lectures", help="consolidate lectures into a destination lecture, then rebuild notes and cards")
     p.add_argument("id", help="destination lecture"); p.add_argument("--from", dest="sources", nargs="+", required=True)
     p.add_argument("--no-rebuild", action="store_true"); p.add_argument("--cards", type=int, default=20)
