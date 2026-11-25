@@ -141,6 +141,8 @@ def main(argv=None):
     p = sub.add_parser("readiness"); p.add_argument("action", choices=["list", "rate", "candidates", "triage", "card"])
     p.add_argument("--item"); p.add_argument("--rating"); p.add_argument("--artefact"); p.add_argument("--quote")
     p.add_argument("--eval-run", dest="eval_run"); p.add_argument("--answers", default="")
+    p = sub.add_parser("voice"); p.add_argument("action", choices=["voices", "say", "answer", "log", "summary"])
+    p.add_argument("--audio", default=""); p.add_argument("--latency-ms", dest="latency_ms", type=int, default=0)
     p = sub.add_parser("panel"); p.add_argument("action", choices=["start", "next", "answer", "finish", "self", "critique",
                                                                     "show", "metrics"])
     p.add_argument("--type", default="panel", choices=cp.TYPES); p.add_argument("--pressure", default="neutral",
@@ -301,6 +303,27 @@ def main(argv=None):
             return out({"ok": False, "error": str(e)})
         score = pn.dir / "score.json"
         return out({"ok": True, **pn.view(), "score": json.loads(score.read_text()) if score.exists() else None})
+    if a.cmd == "voice":   # CC-7: the panel out loud (built-in voices, local whisper)
+        import capstone_voice as cv
+        if a.action == "voices":
+            return out({"ok": True, "voices": cv.installed_voices()})
+        cur = ROOT / "current_panel.json"
+        if not cur.exists():
+            return out({"ok": False, "error": "no panel: panel start first"})
+        c = json.loads(cur.read_text())
+        pn = cp.Panel(ws, c["seed"])
+        pn.dir = Path(c["dir"])
+        vp = cv.VoicePanel(pn)
+        if a.action == "say":
+            return out({"ok": True, **vp.say_current()})
+        if a.action == "answer":
+            if not a.audio or not Path(a.audio).is_file():
+                return out({"ok": False, "error": "no recording"})
+            r = vp.answer_audio(Path(a.audio), llm_fn())
+            return out({"ok": not r.get("error"), **r})
+        if a.action == "log":
+            return out({"ok": True, **vp.log_latency(a.latency_ms)})
+        return out({"ok": True, **vp.summary()})
     if a.cmd == "label":
         yn = lambda v: str(v).lower() in ("y", "yes", "true", "1")
         try:
