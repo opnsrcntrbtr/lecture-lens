@@ -126,9 +126,18 @@ final class AppModel {
     /// Class-start reminders sent this run (ClassReminder.key).
     private var remindersSent: Set<String> = []
 
-    /// A notification when today's class starts without Live capture (ClassReminder).
+    /// Set when the next class is near but capture is pinned to Portal (it would miss the meeting).
+    var classModeWarning: String? { ClassMode.warning(next: nextClass, pinned: mode.pinned, now: .now) }
+
+    /// A notification when today's class starts without Live capture (ClassReminder), and one an
+    /// hour before it when capture is pinned to Portal.
     func checkClassStart(now: Date = .now) {
         guard let c = nextClass else { return }
+        if let w = ClassMode.warning(next: c, pinned: mode.pinned, now: now), !remindersSent.contains("pin-" + c.date),
+           let start = ClassReminder.window(c)?.start, now >= start.addingTimeInterval(-3600) {
+            remindersSent.insert("pin-" + c.date)
+            ClassReminder.notify(id: "pin-" + c.date, title: "Capture is pinned to Portal", body: w)
+        }
         guard let stage = ClassReminder.due(c, now: now, liveRunning: mode.running, sent: remindersSent) else { return }
         remindersSent.insert(stage == .late ? ClassReminder.lateKey(c, now: now) : ClassReminder.key(c, stage))
         ClassReminder.post(c, stage, now: now)
@@ -225,7 +234,7 @@ final class AppModel {
         var s: [Signal] = []
         s.append(Signal(id: "capture", label: "Capture",
                         state: mode.running ? .ok : .down,
-                        detail: mode.running ? "running · \(mode.mode) mode\(mode.autoswitch ? " · auto-switch" : "")" : "stopped",
+                        detail: ModeText.healthDetail(mode),
                         fix: mode.running ? nil : "Start capture"))
         let frames = check("frames")
         let frameLive = screenpipe?.frame_status.map { $0 == "ok" || $0 == "running" } ?? false
@@ -386,7 +395,7 @@ final class AppModel {
             sessions = try await ToolRunner.json(SessionList.self, "lecture", ["list", "--json", "--since", "90d"], timeout: 60).sessions
             sessionsError = nil
         } catch { sessionsError = ErrorText.short(error) }
-        nextClass = try? await ToolRunner.json(NextClass.self, "lecture", ["next", "--json"], timeout: 30)
+        nextClass = try? await ToolRunner.json(NextClass.self, "lecture", ClassMode.liveCourseArgs(courseList) + ["next", "--json"], timeout: 30)
     }
 
     func build(_ s: Session) {
@@ -505,5 +514,25 @@ enum ErrorText {
         let lines = s.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         let last: String = lines.last ?? "no details"
         return last.count > limit ? String(last.prefix(limit)) + "…" : last
+    }
+}
+
+/// The live class and the capture mode: which course's calendar says when the class is, and a
+/// warning when a pinned Portal mode would miss it.
+enum ClassMode {
+    /// `--course <default course>` when courses are kept apart, so `next` reads the live calendar
+    /// whichever course is shown.
+    static func liveCourseArgs(_ list: CourseList?) -> [String] {
+        guard let l = list, l.implicit != true, !l.default.isEmpty else { return [] }
+        return ["--course", l.default]
+    }
+
+    /// A warning from 18 hours before the class until its end when capture is pinned to Portal.
+    static func warning(next: NextClass?, pinned: String?, now: Date) -> String? {
+        guard let c = next, (pinned ?? "") == "portal", let w = ClassReminder.window(c) else { return nil }
+        guard now >= w.start.addingTimeInterval(-18 * 3600), now <= w.end else { return nil }
+        let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
+        f.timeZone = c.tz.flatMap(TimeZone.init(identifier:)) ?? .current
+        return "The class on \(f.string(from: w.start)) is a meeting, but capture is pinned to Portal: the meeting would not be recorded and the live follower would not start. Switch to Auto."
     }
 }

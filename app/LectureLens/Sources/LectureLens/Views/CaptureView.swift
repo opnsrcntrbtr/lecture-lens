@@ -98,16 +98,16 @@ struct CaptureView: View {
                 .font(.system(size: 34 * TextScale.current)).foregroundStyle(model.mode.running ? .red : .secondary)
             VStack(alignment: .leading) {
                 Text(model.mode.running ? "Capturing" : "Not capturing").font(.scaled(.title2, weight: .bold))
-                Text(model.mode.running ? "\(model.mode.mode.capitalized) mode\(model.mode.autoswitch ? " · switches to Live during Zoom meetings" : "")"
-                                        : "Start capture before a lecture").foregroundStyle(.secondary)
+                Text(ModeText.subtitle(model.mode)).foregroundStyle(.secondary)
             }
             Spacer()
             if model.busyCapture { ProgressView().controlSize(.small) }
+            // shown while stopped too: a pin set earlier still decides what the next start records
+            Picker("Mode", selection: Binding(get: { model.mode.pinned?.isEmpty == false ? model.mode.pinned! : "auto" },
+                                              set: { m in Task { await model.setMode(m) } })) {
+                Text("Auto").tag("auto"); Text("Portal").tag("portal"); Text("Live").tag("live")
+            }.pickerStyle(.segmented).frame(width: 220)
             if model.mode.running {
-                Picker("Mode", selection: Binding(get: { model.mode.pinned?.isEmpty == false ? model.mode.pinned! : "auto" },
-                                                  set: { m in Task { await model.setMode(m) } })) {
-                    Text("Auto").tag("auto"); Text("Portal").tag("portal"); Text("Live").tag("live")
-                }.pickerStyle(.segmented).frame(width: 220)
                 Button("Stop", systemImage: "stop.fill") {
                     if let h = model.captureHealth, let s = CaptureHealth.unsavedAudioSeconds(h.record) {
                         stopWarning = s
@@ -184,5 +184,24 @@ enum CaptureText {
             for s in c.sites ?? [] where !s.contains("/") && seen.insert(s.lowercased()).inserted { out.append((s, c.label)) }
         }
         return out
+    }
+}
+
+/// What the capture header and the health light say about the mode, including a pin.
+enum ModeText {
+    static func subtitle(_ m: ModeState) -> String {
+        let pin = (m.pinned ?? "").trimmingCharacters(in: .whitespaces)
+        if m.running {
+            if !pin.isEmpty { return "\(m.mode.capitalized) mode · pinned: does not switch for meetings" }
+            return "\(m.mode.capitalized) mode" + (m.autoswitch ? " · switches to Live during meetings" : "")
+        }
+        if !pin.isEmpty { return "Start capture before a lecture · pinned to \(pin.capitalized)" }
+        return "Start capture before a lecture · Auto: Live during meetings, Portal otherwise"
+    }
+
+    static func healthDetail(_ m: ModeState) -> String {
+        guard m.running else { return "stopped" }
+        let pin = (m.pinned ?? "").trimmingCharacters(in: .whitespaces)
+        return "running · \(m.mode) mode" + (!pin.isEmpty ? " · pinned" : (m.autoswitch ? " · auto-switch" : ""))
     }
 }

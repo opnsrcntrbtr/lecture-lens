@@ -398,3 +398,23 @@ import Testing
     #expect(!LectureTab.shown(selfPaced: true).contains(.qa) && LectureTab.shown(selfPaced: true).count == LectureTab.allCases.count - 1)
     #expect(LectureTab.shown(selfPaced: false) == LectureTab.allCases)
 }
+
+@Test func portalPinBeforeAClassIsFlagged() throws {
+    let c = try JSONDecoder().decode(NextClass.self, from: Data(#"{"week": 6, "title": "Soil", "date": "2030-01-05", "start": "10:00", "end": "13:00", "tz": "UTC"}"#.utf8))
+    let start = ClassReminder.window(c)!.start
+    #expect(ClassMode.warning(next: c, pinned: "portal", now: start.addingTimeInterval(-3600))?.contains("pinned to Portal") == true)
+    #expect(ClassMode.warning(next: c, pinned: "portal", now: start.addingTimeInterval(-20 * 3600)) == nil)
+    #expect(ClassMode.warning(next: c, pinned: "", now: start) == nil && ClassMode.warning(next: c, pinned: "live", now: start) == nil)
+    #expect(ClassMode.warning(next: c, pinned: "portal", now: start.addingTimeInterval(4 * 3600)) == nil)
+    let l = try JSONDecoder().decode(CourseList.self, from: Data(#"{"ok": true, "default": "main", "courses": [{"id": "main", "name": "M", "kind": "live", "root": "/x"}]}"#.utf8))
+    #expect(ClassMode.liveCourseArgs(l) == ["--course", "main"] && ClassMode.liveCourseArgs(nil).isEmpty)
+}
+
+@Test func modeTextTellsTheTruthAboutPins() throws {
+    let pinned = try JSONDecoder().decode(ModeState.self, from: Data(#"{"running": true, "mode": "portal", "pinned": "portal", "autoswitch": true}"#.utf8))
+    #expect(ModeText.subtitle(pinned).contains("does not switch for meetings") && ModeText.healthDetail(pinned).hasSuffix("· pinned"))
+    let auto = try JSONDecoder().decode(ModeState.self, from: Data(#"{"running": true, "mode": "portal", "pinned": "", "autoswitch": true}"#.utf8))
+    #expect(ModeText.subtitle(auto).contains("switches to Live") && ModeText.healthDetail(auto).hasSuffix("auto-switch"))
+    let stopped = try JSONDecoder().decode(ModeState.self, from: Data(#"{"running": false, "mode": "stopped", "pinned": "portal", "autoswitch": false}"#.utf8))
+    #expect(ModeText.subtitle(stopped).hasSuffix("pinned to Portal") && ModeText.healthDetail(stopped) == "stopped")
+}

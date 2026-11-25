@@ -478,6 +478,9 @@ struct AsyncSlide: View {
                 Image(nsImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 6))
                     .onTapGesture(count: 2) { NSWorkspace.shared.open(url) }
                     .help("Double-click to open")
+                    .accessibilityLabel("Slide image")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { NSWorkspace.shared.open(url) }   // VoiceOver cannot double-click
             } else {
                 RoundedRectangle(cornerRadius: 6).fill(.quaternary).aspectRatio(16/9, contentMode: .fit)
             }

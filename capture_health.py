@@ -143,8 +143,8 @@ MESSAGES = {
                      "Check Capture before restarting: a restart drops the audio not yet saved.",
     "audio_behind": "Audio is arriving but is being saved slowly (over 90 seconds behind). Keep capturing: "
                     "stopping now would lose the unsaved minute. It usually catches up.",
-    "silent_audio": "Audio is digital silence: macOS may be refusing the audio tap. Check Screen & System Audio "
-                    "Recording for Lecture Lens.",
+    "silent_audio": "Audio is digital silence. If the class is playing, macOS may be refusing the audio tap: check "
+                    "Screen & System Audio Recording for Lecture Lens. If nothing is playing, this is expected.",
     "no_frames": "No screen frames kept for over 90 seconds while the meeting runs. Keep the meeting window "
                  "visible; check Screen & System Audio Recording.",
 }
