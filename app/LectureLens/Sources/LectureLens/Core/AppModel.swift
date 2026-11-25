@@ -394,6 +394,12 @@ final class AppModel {
         }
     }
 
+    /// CT-6: `lecture gapfill` for one gap from a recording file; existing lines never change.
+    func gapfill(_ folderName: String, audio: String, from: String, to: String, done: @escaping @MainActor () -> Void) {
+        jobs.enqueue("Fill gap from recording", Paths.tool("lecture"),
+                     ["gapfill", folderName, "--audio", audio, "--from", from, "--to", to]) { _ in done() }
+    }
+
     func ingest(_ folderName: String) {
         jobs.enqueue("Import Zoom files", Paths.tool("lecture"), ["ingest", folderName]) { [weak self] _ in
             Task { await self?.loadSessions() }

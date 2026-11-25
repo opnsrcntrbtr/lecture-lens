@@ -20,7 +20,7 @@ Design notes
     traced to a timestamp in the transcript or a keyframe image.
 """
 from __future__ import annotations
-import argparse, datetime as dt, hashlib, json, math, os, re, shutil, sqlite3, subprocess, sys, urllib.error, urllib.request, urllib.parse
+import argparse, datetime as dt, hashlib, json, math, os, re, shutil, sqlite3, statistics, subprocess, sys, urllib.error, urllib.request, urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -1315,6 +1315,13 @@ def build(session, con, describe=True, cards=20, quiet=False):
     if merged.exists():
         src_lines = _guard_names(session, [l for l in merged.read_text().splitlines()[3:] if l.strip()], report=False)
         say(f"  using merged reference transcript ({len(src_lines)} lines)")
+    pre = folder / "transcript_pre.jsonl"
+    if pre.exists():   # CT-6: lines filled from the recording, merged in by time and labelled
+        import gapfill
+        pre_lines = _guard_names(session, gapfill.source_lines(folder, t0), report=False)
+        tsec = lambda l: (lambda m: int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]) if m else 0)(re.match(r"\[(\d\d):(\d\d):(\d\d)\]", l))
+        src_lines = sorted(list(src_lines) + pre_lines, key=tsec)
+        say(f"  {len(pre_lines)} lines filled from the recording added to the notes source")
     transcript_src = "\n".join(src_lines)
     dur_s = float(session["minutes"]) * 60.0
     aligned = align_segments(slides, src_lines, deck=deck, duration_s=dur_s)
@@ -2025,7 +2032,8 @@ def _lecture_lines(folder: Path) -> list[dict]:
         except (ValueError, AttributeError):
             return ""
     return [{"line_id": f"{key}/{r['kind']}/{r['idx']}", "t": local(r.get("t_abs") or ""), "t_abs": r.get("t_abs"),
-             "text": r["text"]} for r in recs if r["text"].strip()]
+             "text": r["text"], **({"source": "gapfill", "approx": r.get("approx", False)} if r.get("gapfill") else {})}
+            for r in recs if r["text"].strip()]
 
 
 def quiz_items(folder: Path) -> list[dict]:
@@ -2714,6 +2722,81 @@ def lecture_gaps(folder: Path) -> list[dict]:
     return g
 
 
+def lecture_gapfill(folder: Path, audio: Path | None = None, replay: tuple | None = None, frm: str | None = None,
+                    to: str | None = None, dry_run: bool = False, say=print) -> dict:
+    """CT-6: fill a gap in a built lecture's transcript from the class recording (gapfill.py).
+    `audio` is a recording file (its audio track is used); `replay` (t0, t1) joins the audio
+    chunks captured while the recording was replayed on this Mac. `frm`/`to` are local HH:MM
+    on the class day; without them the first unfilled gap in the ledger is used. Existing
+    transcript lines are never changed; the filled lines go to transcript_pre.jsonl/.md."""
+    import evidence, gapfill, tempfile
+    man = json.loads((folder / "manifest.json").read_text())
+    start = dt.datetime.fromisoformat(man["start"].replace("Z", "+00:00"))
+    day = start.astimezone().strftime("%Y%m%d")
+    if frm and to:
+        local = lambda hm: dt.datetime.strptime(f"{day} {hm}", "%Y%m%d %H:%M").astimezone()
+        w0, w1 = local(frm), local(to)
+    else:
+        open_gaps = [g for g in lecture_gaps(folder) if not g.get("filled")]
+        if not open_gaps:
+            return {"ok": False, "error": "no unfilled gap in this lecture's ledger; pass --from and --to"}
+        w0, w1 = (dt.datetime.fromisoformat(open_gaps[0][k]) for k in ("from", "to"))
+    _, recs = evidence.lecture_records(folder, lambda xs: xs)
+    lines = [(dt.datetime.fromisoformat(r["t_abs"]).timestamp(), r["text"]) for r in recs
+             if r["kind"] == "t" and not r.get("gapfill") and r.get("t_abs")]
+    words = gapfill.line_words(lines)
+    with tempfile.TemporaryDirectory() as td:
+        if replay:
+            rec, _ = gapfill.replay_audio(SP_DATA, replay[0], replay[1], Path(td) / "replay.m4a")
+            source = f"replay {replay[0].astimezone():%d %b %H:%M}"
+        else:
+            rec = Path(audio).expanduser()
+            source = rec.name
+            if not rec.is_file():
+                return {"ok": False, "error": f"recording not found: {rec.name}"}
+        res = gapfill.fill(words, w0.timestamp(), w1.timestamp(), rec, gapfill.media_length(rec),
+                           gapfill.whisper_transcribe, guess_offset=start.timestamp(), log=say)
+    out = {"ok": bool(res["lines"]) and not res.get("error"), "error": res.get("error"), "holes": res["holes"],
+           "lines": len(res["lines"]), "approx_lines": sum(1 for l in res["lines"] if l["approx"]),
+           "conf_median": round(statistics.median(l["align_conf"] for l in res["lines"]), 2) if res["lines"] else None,
+           "coarse_offset_s": res.get("coarse_offset_s"), "from": w0.isoformat(timespec="seconds"),
+           "to": w1.isoformat(timespec="seconds"), "dry_run": dry_run}
+    if not out["ok"] or dry_run:
+        return out
+    rows = gapfill.write_pre(folder, evidence.lecture_key(folder.name), start, res, w0.timestamp(), w1.timestamp(),
+                             source, _day_guard(day))
+    man = json.loads((folder / "manifest.json").read_text())
+    filled = man.get("gap_filled") or []
+    filled = [f for f in (filled if isinstance(filled, list) else [filled])
+              if not (f.get("from") == out["from"] and f.get("to") == out["to"])]
+    filled.append({"from": out["from"], "to": out["to"], "source": "recording", "file": source, "lines": len(rows),
+                   "approx_lines": out["approx_lines"], "conf_median": out["conf_median"],
+                   "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")})
+    man["gap_filled"] = filled
+    (folder / "manifest.json").write_text(json.dumps(man, indent=1, ensure_ascii=False))
+    lecture_gaps(folder)
+    out["written"] = len(rows)
+    return out
+
+
+def cmd_gapfill(a):
+    folder = find_folder(a.id)
+    replay = None
+    if a.replay_from:
+        t0 = dt.datetime.fromisoformat(a.replay_from).astimezone()
+        replay = (t0, t0 + dt.timedelta(minutes=a.replay_minutes))
+    elif not a.audio:
+        sys.exit("give --audio <recording file> or --replay-from <local ISO time>")
+    r = lecture_gapfill(folder, audio=a.audio, replay=replay, frm=a.frm, to=a.to, dry_run=a.dry_run,
+                        say=(lambda *m: None) if a.json else print)
+    if a.json:
+        print(json.dumps(r)); return
+    if not r["ok"]:
+        print("gap fill:", r.get("error") or "nothing filled"); return
+    print(f"{r['from']} → {r['to']}: {r['lines']} lines ({r['approx_lines']} approximate), median confidence {r['conf_median']}"
+          + ("  [dry run]" if r["dry_run"] else "  → transcript_pre.md; rebuild to use them in the notes"))
+
+
 def cmd_gaps(a):
     g = lecture_gaps(find_folder(a.id))
     if a.json:
@@ -3316,6 +3399,13 @@ def main():
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_health)
     p = sub.add_parser("gaps", help="gap ledger for a built lecture (late start, holes) into gaps.json and the manifest")
     p.add_argument("id", nargs="?", default="last"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_gaps)
+    p = sub.add_parser("gapfill", help="CT-6: fill a gap from the class recording (audio only); existing lines never change")
+    p.add_argument("id", nargs="?", default="last"); p.add_argument("--audio", help="recording file (its audio is used)")
+    p.add_argument("--replay-from", dest="replay_from", help="local ISO time the recording was replayed on this Mac")
+    p.add_argument("--replay-minutes", dest="replay_minutes", type=float, default=240)
+    p.add_argument("--from", dest="frm", help="local HH:MM (default: the first unfilled gap)"); p.add_argument("--to")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true"); p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_gapfill)
     p = sub.add_parser("gates", help="the After-class regression gates for a built lecture (model-free)")
     p.add_argument("id", nargs="?", default="last"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_gates)
     p = sub.add_parser("index", help="build the evidence store (lectures/index.sqlite) from guarded text")

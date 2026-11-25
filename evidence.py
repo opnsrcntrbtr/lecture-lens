@@ -121,6 +121,14 @@ def lecture_records(folder: Path, guard: Callable[[list[str]], list[str]]) -> tu
                 t_abs = start + dt.timedelta(seconds=off) if start else None
             recs.append({"kind": "t", "idx": i, "t0": float(off), "text": m[4].strip(),
                          "t_abs": t_abs.isoformat() if t_abs else None})
+    pre = folder / "transcript_pre.jsonl"      # CT-6: lines filled from the recording
+    if pre.exists() and start:
+        rows = [json.loads(l) for l in pre.read_text().splitlines() if l.strip()]
+        texts = guard([r["text"] for r in rows])
+        for r, text in zip(rows, texts):
+            recs.append({"kind": "t", "idx": str(r["line_id"]).rsplit("/", 1)[-1], "t0": float(r["t_epoch"] - start.timestamp()),
+                         "text": text.strip(), "t_abs": r["t"], "gapfill": True, "approx": bool(r.get("approx"))})
+        recs.sort(key=lambda r: r["t0"])
     sm = folder / "slides.md"
     if sm.exists():
         blocks, cur = [], None
@@ -210,7 +218,8 @@ def chunk(records: list[dict], key: str, title: str, boundaries: Iterable[float]
         st = slide_title(t0) if t0 is not None else ""
         ctx = " · ".join(x for x in (title, st, _clock(t0)) if x)
         sp = {SPEAKER.match(r["text"])[1] for r in cur if SPEAKER.match(r["text"])}
-        out.append({"chunk_id": f"{key}/t/{cur[0]['idx']}-{cur[-1]['idx']}", "source": "transcript",
+        out.append({"chunk_id": f"{key}/t/{cur[0]['idx']}-{cur[-1]['idx']}",
+                    "source": "gapfill" if cur[0].get("gapfill") else "transcript",
                     "lines": list(cur), "t0": t0, "t1": t1, "t_abs0": cur[0].get("t_abs"),
                     "t_abs1": cur[-1].get("t_abs"), "speaker": ",".join(sorted(sp)) or None, "context": ctx})
         cur.clear()
@@ -220,6 +229,7 @@ def chunk(records: list[dict], key: str, title: str, boundaries: Iterable[float]
         n = len(r["text"].split())
         crosses = cur and r["t0"] is not None and cur[-1]["t0"] is not None and (
             r["t0"] - cur[-1]["t0"] > GAP_S or any(cur[-1]["t0"] < b <= r["t0"] for b in bounds))
+        crosses = crosses or (cur and bool(cur[-1].get("gapfill")) != bool(r.get("gapfill")))   # filled lines are their own passages
         if cur and (crosses or words >= TARGET_WORDS or words + n > MAX_WORDS):
             flush(); words = 0
         cur.append(r); words += n
