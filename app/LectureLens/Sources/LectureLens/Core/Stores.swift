@@ -114,10 +114,11 @@ final class JobQueue {
         let job = Job(title: title)
         jobs.insert(job, at: 0)
         let previous = tail
+        let environment = Paths.toolEnvironment   // the course shown now, even if it changes before the job starts
         tail = Task { @MainActor in
             await previous?.value
             job.log.append("$ \(executable.lastPathComponent) \(args.joined(separator: " "))")
-            let status = await ToolRunner.stream(executable, args) { line in
+            let status = await ToolRunner.stream(executable, args, environment: environment) { line in
                 Task { @MainActor in
                     job.log.append(line)
                     if job.log.count > 4000 { job.log.removeFirst(job.log.count - 4000) }

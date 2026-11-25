@@ -37,6 +37,8 @@ struct PracticeBox: View {
     @Bindable var model: AppModel
     /// Set when the box sits inside one lecture's page; hides the picker.
     var fixedLecture: String? = nil
+    /// Start this kind of session as soon as the box appears ("recap" from Recall first).
+    var autoStart: String? = nil
     @State private var lecture = ""
     @State private var writing = false
     @State private var view: PracticeView?
@@ -78,6 +80,10 @@ struct PracticeBox: View {
             if let f = fixedLecture { lecture = f }
             if lecture.isEmpty, let s = lectures.first { lecture = URL(fileURLWithPath: s.folder).lastPathComponent }
             await loadProgress()
+            if let k = autoStart, view == nil {
+                try? await Task.sleep(for: .milliseconds(150))
+                if view == nil { start(k) }
+            }
         }
     }
 

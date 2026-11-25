@@ -19,6 +19,10 @@ struct LecturesView: View {
 
     var body: some View {
         HSplitView {
+            VStack(spacing: 0) {
+            TextField("Filter lectures", text: $filter)
+                .textFieldStyle(.roundedBorder).padding(8)
+                .accessibilityLabel("Filter lectures by title")
             List(shown, selection: $selection) { s in
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
@@ -39,13 +43,13 @@ struct LecturesView: View {
                         .disabled(!s.built || model.sessions.filter(\.built).count < 2)
                 }
             }
-            .searchable(text: $filter, placement: .sidebar, prompt: "Filter lectures")
             .overlay {
                 if model.sessions.isEmpty {
                     ContentUnavailableView(model.loadingSessions ? "Loading…" : "No lectures yet",
                                            systemImage: "books.vertical",
-                                           description: Text("Capture a lecture on your course portal, Zoom or Meet, then it appears here."))
+                                           description: Text(LectureText.emptyLibrary(model.course)))
                 }
+            }
             }
             .frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
 
@@ -93,6 +97,8 @@ struct LectureDetail: View {
     @Bindable var model: AppModel
     let session: Session
     @State private var tab: LectureTab = .notes
+    @State private var confirmRebuild = false
+    @State private var recalling = false   // Recall first: the notes stay hidden until you are done
     @State private var rawManifest: [String: Any] = [:]
     @State private var dropTargeted = false
 
@@ -114,9 +120,15 @@ struct LectureDetail: View {
                 }
                 .pickerStyle(.segmented).labelsHidden().padding(12)
                 switch tab {
-                case .notes: MarkdownFile(url: folder.appendingPathComponent("notes.md"),
-                                          feedback: ("note", ["lecture": session.key]), model: manifestString("llm"),
-                                          promptVersion: "notes-v1")
+                case .notes:
+                    VStack(spacing: 0) {
+                        RecallFirstBanner(model: model, lecture: folder.lastPathComponent, practising: $recalling)
+                        if recalling { Spacer() } else {
+                            MarkdownFile(url: folder.appendingPathComponent("notes.md"),
+                                         feedback: ("note", ["lecture": session.key]), model: manifestString("llm"),
+                                         promptVersion: "notes-v1")
+                        }
+                    }
                 case .slides: SlidesPane(folder: folder, lecture: session.key, model: manifestString("vl_model"))
                 case .transcript:
                     // Zoom's own transcript merged in, once imported; else this Mac's capture.
@@ -187,7 +199,16 @@ struct LectureDetail: View {
                 .disabled(building || model.mode.running)
                 .help(model.mode.running ? "Stop capture first" : "Import Zoom files, build, check attendee names are gone, rewrite qa.md")
             if session.built {
-                Button("Rebuild", systemImage: "arrow.triangle.2.circlepath") { model.build(session) }.disabled(building)
+                Button("Rebuild", systemImage: "arrow.triangle.2.circlepath") {
+                    if session.built { confirmRebuild = true } else { model.build(session) }
+                }
+                    .disabled(building)
+                    .confirmationDialog("Rebuild this lecture?", isPresented: $confirmRebuild, titleVisibility: .visible) {
+                        Button("Rebuild") { model.build(session) }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text(LectureText.rebuildWarning(rawManifest))
+                    }
                 Button("Import Zoom files", systemImage: "tray.and.arrow.down") { model.ingest(folder.lastPathComponent) }
                     .disabled(building)
                     .help("Use Zoom's transcript, Q&A export or the deck saved in this class's folder or today's live folder")
@@ -465,6 +486,96 @@ struct AfterClassChips: View {
                         .help(g.filter { !$0.ok }.map { "\($0.name): \($0.value?.description ?? "–") (limit \($0.threshold?.description ?? "–"))" }
                             .joined(separator: "\n"))
                 }
+            }
+        }
+    }
+}
+
+/// Wording for the lecture library that depends on the course or the lecture.
+enum LectureText {
+    static func emptyLibrary(_ c: CourseList.Course?) -> String {
+        if let c, let sites = c.sites, !sites.isEmpty {
+            return "Watch a lesson on \(sites.joined(separator: ", ")) while capture runs; it appears here, then build it."
+        }
+        return "Capture a lecture (your course portal, Zoom or Meet) and it appears here."
+    }
+
+    /// What a rebuild replaces, from the lecture's manifest.
+    static func rebuildWarning(_ man: [String: Any]) -> String {
+        var s = "Notes, cards and the concept map are made again with the local model (a few minutes); the current ones are replaced."
+        if man["consolidated"] != nil {
+            s += " This lecture was consolidated, so it is rebuilt from its merged files."
+        } else if (man["transcript_source"] as? String) == "merged" {
+            s += " Its transcript was merged from another recording; the rebuild uses that merged transcript again."
+        }
+        return s
+    }
+}
+
+/// Retrieval before rereading: once a day per lecture, opening its notes offers two minutes of
+/// recall from memory first (the attempt-first recap), since retrieval practice beats rereading.
+enum RecallFirst {
+    static let enabledKey = "recallFirstEnabled"
+    static func key(_ lecture: String) -> String { "recallFirst." + lecture }
+    static var enabled: Bool { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
+
+    static func due(_ lecture: String, now: Date = .now, defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: enabledKey) as? Bool ?? true else { return false }
+        guard let last = defaults.object(forKey: key(lecture)) as? Date else { return true }
+        return !Calendar.current.isDate(last, inSameDayAs: now)
+    }
+
+    static func markDone(_ lecture: String, now: Date = .now, defaults: UserDefaults = .standard) {
+        defaults.set(now, forKey: key(lecture))
+    }
+}
+
+struct RecallFirstBanner: View {
+    @Bindable var model: AppModel
+    let lecture: String
+    // decided when the view is made: an empty Group never gets onAppear
+    @State private var due: Bool
+    @Binding var practising: Bool
+
+    init(model: AppModel, lecture: String, practising: Binding<Bool>) {
+        self.model = model
+        self.lecture = lecture
+        _practising = practising
+        _due = State(initialValue: RecallFirst.due(lecture))
+    }
+
+    var body: some View {
+        Group {
+            if practising {
+                VStack(alignment: .leading, spacing: 6) {
+                    PracticeBox(model: model, fixedLecture: lecture, autoStart: "recap")
+                    Button("Done, show the notes") { practising = false; due = false }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .keyboardShortcut(.escape, modifiers: [])
+                }
+                .padding(10)
+            } else if due {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Image(systemName: "brain.head.profile").foregroundStyle(.tint).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Recall first").font(.scaled(.callout)).bold()
+                        Text("Two minutes from memory before you reread: retrieving what you know holds it far better than reading it again.")
+                            .font(.scaled(.caption)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button("Start recall") { RecallFirst.markDone(lecture); practising = true }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                    Button("Not now") { RecallFirst.markDone(lecture); due = false }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .help("Hide until tomorrow. Turn it off for good with Don't offer again.")
+                    Button("Don't offer again") { UserDefaults.standard.set(false, forKey: RecallFirst.enabledKey); due = false }
+                        .buttonStyle(.borderless).controlSize(.small)
+                }
+                .padding(10)
+                .background(.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 12).padding(.top, 8)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Recall first: practise from memory before reading the notes")
             }
         }
     }
