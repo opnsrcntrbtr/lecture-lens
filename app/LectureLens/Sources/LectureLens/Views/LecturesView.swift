@@ -9,6 +9,8 @@ struct LecturesView: View {
     @State private var selection: String? = nil
     @State private var filter = ""
     @State private var showNames = false
+    @State private var renamingLecture: Session?
+    @State private var consolidating: Session?
 
     private var shown: [Session] {
         let s = model.sessions.sorted { ($0.start ?? "") > ($1.start ?? "") }
@@ -31,6 +33,12 @@ struct LecturesView: View {
                 }
                 .padding(.vertical, 3)
                 .tag(s.key)
+                .contextMenu {
+                    Button("Rename…", systemImage: "pencil") { renamingLecture = s }
+                        .disabled(!s.built)
+                    Button("Consolidate into another lecture…", systemImage: "arrow.triangle.merge") { consolidating = s }
+                        .disabled(!s.built || model.sessions.filter(\.built).count < 2)
+                }
             }
             .searchable(text: $filter, placement: .sidebar, prompt: "Filter lectures")
             .overlay {
@@ -59,6 +67,8 @@ struct LecturesView: View {
                 .disabled(model.loadingSessions)
         }
         .sheet(isPresented: $showNames) { NamesReviewSheet(model: model) }
+        .sheet(item: $renamingLecture) { s in RenameLectureSheet(model: model, session: s) }
+        .sheet(item: $consolidating) { s in ConsolidateSheet(model: model, start: s) }
     }
 
     static func day(_ iso: String?) -> String? {

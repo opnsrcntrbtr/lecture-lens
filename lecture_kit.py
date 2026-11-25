@@ -1502,18 +1502,21 @@ def build(session, con, describe=True, cards=20, quiet=False):
 
 # ------------------------------------------------------------------ commands
 def cmd_list(a):
-    con = db(); ss = sessions(frames_since(con, parse_since(a.since)))
+    import lecture_manage
+    folded = lecture_manage.consolidated_ids(LECTURES)   # sessions consolidated into another lecture
+    con = db(); ss = [s for s in sessions(frames_since(con, parse_since(a.since))) if s["id"] not in folded]
     if a.json:
         out = []
         for s in ss:
             folder = LECTURES / f"{s['id']}_{slugify(s['title'])}"
             man = folder / "manifest.json"
-            title = s["title"]
+            title, mj = s["title"], {}
             if man.exists():
-                try: title = json.loads(man.read_text()).get("title") or title
+                try: mj = json.loads(man.read_text()); title = mj.get("title") or title
                 except Exception: pass
-            out.append({"id": s["id"], "title": title, "start": s["start"].isoformat(),
-                        "end": s["end"].isoformat(), "minutes": s["minutes"], "frames": len(s["frames"]),
+            out.append({"id": s["id"], "title": title, "start": (mj.get("start") if mj.get("consolidated") else None) or s["start"].isoformat(),
+                        "end": (mj.get("end") if mj.get("consolidated") else None) or s["end"].isoformat(),
+                        "minutes": (mj.get("minutes") if mj.get("consolidated") else None) or s["minutes"], "frames": len(s["frames"]),
                         "built": (folder / "manifest.json").exists(), "folder": str(folder)})
         # built lectures whose frames aged out of the window still belong in the library
         seen = {o["folder"] for o in out}
@@ -1603,6 +1606,15 @@ def cmd_build(a):
         targets = _manifest_window(con, a.id)
     if not targets: sys.exit(f"no session with id {a.id} (try: lecture list)")
     for s in targets:
+        cons = LECTURES / f"{s['id']}_{slugify(s['title'])}"
+        if not (cons / "manifest.json").exists():
+            cons = next((d for d in LECTURES.glob(f"{s['id']}_*") if (d / "manifest.json").exists()), cons)
+        try: is_cons = bool(json.loads((cons / "manifest.json").read_text()).get("consolidated"))
+        except Exception: is_cons = False
+        if is_cons:   # its parts span several capture windows: rebuild from the merged files
+            print(f"rebuilding consolidated {cons.name} from its files", file=sys.stderr)
+            r = rebuild_from_files(cons, cards=a.cards)
+            print(json.dumps({"ok": True, "folder": str(cons), "rebuild": r}) if a.json else f"✓ {cons}"); continue
         print(f"building {s['id']} — {s['title']} ({s['minutes']} min)", file=sys.stderr)
         folder, man = build(s, con, describe=not a.no_vision, cards=a.cards)
         if a.json:
@@ -1611,9 +1623,176 @@ def cmd_build(a):
               f"{man['slides']} slides ({man['slides_described']} described) · {man['cards']} cards")
     _auto_drm(con, quiet=a.json)
 
+def rebuild_from_files(folder, cards=20, say=lambda *a: print(*a, file=sys.stderr)):
+    """Notes, cards and the concept map again from a lecture's own files (transcript, slides,
+    deck, Q&A, page text): for a consolidated lecture, whose parts no one capture window covers."""
+    import lecture_manage, study_graph
+    folder = Path(folder)
+    man = json.loads((folder / "manifest.json").read_text())
+    title = man.get("title") or folder.name
+    start = dt.datetime.fromisoformat(str(man.get("start")).replace("Z", "+00:00")) if man.get("start") else None
+    merged = folder / "transcript_merged.md"
+    src_lines = lecture_manage._timed_lines(merged) or lecture_manage._timed_lines(folder / "transcript.md")
+    slides = []
+    for b in lecture_manage._slides(folder):
+        text = re.sub(r"!\[\[[^\]]+\]\]", "", b["body"]).replace("> On-screen text:", "").strip()
+        slides.append({"n": b["n"], "at": b["at"], "description": re.sub(r"\s+", " ", text)[:600], "screen_text": ""})
+    slide_src = "SLIDES:\n" + "\n".join(f"[slide {x['n']} @ {x['at']}] {x['description']}" for x in slides)
+    blocks = {"slides": slide_src}
+    deck_src, deck = deck_source(folder)
+    if deck_src:
+        blocks = {"deck": deck_src, "keyframes": "KEYFRAME TIMES (when each captured slide was on screen):\n" + "\n".join(
+            f"[slide {x['n']} @ {x['at']}] {x['description'][:90]}" for x in slides)}
+    if (folder / "qa.md").exists():
+        blocks["qa"] = "CLASS Q&A (names removed):\n" + (folder / "qa.md").read_text()[:16000]
+    if (folder / "page_text.md").exists():
+        blocks = {"page": "PORTAL PAGE TEXT:\n" + (folder / "page_text.md").read_text()[:20000], **blocks}
+    other = sum(len(v) for v in blocks.values())
+    transcript_src = "\n".join(src_lines)
+    dur_s = float(man.get("minutes") or 0) * 60.0
+    parts = _split_lines(src_lines, PART_CHARS) if len(transcript_src) + other > study.CTX else []
+    if parts:
+        digests = digest_parts(title, parts, say)
+        (folder / "digest.md").write_text(f"# Part digests — {title}\n\n" + "\n\n".join(
+            f"## Part {i}\n\n{d}" for i, d in enumerate(digests, 1)) + "\n")
+        head = "DIGEST OF THE FULL TRANSCRIPT (timecoded):\n" + "\n\n".join(digests) + "\n\n"
+    else:
+        head = f"TRANSCRIPT (timecoded):\n{transcript_src}\n\n"
+    _fit = globals().get("fit_blocks") or (lambda b, room: "\n\n".join(b.values())[:max(0, room)])
+    source = (head + _fit(blocks, study.CTX - len(head)))[: study.CTX]
+    say(f"  notes from {len(src_lines)} transcript lines and {len(slides)} slides…")
+    notes = make_notes(title, source)
+    when = f"{start.astimezone():%a %d %b %Y %H:%M} · " if start else ""
+    k = len(man.get("timeline") or []) or 1
+    (folder / "notes.md").write_text(f"# {title}\n\n_{when}{man.get('minutes')} min · notes by {study.MODEL} from "
+                                     f"this lecture's own files ({k} parts)_\n\n{notes}\n")
+    if cards and parts:
+        card_rows, per = [], max(3, -(-cards // len(parts)))
+        for i, part in enumerate(parts, 1):
+            say(f"  cards from part {i}/{len(parts)}…")
+            card_rows += make_cards(title, f"TRANSCRIPT (timecoded):\n{part}", per, say)
+    else:
+        card_rows = make_cards(title, source, cards, say) if cards else []
+    if card_rows:
+        (folder / "cards.tsv").write_text("\n".join(
+            f"{c['q'].replace(chr(9),' ')}\t{c['a'].replace(chr(9),' ')}\t{title} {c.get('at','')}" for c in card_rows) + "\n")
+    segs = [{"at": m[1], "text": m[2]} for m in (re.match(r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.*)", l) for l in src_lines) if m]
+    warnings = cite.verify_citations(notes, slides, segs, duration_s=dur_s or None)
+    cmap = None
+    if os.environ.get("STUDY_CONCEPT_MAP", "1") == "1":
+        try:
+            import study_aids
+            cmap = study_aids.concept_map(title, notes)
+        except Exception as e:   # no concept-map module here, or the model's output did not parse
+            say(f"  concept map skipped: {e}")
+        if cmap:
+            (folder / "concept_map.mmd").write_text(cmap + "\n")
+    man.update({"cards": len(card_rows) or man.get("cards", 0), "citation_warnings": warnings, "concept_map": bool(cmap),
+                "llm": study.MODEL, "rebuild_pending": False, "built_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "built_from": "files"})
+    (folder / "manifest.json").write_text(json.dumps(man, indent=2, ensure_ascii=False))
+    # vault note (the build's layout, from files)
+    vault_dir = VAULT / VAULT_SUB
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    concepts = re.findall(r"^\s*[-*]\s+\*\*(.+?)\*\*", notes, re.M)[:12]
+    links = " ".join(f"[[{c.strip()}]]" for c in dict.fromkeys(concepts))
+    try:
+        g_con = study_graph.connect(LECTURES / "study_graph.sqlite")
+        try:
+            study_graph.ingest_lecture(g_con, folder)
+            links = " ".join(study_graph.canonical_concept_links(g_con, concepts)) or links
+        finally:
+            g_con.close()
+    except Exception as e:
+        say(f"  study_graph warning: {e}")
+    cmap_md = f"## Concept map\n\n```mermaid\n{cmap}\n```\n\n" if cmap else ""
+    parts_md = "".join(f"- {t.get('title')} ({round(t.get('minutes') or 0)} min, from {hhmmss(t.get('offset_s') or 0)})\n"
+                       for t in man.get("timeline") or [])
+    lecture_manage.vault_note(vault_dir, man).write_text(
+        "---\n" + (f"date: {start.astimezone():%Y-%m-%d}\n" if start else "") + f"screenpipe_session: {man.get('id')}\n"
+        f"duration_min: {man.get('minutes')}\ncourse: {COURSE}\nmodule: {json.dumps(man.get('module') or '')}\n"
+        f"concepts: {json.dumps([c.strip() for c in dict.fromkeys(concepts)])}\n"
+        f"artefacts: {folder}\ntags: [lecture]\n---\n\n# {title}\n\n{notes}\n\n## Concepts\n{links or '_none extracted_'}\n\n{cmap_md}"
+        + (f"## Parts\n{parts_md}\n" if parts_md else "")
+        + f"## Artefacts\n- Transcript: `{folder/'transcript.md'}`\n- Slides: `{folder/'slides.md'}`\n"
+        f"- Flashcards: `{folder/'cards.tsv'}` ({len(card_rows)} cards)\n")
+    return {"ok": True, "lecture": folder.name, "cards": len(card_rows), "concept_map": bool(cmap),
+            "citation_warnings": len(warnings), "transcript_lines": len(src_lines), "slides": len(slides)}
+
+
+def _drop_from_indexes(lecture_ids):
+    """Remove lectures (folder names / session ids) from the search index and the concept graph."""
+    import sqlite3
+    for path, sqls in ((INDEX, ["DELETE FROM chunks_fts WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE lecture_id=?)",
+                                "DELETE FROM lines WHERE lecture_id=?", "DELETE FROM chunks WHERE lecture_id=?"]),
+                       (LECTURES / "study_graph.sqlite", ["DELETE FROM evidence_links WHERE lecture_id=?"])):
+        if not path.exists():
+            continue
+        try:
+            con = sqlite3.connect(path)
+            for i in lecture_ids:
+                for q in sqls:
+                    try:
+                        con.execute(q, (i,))
+                    except sqlite3.Error:
+                        pass
+            con.commit(); con.close()
+        except sqlite3.Error:
+            continue
+
+
+def _reindex(folder):
+    try:
+        build_index(folder.name, say=lambda *a: None)
+    except Exception:
+        pass
+
+
+def cmd_rename_lecture(a):
+    import lecture_manage, study_graph
+    folder = find_folder(a.id)
+    r = lecture_manage.rename(folder, a.title, VAULT / VAULT_SUB)
+    if r.get("ok") and r.get("changed"):
+        _reindex(folder)
+        try:
+            g = study_graph.connect(LECTURES / "study_graph.sqlite")
+            try: study_graph.ingest_lecture(g, folder)
+            finally: g.close()
+        except Exception:
+            pass
+    print(json.dumps(r) if a.json else (f"✓ renamed: {r.get('old_title')} → {r['title']}" if r.get("ok") else f"✗ {r['error']}"))
+
+
+def cmd_merge_lectures(a):
+    """Consolidate lectures into one: files joined on one timeline, sources to _superseded/,
+    then notes, cards and the concept map rebuilt from the merged files."""
+    import lecture_manage
+    dest = find_folder(a.id)
+    sources = [find_folder(x) for x in a.sources]
+    r = lecture_manage.merge(dest, sources, LECTURES / "_superseded", VAULT / VAULT_SUB)
+    if r.get("ok"):
+        _drop_from_indexes([Path(m).name.split(".merged-into-")[0] for m in r["moved"]] + r["source_ids"])
+        if not a.no_rebuild:
+            try:
+                r["rebuild"] = rebuild_from_files(dest, cards=a.cards, say=(lambda *x: None) if a.json else
+                                                  (lambda *x: print(*x, file=sys.stderr)))
+            except Exception as e:   # the merged files stay; `lecture build <id>` retries the rebuild
+                r["rebuild"] = {"ok": False, "error": str(e)[:300]}
+        _reindex(dest)
+    if a.json:
+        print(json.dumps(r)); return
+    if not r.get("ok"):
+        sys.exit(f"✗ {r['error']}")
+    print(f"✓ {r['parts']} lectures → {r['title']} ({r['minutes']} min, {r['transcript_lines']} lines, {r['slides']} slides)")
+    print(f"  sources and a copy of the destination as it was: {Path(r['backup']).parent}")
+    rb = r.get("rebuild") or {}
+    print("  notes and cards rebuilt" if rb.get("ok") else f"  rebuild: {rb.get('error') or 'skipped'}")
+
+
 def cmd_watch(a):
     import time
-    con = db(); seen = set()
+    import lecture_manage
+    con = db(); seen = set(lecture_manage.consolidated_ids(LECTURES))
     print(f"watching for finished lectures (idle {a.idle} min) — ctrl-c to stop", file=sys.stderr)
     while True:
         for s in sessions(frames_since(con, parse_since("2d"))):
@@ -3568,7 +3747,14 @@ def cmd_courses(a):
     if a.action == "which":
         cid = courses.for_url(a.url or "")
         print(json.dumps({"ok": True, "url": a.url, "course": cid}) if a.json else (cid or "no course matches")); return
-    r = check_drm(db(), hours=a.hours)
+    if a.action == "tabs":
+        r = courses.chrome_tabs()
+    elif a.action == "add":
+        r = courses.add(a.name or "", a.url or "", a.title, a.focus, a.kind, a.short)
+    elif a.action == "rename":
+        r = courses.rename(a.url or os.environ.get("STUDY_COURSE_ID") or "", a.name, a.short)
+    else:
+        r = check_drm(db(), hours=a.hours)
     print(json.dumps(r) if a.json else json.dumps(r, indent=1))
 
 
@@ -3577,9 +3763,19 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("courses", help="courses side by side: list, which <url>, check-drm (pick one with --course <id>)")
-    p.add_argument("action", nargs="?", default="list", choices=["list", "which", "check-drm"])
-    p.add_argument("url", nargs="?"); p.add_argument("--hours", type=int, default=24)
+    p.add_argument("action", nargs="?", default="list", choices=["list", "which", "check-drm", "tabs", "add", "rename"])
+    p.add_argument("url", nargs="?", help="which/add: the page URL; rename: the course id")
+    p.add_argument("--hours", type=int, default=24)
+    p.add_argument("--name"); p.add_argument("--short"); p.add_argument("--title", help="add: the page title (from a tab)")
+    p.add_argument("--focus"); p.add_argument("--kind", choices=["live", "self_paced"])
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_courses)
+    p = sub.add_parser("rename-lecture", help="rename a built lecture: title everywhere, vault note, index (folder keeps its id)")
+    p.add_argument("id"); p.add_argument("--title", required=True)
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_rename_lecture)
+    p = sub.add_parser("merge-lectures", help="consolidate lectures into a destination lecture, then rebuild notes and cards")
+    p.add_argument("id", help="destination lecture"); p.add_argument("--from", dest="sources", nargs="+", required=True)
+    p.add_argument("--no-rebuild", action="store_true"); p.add_argument("--cards", type=int, default=20)
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_merge_lectures)
     p = sub.add_parser("list"); p.add_argument("--since", default="7d")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_list)
     p = sub.add_parser("build"); p.add_argument("id", nargs="?", default="last",

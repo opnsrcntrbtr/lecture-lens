@@ -26,7 +26,7 @@ struct MainView: View {
                 Label(s.rawValue, systemImage: s.symbol).font(.scaled(.body)).tag(s)
             }
             .safeAreaInset(edge: .top) {
-                if let list = model.courseList, list.choices.count > 1 {
+                if let list = model.courseList {
                     CoursePicker(model: model, courses: list.choices)
                         .padding(.horizontal, 10).padding(.top, 6)
                 }
@@ -62,6 +62,8 @@ struct MainView: View {
 struct CoursePicker: View {
     @Bindable var model: AppModel
     let courses: [CourseList.Course]
+    @State private var adding = false
+    @State private var renaming: CourseList.Course?
 
     var body: some View {
         Menu {
@@ -72,11 +74,15 @@ struct CoursePicker: View {
                     if c.id == model.course?.id { Label(c.name, systemImage: "checkmark") } else { Text(c.name) }
                 }
             }
+            if !courses.isEmpty { Divider() }
+            Button("Add course…", systemImage: "plus") { adding = true }
+            Button("Rename course…", systemImage: "pencil") { renaming = model.course }
+                .disabled(model.course == nil)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: model.course?.selfPaced == true ? "play.rectangle" : "person.3")
                     .accessibilityHidden(true)
-                Text(model.course?.label ?? "Course").font(.scaled(.callout)).lineLimit(1)
+                Text(model.course?.label ?? "Courses").font(.scaled(.callout)).lineLimit(1)
             }
         }
         .menuStyle(.borderlessButton)
@@ -84,5 +90,7 @@ struct CoursePicker: View {
         .accessibilityLabel("Course: \(model.course?.name ?? "none")")
         .accessibilityHint("Shows another course's lectures, study aids and review")
         .accessibilityIdentifier("course.picker")
+        .sheet(isPresented: $adding) { AddCourseSheet(model: model) }
+        .sheet(item: $renaming) { c in RenameCourseSheet(model: model, course: c) }
     }
 }

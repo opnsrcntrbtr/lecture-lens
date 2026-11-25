@@ -346,3 +346,20 @@ import Testing
     #expect(d.string(forKey: CourseStore.idKey) == "ponds" && d.string(forKey: CourseStore.rootKey) == "/x/courses/ponds")
     d.removePersistentDomain(forName: "course-test")
 }
+
+@Test func manageContractsAndForms() throws {
+    let tabs = try JSONDecoder().decode(ChromeTabs.self, from: Data(#"{"ok": true, "tabs": [{"title": "Pond Keeping Path - Example Learn", "url": "https://learn.example.org/p/42", "active": true, "course": null}, {"title": "Inbox", "url": "https://mail.example.com/", "active": false, "course": "main"}]}"#.utf8))
+    #expect(tabs.tabs?.count == 2 && tabs.tabs?.first?.active == true && tabs.tabs?[1].course == "main")
+    let denied = try JSONDecoder().decode(ChromeTabs.self, from: Data(#"{"ok": false, "tabs": [], "error": "Allow it in Automation"}"#.utf8))
+    #expect(!denied.ok && denied.error?.contains("Automation") == true)
+    #expect(CourseForm.name(fromTitle: "Pond Keeping Path - Example Learn") == "Pond Keeping Path")
+    #expect(CourseForm.name(fromTitle: "A | B | Site") == "A - B")
+    #expect(CourseForm.name(fromTitle: "Just a title") == "Just a title")
+    #expect(CourseForm.validURL("https://learn.example.org/x") && !CourseForm.validURL("learn.example.org") && !CourseForm.validURL("ftp://x.org"))
+    #expect(CourseForm.args(name: " Ponds ", url: "https://learn.example.org/x", title: "T", focus: "") ==
+            ["courses", "add", "https://learn.example.org/x", "--name", "Ponds", "--json", "--title", "T"])
+    let s = try JSONDecoder().decode(Session.self, from: Data(#"{"id": "a1", "title": "Soil", "built": true, "folder": "/x/lectures/20300105-1000_Soil"}"#.utf8))
+    #expect(CourseForm.lectureArg(s) == "20300105-1000_Soil")
+    let r = try JSONDecoder().decode(ManageResult.self, from: Data(#"{"ok": false, "error": "learn.example.org already belongs to “Ponds”", "course": "ponds"}"#.utf8))
+    #expect(!r.ok && r.course == "ponds")
+}

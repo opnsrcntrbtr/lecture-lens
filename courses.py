@@ -25,6 +25,9 @@ it. The default course keeps the environment it started with.
     courses.py sites                capture sites of every course (comma-separated)
     courses.py drm                  DRM page patterns of courses whose player blanks video
     courses.py which <url>          the course a page belongs to
+    courses.py tabs                 Chrome's open tabs (title, URL, course), to register one
+    courses.py add --name N --url U [--title T] [--focus F] [--kind live|self_paced] [--short S]
+    courses.py rename <id> [--name N] [--short S]
     courses.py check-drm [--course <id>] [--hours 24] [--json]
                                     are this course's captured frames blanked by DRM?
 """
@@ -312,6 +315,151 @@ def record_drm(cid: str, verdict: dict, environ=None, now: dt.datetime | None = 
     return st
 
 
+# ------------------------------------------------------------------ registry edits
+LIVE_HOSTS = ("zoom.us", "meet.google.com", "teams.microsoft.com", "webex.com")
+TITLE_SEP = re.compile(r"\s+[-–—|·]\s+")
+
+
+def _raw(environ=None) -> dict:
+    try:
+        return json.loads(registry_path(environ).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _write(reg: dict, environ=None) -> Path:
+    p = registry_path(environ)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(reg, indent=1, ensure_ascii=False) + "\n")
+    os.replace(tmp, p)
+    return p
+
+
+def title_parts(page_title: str) -> tuple:
+    """'Lesson 3 - Example Learn' -> ('Lesson 3', 'Example Learn'): the page's own name and the
+    site's suffix, which titles of every page on that site share."""
+    bits = [b.strip() for b in TITLE_SEP.split((page_title or "").strip()) if b.strip()]
+    if len(bits) >= 2:
+        return " - ".join(bits[:-1]), bits[-1]
+    return (bits[0] if bits else ""), None
+
+
+def add(name: str, url: str, page_title: str | None = None, focus: str | None = None, kind: str | None = None,
+        short: str | None = None, environ=None) -> dict:
+    """Register a course from its name and its page's URL (and the page title, when it came from
+    a browser tab). The site, title rules and kind follow from the URL; DRM is decided by the first
+    build (drm: auto). Without a registry yet, the current setup becomes the default course."""
+    env = os.environ if environ is None else environ
+    url = (url or "").strip()
+    host = host_of(url)
+    if not re.match(r"^https?://", url, re.I) or "." not in host:
+        return {"ok": False, "error": "give the course page's full web address (https://…)"}
+    main, suffix = title_parts(page_title or "")
+    name = re.sub(r"\s+", " ", (name or main or "")).strip()
+    if not name:
+        return {"ok": False, "error": "give the course a name"}
+    reg = _raw(env)
+    courses = reg.get("courses") or []
+    if not courses:   # first registration: today's setup becomes the default course, unchanged
+        courses = [{"id": "main", "name": env.get("STUDY_COURSE_NAME") or "My course", "kind": "live"}]
+        reg["default"] = "main"
+    for c in courses:
+        if any(site_matches(st, url) for st in c.get("sites") or []):
+            return {"ok": False, "error": f"{host} already belongs to “{c.get('name') or c.get('id')}”", "course": c.get("id")}
+    ids = {slug(c.get("id") or c.get("name") or "") for c in courses}
+    base = slug(short or name)
+    cid, i = base, 2
+    while cid in ids:
+        cid, i = f"{base}-{i}", i + 1
+    entry = {"id": cid, "name": name,
+             "kind": kind if kind in KINDS else ("live" if any(h in host for h in LIVE_HOSTS) else "self_paced"),
+             "url": url, "sites": [host], "drm": "auto"}
+    if short and short.strip():
+        entry["short"] = short.strip()
+    if suffix:
+        entry["title_strip"] = [suffix]
+    generic = [g for g in dict.fromkeys([name.lower(), (main or "").lower(), (suffix or "").lower()]) if g]
+    entry["generic_titles"] = [re.sub(r"([.^$*+?{}\[\]\\|()])", r"\\\1", g) for g in generic]   # regex-safe, readable
+    if focus and focus.strip():
+        entry["focus"] = focus.strip()
+    courses.append(entry)
+    reg["courses"] = courses
+    reg.setdefault("default", courses[0].get("id"))
+    path = _write(reg, env)
+    fresh = load(environ=env)
+    return {"ok": True, "course": cid, "registry": str(path), "entry": entry, "root": str(root(fresh, get(fresh, cid), env))}
+
+
+def rename(cid: str, name: str | None = None, short: str | None = None, environ=None) -> dict:
+    """New display names for a course. The id and folders stay, so nothing moves."""
+    env = os.environ if environ is None else environ
+    reg = _raw(env)
+    for c in reg.get("courses") or []:
+        if slug(c.get("id") or c.get("name") or "") == slug(cid or ""):
+            name = re.sub(r"\s+", " ", name or "").strip()
+            if name:
+                c["name"] = name
+            if short is not None:
+                if short.strip():
+                    c["short"] = short.strip()
+                else:
+                    c.pop("short", None)
+            _write(reg, env)
+            return {"ok": True, "course": c["id"], "name": c.get("name"), "short": c.get("short")}
+    return {"ok": False, "error": f"unknown course '{cid}'"}
+
+
+TABS_SCRIPT = """if application "Google Chrome" is running then
+  tell application "Google Chrome"
+    set out to ""
+    set fw to 0
+    if (count of windows) > 0 then set fw to id of front window
+    repeat with w in windows
+      set ai to active tab index of w
+      set i to 0
+      repeat with t in tabs of w
+        set i to i + 1
+        set flag to "0"
+        if (id of w) = fw and i = ai then set flag to "1"
+        set out to out & flag & tab & (title of t) & tab & (URL of t) & linefeed
+      end repeat
+    end repeat
+    return out
+  end tell
+end if
+return \"\""""
+
+
+def parse_tabs(raw: str, reg: dict | None = None) -> list:
+    """osascript output -> [{title, url, active, course}], web pages only, front tab first."""
+    out = []
+    for line in (raw or "").splitlines():
+        bits = line.split("\t")
+        if len(bits) < 3 or not re.match(r"^https?://", bits[2]):
+            continue
+        out.append({"title": bits[1].strip(), "url": bits[2].strip(), "active": bits[0] == "1",
+                    "course": for_url(bits[2], reg) if reg else None})
+    out.sort(key=lambda t: not t["active"])
+    return out
+
+
+def chrome_tabs(run=None, reg: dict | None = None) -> dict:
+    """Titles and URLs of Chrome's open tabs (read only; Chrome is never launched or changed)."""
+    import subprocess
+    run = run or subprocess.run
+    try:
+        r = run(["osascript", "-e", TABS_SCRIPT], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "tabs": [], "error": f"could not ask Chrome: {e}"}
+    if r.returncode != 0:
+        err = (r.stderr or "").strip()
+        hint = (" Allow the study app to control Google Chrome in System Settings › Privacy & Security › Automation."
+                if "-1743" in err or "not allowed" in err.lower() else "")
+        return {"ok": False, "tabs": [], "error": (err[-200:] or "Chrome did not answer") + hint}
+    return {"ok": True, "tabs": parse_tabs(r.stdout, reg or load())}
+
+
 # ------------------------------------------------------------------ CLI
 def summary(reg: dict | None = None, environ=None) -> dict:
     reg = reg or load(environ=environ)
@@ -339,6 +487,10 @@ def main(argv=None):
     sub.add_parser("sites")
     sub.add_parser("drm")
     p = sub.add_parser("which"); p.add_argument("url")
+    p = sub.add_parser("tabs"); p.add_argument("--json", action="store_true")
+    p = sub.add_parser("add"); p.add_argument("--name", default=""); p.add_argument("--url", required=True)
+    p.add_argument("--title"); p.add_argument("--focus"); p.add_argument("--kind", choices=KINDS); p.add_argument("--short")
+    p = sub.add_parser("rename"); p.add_argument("id"); p.add_argument("--name"); p.add_argument("--short")
     a = ap.parse_args(argv)
     if a.cmd == "list":
         s = summary()
@@ -353,6 +505,12 @@ def main(argv=None):
         print(",".join(drm_patterns()))
     elif a.cmd == "which":
         print(for_url(a.url) or "")
+    elif a.cmd == "tabs":
+        print(json.dumps(chrome_tabs()))
+    elif a.cmd == "add":
+        print(json.dumps(add(a.name, a.url, a.title, a.focus, a.kind, a.short)))
+    elif a.cmd == "rename":
+        print(json.dumps(rename(a.id, a.name, a.short)))
 
 
 if __name__ == "__main__":
