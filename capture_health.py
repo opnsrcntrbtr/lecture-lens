@@ -92,8 +92,8 @@ def alert(records: list[dict], after_s: float = ALERT_AFTER_S) -> dict | None:
 
 MESSAGES = {
     "audio_stalled": "No new audio for over 90 seconds: the engine may have stopped writing. Check Capture.",
-    "silent_audio": "Audio is digital silence: macOS may be refusing the audio tap. Check Screen & System Audio "
-                    "Recording for Lecture Lens.",
+    "silent_audio": "Audio is digital silence. If the class is playing, macOS may be refusing the audio tap: check "
+                    "Screen & System Audio Recording for Lecture Lens. If nothing is playing, this is expected.",
     "no_frames": "No screen frames kept for over 90 seconds while the meeting runs. Keep the meeting window "
                  "visible; check Screen & System Audio Recording.",
 }
