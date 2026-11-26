@@ -111,7 +111,26 @@ struct MasteryResult: Decodable, Sendable {
     }
 }
 
+/// One answer as `lecture mastery-check submit` reads it (with the optional one-line why).
+struct MasteryAnswer: Codable, Sendable, Equatable {
+    let item_id: String
+    let answer: String
+    let choice_index: Int?
+    let confidence: String
+    let why: String
+
+    static func encode(_ rows: [MasteryAnswer]) -> String {
+        let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
+        return (try? e.encode(rows)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+    }
+}
+
 enum MasteryText {
+    static func whyPrompt(_ c: MockExamConfidence) -> String {
+        c == .sure ? "You're sure: in one line, why? (optional, it helps it stick)"
+                   : "Why this answer? (optional, one line)"
+    }
+
     static func startTitle(_ state: String?) -> String {
         switch state {
         case "retry": return "Try again"
@@ -152,10 +171,15 @@ struct MasteryCheckView: View {
     @State private var choices: [String: Int] = [:]
     @State private var texts: [String: String] = [:]
     @State private var sure: [String: MockExamConfidence] = [:]
+    @State private var whys: [String: String] = [:]
+    @State private var lastWhys: [String: String] = [:]
+    @FocusState private var whyFocused: Bool
     @State private var started: Date?
     @State private var result: MasteryResult?
     @State private var lastCheck: MasteryStart?
     @State private var relearning: RelearnQueue?
+    @State private var relearnFromPlan = false
+    @State private var plan: RelearnPlan?
     @State private var relearnNote: String?
     @State private var busy = false
     @State private var error: String?
@@ -169,10 +193,14 @@ struct MasteryCheckView: View {
             }
             if let c = check, result == nil, !c.items.isEmpty {
                 runner(c)
-            } else if relearning != nil, let id = lastCheck?.check_id {
+            } else if relearning != nil {
                 RelearnPanel(queue: Binding(get: { relearning ?? RelearnQueue(items: []) }, set: { relearning = $0 }),
-                             explanations: Dictionary((result?.graded_items ?? []).map { ($0.item_id, $0.explanation) }, uniquingKeysWith: { a, _ in a }),
-                             checkId: id) { note in relearning = nil; relearnNote = note; Task { await loadStatus() } }
+                             explanations: relearnFromPlan
+                                ? Dictionary((plan?.items ?? []).map { ($0.item_id, "Expected answer: \($0.expected_answer)") }, uniquingKeysWith: { a, _ in a })
+                                : Dictionary((result?.graded_items ?? []).map { ($0.item_id, $0.explanation) }, uniquingKeysWith: { a, _ in a }),
+                             checkId: relearnFromPlan ? nil : lastCheck?.check_id) { note in
+                    relearning = nil; relearnFromPlan = false; relearnNote = note; Task { await loadStatus() }
+                }
             } else {
                 statusBar
                 if let n = relearnNote {
@@ -193,6 +221,17 @@ struct MasteryCheckView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if let s = status, !s.new_lectures.isEmpty, s.state == "due_new" {
                     Text("New: " + s.new_lectures.joined(separator: ", ")).font(.scaled(.caption)).foregroundStyle(.secondary)
+                }
+                if let p = plan, p.ok, (p.counts?.items ?? 0) > 0 {
+                    HStack(spacing: 8) {
+                        Label(p.message, systemImage: "arrow.triangle.2.circlepath").font(.scaled(.caption)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !p.items.isEmpty {
+                            Button("Relearn \(p.items.count) now") { relearnFromPlan = true; relearning = RelearnQueue(items: p.items) }
+                                .controlSize(.small)
+                                .help("Each item until it is right once; spaced sessions make it stick. Fits in what is left of today's review time.")
+                        }
+                    }
                 }
             }
             Spacer()
@@ -253,7 +292,7 @@ struct MasteryCheckView: View {
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(on ? Phosphor.accent : Color.secondary.opacity(0.25)))
                         }
                         .buttonStyle(.plain)
-                        .keyboardShortcut(KeyEquivalent(Character("\(min(n + 1, 9))")), modifiers: [])
+                        .keyboardShortcut(whyFocused ? nil : KeyboardShortcut(KeyEquivalent(Character("\(min(n + 1, 9))")), modifiers: []))
                         .help("Press \(n + 1)")
                         .accessibilityLabel("Choice \(n + 1): \(choice)")
                         .accessibilityAddTraits(on ? .isSelected : [])
@@ -271,6 +310,12 @@ struct MasteryCheckView: View {
                 .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 240)
                 Spacer()
             }
+            // open self-explanation helps transfer, but costs time: optional, one line
+            TextField(MasteryText.whyPrompt(sure[item.id] ?? .unsure),
+                      text: Binding(get: { whys[item.id] ?? "" }, set: { whys[item.id] = $0 }))
+                .textFieldStyle(.roundedBorder)
+                .focused($whyFocused)
+                .accessibilityLabel("Why this answer (optional)")
             Divider()
             HStack(spacing: 10) {
                 Button("Previous", systemImage: "chevron.left") { index = max(0, i - 1) }
@@ -356,6 +401,10 @@ struct MasteryCheckView: View {
             if !g.user_answer.isEmpty {
                 Text("Your answer: \(g.user_answer)").font(.scaled(.caption)).foregroundStyle(.secondary)
             }
+            if let w = lastWhys[g.item_id], !w.isEmpty {
+                Text("Your reasoning: \(w)").font(.scaled(.caption)).italic().foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if g.correct || checkId == nil {
                 Text(g.explanation).font(.scaled(.caption)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             } else {
@@ -383,6 +432,7 @@ struct MasteryCheckView: View {
         do {
             let s = try await ToolRunner.json(MasteryStatus.self, "lecture", ["mastery-check", "status", "--json"], timeout: 30)
             status = s
+            plan = try? await ToolRunner.json(RelearnPlan.self, "lecture", ["mastery-check", "relearn-plan", "--json"], timeout: 60)
             error = s.ok ? nil : (s.error ?? "Couldn't read the mastery status.")
         } catch { self.error = error.localizedDescription }
     }
@@ -393,25 +443,26 @@ struct MasteryCheckView: View {
         do {
             let c = try await ToolRunner.json(MasteryStart.self, "lecture", ["mastery-check", "start", "--json"], timeout: 120)
             guard c.ok, !c.items.isEmpty else { error = c.error ?? "No questions could be built."; return }
-            check = c; result = nil; index = 0; choices = [:]; texts = [:]; sure = [:]; started = Date()
+            check = c; result = nil; index = 0; choices = [:]; texts = [:]; sure = [:]; whys = [:]; started = Date()
         } catch { self.error = error.localizedDescription }
     }
 
     private func submit(_ c: MasteryStart) async {
         busy = true; defer { busy = false }
         let payload = c.items.map { it in
-            MockExamAnswerPayload(item_id: it.item_id,
-                                  answer: choices[it.id].map { it.choices.indices.contains($0) ? it.choices[$0] : "" } ?? (texts[it.id] ?? ""),
-                                  choice_index: choices[it.id],
-                                  confidence: (sure[it.id] ?? .unsure).rawValue)
+            MasteryAnswer(item_id: it.item_id,
+                          answer: choices[it.id].map { it.choices.indices.contains($0) ? it.choices[$0] : "" } ?? (texts[it.id] ?? ""),
+                          choice_index: choices[it.id],
+                          confidence: (sure[it.id] ?? .unsure).rawValue,
+                          why: (whys[it.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         }
         let elapsed = Int(Date().timeIntervalSince(started ?? Date()))
         do {
             let r = try await ToolRunner.json(MasteryResult.self, "lecture",
-                                              MasteryText.submitArgs(checkId: c.check_id, answers: MockExamHelpers.encodeAnswers(payload), elapsed: elapsed),
+                                              MasteryText.submitArgs(checkId: c.check_id, answers: MasteryAnswer.encode(payload), elapsed: elapsed),
                                               timeout: 180)
             guard r.ok else { error = r.error ?? "The answers could not be checked."; return }
-            result = r; lastCheck = c; relearnNote = nil; check = nil
+            result = r; lastCheck = c; relearnNote = nil; check = nil; lastWhys = whys
             await loadStatus()
         } catch { self.error = error.localizedDescription }
     }
@@ -421,10 +472,12 @@ struct MasteryCheckView: View {
 /// right once (successive relearning, Rawson and Dunlosky 2022).
 struct RelearnQueue: Equatable {
     private(set) var queue: [MockExamItem]
+    private(set) var all: [MockExamItem]
+    private(set) var firstTry: [String: Bool] = [:]
     private(set) var total: Int
     private(set) var answers = 0
     private(set) var wrong = 0
-    init(items: [MockExamItem]) { queue = items; total = items.count }
+    init(items: [MockExamItem]) { queue = items; all = items; total = items.count }
     var current: MockExamItem? { queue.first }
     var done: Bool { queue.isEmpty }
     var learned: Int { total - queue.count }
@@ -434,6 +487,7 @@ struct RelearnQueue: Equatable {
         guard let it = queue.first else { return false }
         answers += 1
         let right = it.correct_index == choice
+        if firstTry[it.item_id] == nil { firstTry[it.item_id] = right }
         queue.removeFirst()
         if !right { wrong += 1; queue.append(it) }
         return right
@@ -443,8 +497,10 @@ struct RelearnQueue: Equatable {
 struct RelearnPanel: View {
     @Binding var queue: RelearnQueue
     let explanations: [String: String]
-    let checkId: String
+    /// The mastery try whose misses these are; nil for a relearning session from the plan.
+    let checkId: String?
     let onDone: (String) -> Void
+    @State private var startedAt = Date()
     @State private var picked: Int?
     @State private var lastRight: Bool?
     @State private var shown: MockExamItem?
@@ -511,12 +567,41 @@ struct RelearnPanel: View {
         guard queue.done else { return }
         saving = true
         Task {
-            let r = try? await ToolRunner.json(RelearnResult.self, "lecture",
-                ["mastery-check", "relearned", "--check-id", checkId, "--items", "\(queue.total)", "--rounds", "\(queue.rounds)", "--json"], timeout: 30)
+            let args: [String]
+            if let checkId {
+                args = ["mastery-check", "relearned", "--check-id", checkId, "--items", "\(queue.total)", "--rounds", "\(queue.rounds)", "--json"]
+            } else {
+                args = ["mastery-check", "relearn-record", "--results-json", RelearnText.results(queue),
+                        "--elapsed-seconds", "\(Int(Date().timeIntervalSince(startedAt)))", "--json"]
+            }
+            let r = try? await ToolRunner.json(RelearnResult.self, "lecture", args, timeout: 30)
             saving = false
             onDone(r?.message ?? "Relearned all \(queue.total). Try the mastery check again in two days.")
         }
     }
+}
+
+enum RelearnText {
+    /// `relearn-record` input: each item with whether it was right the first time.
+    static func results(_ q: RelearnQueue) -> String {
+        let rows: [[String: String]] = q.all.map {
+            ["lecture_id": $0.lecture_id, "question": $0.question, "first_try_ok": (q.firstTry[$0.item_id] ?? false) ? "1" : ""]
+        }
+        let data = (try? JSONSerialization.data(withJSONObject: rows.map { r -> [String: Any] in
+            ["lecture_id": r["lecture_id"] ?? "", "question": r["question"] ?? "", "first_try_ok": !(r["first_try_ok"] ?? "").isEmpty]
+        }, options: [.sortedKeys])) ?? Data("[]".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+/// `lecture mastery-check relearn-plan --json` (relearning.py).
+struct RelearnPlan: Decodable, Sendable {
+    struct Counts: Decodable, Sendable { let items: Int; let secure: Int; let due: Int; let in_progress: Int }
+    let ok: Bool
+    let message: String
+    let counts: Counts?
+    let budget_minutes: Double?
+    let items: [MockExamItem]
 }
 
 struct RelearnResult: Decodable, Sendable {

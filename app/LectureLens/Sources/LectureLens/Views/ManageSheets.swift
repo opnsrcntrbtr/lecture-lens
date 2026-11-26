@@ -255,6 +255,11 @@ enum ConsolidatePlan {
                  < abs((date($1.start) ?? .distantPast).timeIntervalSince(date(start.start) ?? .distantPast)) }
     }
 
+    /// Joining lectures from different days changes the result's date: that needs a tick to confirm.
+    static func needsConfirm(destination d: Session, sources: [Session], calendar: Calendar = .current) -> Bool {
+        Set(([d] + sources).compactMap { date($0.start).map { calendar.startOfDay(for: $0) } }).count > 1
+    }
+
     static func warnings(destination d: Session, sources: [Session], calendar: Calendar = .current) -> [String] {
         var out: [String] = []
         let f = DateFormatter(); f.dateFormat = "d MMM"
@@ -264,7 +269,7 @@ enum ConsolidatePlan {
             out.append("These lectures are from \(days.count) different days. They will be joined back to back, and the result will be dated \(f.string(from: first)) and listed there. Use this for one class that was captured in pieces.")
         }
         for s in sources where overlaps(s, d) {
-            out.append("“\(s.displayTitle)” overlaps “\(d.displayTitle)” in time: it looks like a second copy of the same class, and joining them repeats the shared part. Usually it is better to keep the fuller copy.")
+            out.append("“\(s.displayTitle)” overlaps “\(d.displayTitle)” in time: it looks like a second copy of the same class. It will be lined up by clock time, keeping only what the destination lacks (its extra lines, slides and Q&A).")
         }
         return out
     }
@@ -282,6 +287,7 @@ struct ConsolidateSheet: View {
     private var dest: Session? { built.first { $0.key == destination } }
     private var chosen: [Session] { built.filter { sources.contains($0.key) } }
     private var warnings: [String] { dest.map { ConsolidatePlan.warnings(destination: $0, sources: chosen) } ?? [] }
+    private var mustConfirm: Bool { dest.map { ConsolidatePlan.needsConfirm(destination: $0, sources: chosen) } ?? false }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -312,7 +318,7 @@ struct ConsolidateSheet: View {
                             .foregroundStyle(.primary).symbolRenderingMode(.multicolor)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Toggle("I checked: consolidate anyway", isOn: $understood)
+                    if mustConfirm { Toggle("I checked: consolidate anyway", isOn: $understood) }
                 }
                 .padding(10)
                 .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
@@ -327,7 +333,7 @@ struct ConsolidateSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                 Button("Consolidate") { run() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(sources.isEmpty || destination.isEmpty || model.jobs.busy || (!warnings.isEmpty && !understood))
+                    .disabled(sources.isEmpty || destination.isEmpty || model.jobs.busy || (mustConfirm && !understood))
                     .help(model.jobs.busy ? "Another job is running" : "Runs as a background job; rebuilding notes uses the local model")
             }
         }

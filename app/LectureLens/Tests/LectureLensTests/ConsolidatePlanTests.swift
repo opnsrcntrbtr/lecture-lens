@@ -24,7 +24,8 @@ private func lec(_ id: String, _ start: String, _ minutes: Double, consolidated:
     let nov = lec("c", "2030-11-21T04:30:06Z", 193)
     let far = ConsolidatePlan.warnings(destination: nov, sources: [octA, octB])
     #expect(far.contains { $0.contains("2 different days") })
-    #expect(ConsolidatePlan.warnings(destination: octA, sources: [octB]).first?.contains("second copy of the same class") == true)
+    #expect(ConsolidatePlan.warnings(destination: octA, sources: [octB]).first?.contains("lined up by clock time") == true)
+    #expect(!ConsolidatePlan.needsConfirm(destination: octA, sources: [octB]) && ConsolidatePlan.needsConfirm(destination: nov, sources: [octA]))
     let morning = lec("d", "2030-11-21T04:30:00Z", 60), later = lec("e", "2030-11-21T05:40:00Z", 60)
     #expect(ConsolidatePlan.warnings(destination: morning, sources: [later]).isEmpty)   // one class in two pieces
 }

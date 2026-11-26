@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TIMECODE = re.compile(r"\s*\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]|\s*\[slide \d+\]", re.I)
+TIMECODE = re.compile(r"\s*\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]|\s*\[slide \d+\]|\s*\[\d{1,3}(?:,\s*\d{1,3})*\]", re.I)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 PHONE = re.compile(r"(?<![\w:])\+?\d(?:[\s-]?\d){9,13}(?![\w:])")
 WORD = re.compile(r"[A-Za-z][A-Za-z0-9+-]{2,}")

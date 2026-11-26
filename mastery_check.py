@@ -387,6 +387,11 @@ def submit(check_id: str, answers_json, elapsed_seconds: int = 0, lectures_dir=N
         return {"ok": False, "error": "this attempt was already submitted; start a new one"}
     sess = json.loads(sess_path.read_text(encoding="utf-8"))
     meta = sess.get("mastery") or {}
+    try:   # an optional one-line "why" per answer (open self-explanation helps transfer; it stays optional)
+        parsed = json.loads(answers_json) if isinstance(answers_json, str) else answers_json
+    except ValueError:
+        parsed = []
+    whys_in = {str(a.get("item_id")): str(a.get("why") or "").strip()[:400] for a in parsed or [] if isinstance(a, dict)}
     res = _grade(sess, answers_json, elapsed_seconds, base)
     if not res.get("ok"):
         return res
@@ -410,12 +415,18 @@ def submit(check_id: str, answers_json, elapsed_seconds: int = 0, lectures_dir=N
     cal = calibration(graded)
     missed = [{"lecture_id": g.get("lecture_id"), "concept": g.get("concept"), "question": g.get("question")}
               for g in graded if not g.get("correct")]
+    raw_reasons = [(g, whys_in.get(g.get("item_id"), "")) for g in graded if whys_in.get(g.get("item_id"))]
+    clean_w = si.scrub([w for _, w in raw_reasons], base) if raw_reasons else []
+    reasons = [{"item_id": g.get("item_id"), "lecture_id": g.get("lecture_id"), "question": g.get("question"),
+                "correct": bool(g.get("correct")), "confidence": g.get("confidence"), "why": si.redact_contacts(w)}
+               for (g, _), w in zip(raw_reasons, clean_w)]
     rec = {"check_id": cid, "at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
            "attempt": meta.get("attempt"), "scope": meta.get("scope") or sorted(by_lec), "bar": b,
            "score_pct": res.get("score_pct", 0), "correct": res.get("correct_count", 0),
            "items": res.get("item_count", 0), "passed": passed, "missed": missed,
            "questions": [g.get("question") for g in graded], "calibration": cal["groups"],
-           "by_lecture": [{"lecture_id": r["lecture_id"], "asked": r["asked"], "right": r["right"]} for r in lec_rows]}
+           "by_lecture": [{"lecture_id": r["lecture_id"], "asked": r["asked"], "right": r["right"]} for r in lec_rows],
+           "reasons": reasons}
     mdir.mkdir(parents=True, exist_ok=True)
     with (mdir / "checks.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")

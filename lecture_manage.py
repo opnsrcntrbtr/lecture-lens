@@ -136,11 +136,53 @@ def plan(dest: Path, sources: list[Path]) -> list[dict]:
                       "consolidated": m.get("consolidated") or []})
     epoch = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
     parts.sort(key=lambda p: (p["start"] or epoch, not p["dest"]))
+    d = next(p for p in parts if p["dest"])
+    def span(p):
+        return (p["start"], p["end"] or (p["start"] + dt.timedelta(minutes=p["minutes"]) if p["start"] else None))
+    # copies of the same class (every source overlaps the destination in time): place each at its clock time
+    ds, de = span(d)
+    clock = bool(ds and de) and all(span(p)[0] and span(p)[1] and span(p)[0] < de and ds < span(p)[1]
+                                    for p in parts if not p["dest"])
+    base = min(p["start"] for p in parts) if clock else None
     off = 0.0
     for p in parts:
-        p["offset_s"] = off
-        off += p["minutes"] * 60
+        p["clock"] = clock
+        if clock:
+            p["offset_s"] = (p["start"] - base).total_seconds()
+        else:
+            p["offset_s"] = off
+            off += p["minutes"] * 60
     return parts
+
+
+GAP_S = 45      # a copy's line is kept only where the destination has no line within this many seconds
+SLIDE_GAP_S = 60
+
+
+def _line_t(line: str, offset: float) -> float:
+    m = LINE.match(line)
+    return offset + (secs(m[1]) if m else 0)
+
+
+def join_lines(parts: list[dict], lines_of) -> list[str]:
+    """Transcript lines on one timeline. Appended part by part, or, for copies of one class (clock
+    mode), merged by clock time keeping a copy's lines only where the destination has none."""
+    if not parts or not parts[0].get("clock"):
+        return [shift_text(l, p["offset_s"]) for p in parts for l in lines_of(p)]
+    d = next(p for p in parts if p["dest"])
+    dest_t = sorted(_line_t(l, d["offset_s"]) for l in lines_of(d))
+    import bisect
+    def covered(t):
+        i = bisect.bisect_left(dest_t, t - GAP_S)
+        return i < len(dest_t) and dest_t[i] <= t + GAP_S
+    rows = []
+    for p in parts:
+        for l in lines_of(p):
+            t = _line_t(l, p["offset_s"])
+            if p["dest"] or not covered(t):
+                rows.append((t, 0 if p["dest"] else 1, shift_text(l, p["offset_s"])))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return [r[2] for r in rows]
 
 
 def _timed_lines(path: Path) -> list[str]:
@@ -198,18 +240,18 @@ def merge(dest: Path, sources: list[Path], superseded: Path, vault_dir: Path | N
     title = dman.get("title") or dest.name
 
     # transcripts: our own, and a merged reference wherever a part has one
-    lines, ref_lines, any_ref = [], [], any((p["folder"] / "transcript_merged.md").exists() for p in parts)
-    for p in parts:
-        own = _timed_lines(p["folder"] / "transcript.md")
-        lines += [shift_text(l, p["offset_s"]) for l in own]
-        if any_ref:
-            ref = _timed_lines(p["folder"] / "transcript_merged.md") or own
-            ref_lines += [shift_text(l, p["offset_s"]) for l in ref]
+    any_ref = any((p["folder"] / "transcript_merged.md").exists() for p in parts)
+    own_of = lambda p: _timed_lines((backup if p["dest"] else p["folder"]) / "transcript.md")
+    lines = join_lines(parts, own_of)
+    ref_lines = join_lines(parts, lambda p: _timed_lines((backup if p["dest"] else p["folder"]) / "transcript_merged.md")
+                           or own_of(p)) if any_ref else []
+    clock = parts[0]["clock"]
     start = min((p["start"] for p in parts if p["start"]), default=None)
     end = max((p["end"] for p in parts if p["end"]), default=None)
-    minutes = round(sum(p["minutes"] for p in parts), 1)
+    minutes = round((end - start).total_seconds() / 60, 1) if clock and start and end else round(sum(p["minutes"] for p in parts), 1)
     when = f"{start.astimezone():%a %d %b %Y %H:%M} · " if start else ""
-    meta = f"_{when}{minutes} min · {{n}} segments · consolidated from {len(parts)} lectures_"
+    how = " (copies of one class, aligned by clock time)" if clock else ""
+    meta = f"_{when}{minutes} min · {{n}} segments · consolidated from {len(parts)} lectures{how}_"
     (dest / "transcript.md").write_text(f"# Transcript — {title}\n\n{meta.format(n=len(lines))}\n\n" + "\n".join(lines) + "\n")
     if any_ref:
         (dest / "transcript_merged.md").write_text(f"# Transcript — {title}\n\n{meta.format(n=len(ref_lines))}\n" + "\n".join(ref_lines) + "\n")
@@ -220,6 +262,7 @@ def merge(dest: Path, sources: list[Path], superseded: Path, vault_dir: Path | N
         shutil.rmtree(tmp)
     tmp.mkdir()
     blocks, cache, n = [], {}, 0
+    cands = []
     for p in parts:
         src_dir = (backup if p["dest"] else p["folder"]) / "slides"
         try:
@@ -227,15 +270,21 @@ def merge(dest: Path, sources: list[Path], superseded: Path, vault_dir: Path | N
         except (OSError, ValueError):
             pass
         for s in _slides(backup if p["dest"] else p["folder"]):
-            n += 1
-            at = hhmmss(secs(s["at"]) + p["offset_s"])
-            body = s["body"]
-            m = re.search(r"!\[\[([^\]]+)\]\]", body)
-            if m and (src_dir / m[1]).exists():
-                new = f"{n:02d}_{at.replace(':', '')}{Path(m[1]).suffix}"
-                shutil.copy2(src_dir / m[1], tmp / new)
-                body = body.replace(m[0], f"![[{new}]]")
-            blocks.append(f"## {n}. at {at}\n\n{shift_text(body, p['offset_s'])}\n")
+            cands.append((secs(s["at"]) + p["offset_s"], p, src_dir, s))
+    if clock:   # a copy's slide only where the destination shows none within a minute
+        dest_at = [t for t, p, _, _ in cands if p["dest"]]
+        cands = [c for c in cands if c[1]["dest"] or not any(abs(c[0] - t) <= SLIDE_GAP_S for t in dest_at)]
+        cands.sort(key=lambda c: (c[0], not c[1]["dest"]))
+    for _t, p, src_dir, s in cands:
+        n += 1
+        at = hhmmss(secs(s["at"]) + p["offset_s"])
+        body = s["body"]
+        m = re.search(r"!\[\[([^\]]+)\]\]", body)
+        if m and (src_dir / m[1]).exists():
+            new = f"{n:02d}_{at.replace(':', '')}{Path(m[1]).suffix}"
+            shutil.copy2(src_dir / m[1], tmp / new)
+            body = body.replace(m[0], f"![[{new}]]")
+        blocks.append(f"## {n}. at {at}\n\n{shift_text(body, p['offset_s'])}\n")
     if (dest / "slides").exists():
         shutil.rmtree(dest / "slides")
     tmp.rename(dest / "slides")
@@ -315,6 +364,7 @@ def merge(dest: Path, sources: list[Path], superseded: Path, vault_dir: Path | N
     record = [{"id": p["id"], "title": p["title"], "folder": p["folder"].name,
                "start": p["start"].isoformat() if p["start"] else None, "end": p["end"].isoformat() if p["end"] else None,
                "minutes": p["minutes"], "offset_s": p["offset_s"], "destination": p["dest"]} for p in parts]
+    dman["consolidate_mode"] = "clock" if clock else "append"
     dman.update({"start": start.isoformat() if start else dman.get("start"), "end": end.isoformat() if end else dman.get("end"),
                  "minutes": minutes, "transcript_segments": len(lines), "slides": n,
                  "cards": len(cards), "consolidated": prior + [r for r in record if not r["destination"]],

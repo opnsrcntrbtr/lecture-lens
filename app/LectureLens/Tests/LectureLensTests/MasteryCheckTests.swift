@@ -52,3 +52,19 @@ import Testing
     #expect(s.waiting(now: ISO8601DateFormatter().date(from: "2030-01-02T00:00:00Z")!))
     #expect(!s.waiting(now: ISO8601DateFormatter().date(from: "2030-01-04T00:00:00Z")!))
 }
+
+@Test func masteryAnswersCarryTheOptionalWhy() throws {
+    let s = MasteryAnswer.encode([MasteryAnswer(item_id: "m1-1", answer: "x", choice_index: 0, confidence: "sure", why: "because")])
+    #expect(s.contains("\"why\":\"because\"") && s.contains("\"choice_index\":0"))
+    #expect(MasteryText.whyPrompt(.sure).hasPrefix("You're sure"))
+}
+
+@Test func relearnRecordsFirstTryResults() throws {
+    let a = MockExamItem(item_id: "k1", lecture_id: "L", kind: "mcq", question: "A", choices: ["x", "y"], correct_index: 0)
+    var q = RelearnQueue(items: [a])
+    q.answer(1); q.answer(0)
+    let rows = try JSONSerialization.jsonObject(with: Data(RelearnText.results(q).utf8)) as? [[String: Any]]
+    #expect(rows?.first?["first_try_ok"] as? Bool == false && rows?.first?["lecture_id"] as? String == "L")
+    let plan = try JSONDecoder().decode(RelearnPlan.self, from: Data(#"{"ok": true, "message": "m", "counts": {"items": 4, "secure": 1, "due": 2, "in_progress": 1}, "items": []}"#.utf8))
+    #expect(plan.counts?.due == 2)
+}
