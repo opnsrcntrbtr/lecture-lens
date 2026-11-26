@@ -139,3 +139,22 @@ def test_questions_are_the_lectures_own_with_full_answers_and_reasons(tmp_path):
     res = mastery.submit(r["check_id"], json.dumps(ans), 10, lecs, prac)
     g = next(x for x in res["graded_items"] if x["question"] == quiz["question"])
     assert g["correct"] and "Why: Loam drains yet holds moisture" in g["explanation"]
+
+
+def test_optional_reasons_are_kept_and_feed_the_learner_brief(tmp_path):
+    import learner
+    lecs, prac = make(tmp_path, ("lec-a", "lec-b"))
+    r = mastery.start(lecs, prac, seed=5)
+    it = r["items"][0]
+    wrong = (it["correct_index"] + 1) % len(it["choices"])
+    ans = [{"item_id": it["item_id"], "answer": it["choices"][wrong], "choice_index": wrong, "confidence": "sure",
+            "why": "I thought it was about drainage, mail me at a@example.com"}]
+    res = mastery.submit(r["check_id"], json.dumps(ans), 5, lecs, prac)
+    rec = mastery.attempts(prac / "mastery_check")[-1]
+    assert rec["reasons"][0]["why"].startswith("I thought it was about drainage") and "@" not in rec["reasons"][0]["why"]
+    assert "On a recent miss they reasoned" in learner.brief(it["lecture_id"], lectures_dir=lecs, practice_dir=prac)
+    assert res["ok"]
+
+
+def test_source_markers_are_stripped_from_options():
+    assert mastery._clean("The service tracks repeat contacts [7]. See [00:01:02] and [slide 3] [2, 5]") == "The service tracks repeat contacts. See and"

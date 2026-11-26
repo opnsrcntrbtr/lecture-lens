@@ -121,6 +121,20 @@ def _from_item(base: Path, prac: Path, ref: str):
     return it.get("lecture_id") or "", it.get("question") or "", it.get("expected_answer") or "", why
 
 
+def _their_reasoning(prac: Path, ref: str) -> str:
+    """What the learner wrote for this item when they answered it in the mastery check."""
+    kind, sid, iid = (ref.split(":", 2) + ["", ""])[:3]
+    log = prac / "mastery_check" / "checks.jsonl"
+    for line in reversed(log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("check_id") == sid:
+            return next((r.get("why") or "" for r in rec.get("reasons") or [] if r.get("item_id") == iid), "")
+    return ""
+
+
 SYS_KEY = ("Write a model answer to the learner's question in at most 80 words, using only the lecture "
            "excerpts. Plain sentences, no preamble, no markdown, no slide layout descriptions.")
 
@@ -144,13 +158,14 @@ def start(question: str = "", lecture_id: str | None = None, item_ref: str | Non
           lectures_dir=None, practice_dir=None) -> dict:
     base, tdir = _dirs(lectures_dir, practice_dir)
     prac = tdir.parent
-    explanation, cites, source = "", [], "open"
+    explanation, cites, source, reasoning = "", [], "open", ""
     if item_ref:
         got = _from_item(base, prac, item_ref)
         if not got:
             return {"ok": False, "error": f"unknown item: {item_ref}"}
         lecture_id, question, key, explanation = got
         source = item_ref.split(":", 1)[0]
+        reasoning = _their_reasoning(prac, item_ref)
         f = _folder(base, lecture_id)
         if f:
             cites = si.evidence(f[0], f"{question} {key}")
@@ -178,7 +193,7 @@ def start(question: str = "", lecture_id: str | None = None, item_ref: str | Non
     sess = {"id": sid, "question": question, "lecture_id": lecture_id, "source": source, "qhash": qh,
             "key": key, "explanation": explanation, "cites": cites, "attempts": [],
             "rung": int(prior.get("rung") or 0), "prior_attempts": int(prior.get("attempts") or 0),
-            "hints": [], "revealed": None, "exit": None, "started": _now()}
+            "hints": [], "revealed": None, "exit": None, "started": _now(), "reasoning": reasoning}
     try:
         import learner
         sess["brief"] = learner.brief(lecture_id, lectures_dir=base, practice_dir=prac)
@@ -249,7 +264,7 @@ def attempt(sid: str, text: str, lectures_dir=None, practice_dir=None) -> dict:
 def _write_hint(s: dict, rung: int, brief: str = "") -> tuple[str, str]:
     """(hint, how): model when allowed and it does not leak; else a template."""
     excerpts = "\n".join(f"- {c.get('snippet', '')[:300]}" for c in s.get("cites") or [])
-    last = s["attempts"][-1]["text"] if s["attempts"] else "(no attempt yet)"
+    last = s["attempts"][-1]["text"] if s["attempts"] else (s.get("reasoning") or "(no attempt yet)")
     template = {1: f"Before the full answer: what problem is “{s['question'].rstrip('?')}” about, "
                    "and which idea from the lecture would you use first?",
                 2: f"Look at {_timecode(s.get('cites') or [])}.",

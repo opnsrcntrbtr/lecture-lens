@@ -165,3 +165,37 @@ def test_library_check_flags_copies_wrong_dates_and_shared_ids(tmp_path):
     copy = next(t for t in r["issues"] if t["kind"] == "copies" and "20300105-1059_Soil-Live" in t["folders"])
     assert "20300105-1000_Soil-Full" in copy["folders"]
     assert next(t for t in r["issues"] if t["kind"] == "dated_away")["folders"] == ["20300120-1000_Merged"]
+
+
+def test_copies_of_one_class_merge_by_clock_time(tmp_path):
+    lect = tmp_path / "lectures"
+    full = lecture(lect, "20300105-1000", "Soil Full", "2030-01-05T04:30:00+00:00", 60,
+                   ["[00:00:10] welcome", "[00:10:00] mulch keeps soil moist", "[00:50:00] wrap up"],
+                   [("00:10:05", "Mulch slide")], extra={"end": "2030-01-05T05:30:00+00:00"})
+    part = lecture(lect, "20300105-1010", "Soil Part", "2030-01-05T04:40:00+00:00", 30,
+                   ["[00:00:05] mulch keeps soil moist", "[00:15:00] question about compost", "[00:29:00] break"],
+                   [("00:00:10", "Mulch slide again"), ("00:20:00", "Compost slide")],
+                   extra={"end": "2030-01-05T05:10:00+00:00"})
+    r = lm.merge(full, [part], lect / "_superseded")
+    assert r["ok"]
+    man = json.loads((full / "manifest.json").read_text())
+    assert man["consolidate_mode"] == "clock" and man["minutes"] == 60.0
+    tr = (full / "transcript.md").read_text()
+    assert tr.count("mulch keeps soil moist") == 1          # the shared stretch is not repeated
+    assert "[00:25:00] question about compost" in tr        # a gap line, at its clock time
+    assert tr.index("question about compost") < tr.index("wrap up")
+    sl = (full / "slides.md").read_text()
+    assert "Mulch slide again" not in sl and "Compost slide" in sl
+    assert "aligned by clock time" in tr
+
+
+def test_lectures_from_different_days_still_append(tmp_path):
+    lect = tmp_path / "lectures"
+    a = lecture(lect, "20300105-1000", "One", "2030-01-05T04:30:00+00:00", 40, ["[00:01:00] one"],
+                extra={"end": "2030-01-05T05:10:00+00:00"})
+    b = lecture(lect, "20300106-1000", "Two", "2030-01-06T04:30:00+00:00", 30, ["[00:01:00] two"],
+                extra={"end": "2030-01-06T05:00:00+00:00"})
+    assert lm.merge(a, [b], lect / "_superseded")["ok"]
+    man = json.loads((a / "manifest.json").read_text())
+    assert man["consolidate_mode"] == "append" and man["minutes"] == 70.0
+    assert "[00:41:00] two" in (a / "transcript.md").read_text()

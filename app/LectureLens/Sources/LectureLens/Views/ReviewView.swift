@@ -74,6 +74,7 @@ struct ReviewView: View {
                     .font(.scaled(.caption)).foregroundStyle(.secondary)
                 if let s = stats { Text(Review.summary(s)).font(.scaled(.callout)) }
                 if let n = note { Text(n).font(.scaled(.caption)).foregroundStyle(.secondary) }
+                NextStepCard(model: model)
                 sessionBox
                 budgetBox
                 masteryBox

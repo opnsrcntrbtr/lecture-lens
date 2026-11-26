@@ -1905,6 +1905,16 @@ def cmd_tutor_session(a):
         sys.exit(1)
 
 
+def cmd_next_step(a):
+    """The next study step (next_step.py): relearning, due cards, the mastery check, the weakest lecture."""
+    import next_step
+    res = next_step.steps(lectures_dir=LECTURES, practice_dir=STUDY_DIR)
+    if a.json:
+        print(json.dumps(res, ensure_ascii=False)); return
+    for i, s in enumerate(res["steps"]):
+        print(f"{'→' if i == 0 else ' '} {s['title']}: {s['detail']}")
+
+
 def cmd_learner(a):
     """The plain-text learner brief for a lecture (learner.py)."""
     import learner
@@ -1928,6 +1938,12 @@ def cmd_mastery_check(a):
         res = mastery.history(limit=a.limit, **kw)
     elif a.action == "relearned":
         res = mastery.relearned(a.check_id, a.items, a.rounds, **kw)
+    elif a.action == "relearn-plan":
+        import relearning
+        res = relearning.plan(limit=a.limit if a.limit != 10 else None, **kw)
+    elif a.action == "relearn-record":
+        import relearning
+        res = relearning.record(a.results_json, a.elapsed_seconds, **kw)
     else:
         res = mastery.status(**kw)
     if a.json:
@@ -1941,7 +1957,7 @@ def cmd_mastery_check(a):
         print(f"[mastery-check] {res.get('score_pct')}% ({'passed' if res.get('passed') else 'not yet'}). {res.get('next')}")
         if res.get("calibration", {}).get("line"):
             print(f"  {res['calibration']['line']}. {res['calibration']['verdict']}")
-    elif a.action == "relearned":
+    elif a.action in ("relearned", "relearn-plan", "relearn-record"):
         print(f"[mastery-check] {res['message']}")
     elif a.action == "history":
         for h in res["history"]:
@@ -3984,11 +4000,15 @@ def main():
     p.add_argument("--choice", type=int, default=-1)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_tutor_session)
+    p = sub.add_parser("next-step", help="the next study step, worked out from your record")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_next_step)
     p = sub.add_parser("learner", help="plain-text learner brief for a lecture (computed from the logs)")
     p.add_argument("lecture", help="lecture id")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_learner)
     p = sub.add_parser("mastery-check", help="cumulative mastery check: every lecture, pass at 90%%, retry as often as you like")
-    p.add_argument("action", nargs="?", default="status", choices=["status", "start", "submit", "history", "relearned"])
+    p.add_argument("action", nargs="?", default="status",
+                   choices=["status", "start", "submit", "history", "relearned", "relearn-plan", "relearn-record"])
+    p.add_argument("--results-json", dest="results_json", default="[]")
     p.add_argument("--items", type=int, default=0)
     p.add_argument("--rounds", type=int, default=1)
     p.add_argument("--per-lecture", dest="per_lecture", type=int, default=2)

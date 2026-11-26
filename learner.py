@@ -34,6 +34,7 @@ def facts(lecture_id: str, lectures_dir=None, practice_dir=None) -> dict:
     lid = str(lecture_id or "")
     asked = right = 0
     misses: list[str] = []
+    reasons: list[dict] = []
     approx = False
     for c in _rows(prac / "mastery_check" / "checks.jsonl"):
         mine = [m for m in c.get("missed") or [] if m.get("lecture_id") == lid]
@@ -47,10 +48,12 @@ def facts(lecture_id: str, lectures_dir=None, practice_dir=None) -> dict:
             asked += per
             right += max(0, per - len(mine))
         misses += [m.get("question") or "" for m in mine]
+        reasons += [r for r in c.get("reasons") or [] if r.get("lecture_id") == lid]
     prac_rows = [r for r in _rows(prac / "attempts.jsonl") if lid and lid in str(r.get("item_id") or r.get("lecture_id") or "")]
     unaided = [r for r in prac_rows if not r.get("assisted") and r.get("correct") is not None]
     eps = [e for e in _rows(prac / "tutor" / "episodes.jsonl") if e.get("lecture_id") == lid]
-    return {"lecture_id": lid, "mastery_approx": approx, "mastery_asked": asked, "mastery_right": right, "recent_misses": misses[-3:],
+    wrong_why = [r for r in reasons if not r.get("correct")]
+    return {"lecture_id": lid, "last_wrong_reasoning": (wrong_why[-1] if wrong_why else None), "mastery_approx": approx, "mastery_asked": asked, "mastery_right": right, "recent_misses": misses[-3:],
             "practice_unaided": len(unaided), "practice_unaided_right": sum(1 for r in unaided if r.get("correct")),
             "tutor_episodes": len(eps), "tutor_exit_right": sum(1 for e in eps if e.get("exit_correct")),
             "asked_for_answer": sum(1 for e in eps if e.get("reveal") == "asked")}
@@ -64,6 +67,9 @@ def brief(lecture_id: str, lectures_dir=None, practice_dir=None) -> str:
                      f"{f['mastery_asked']} right on this lecture.")
     if f["recent_misses"]:
         parts.append("Recently missed: " + "; ".join(q[:90] for q in f["recent_misses"]) + ".")
+    if f["last_wrong_reasoning"]:
+        r = f["last_wrong_reasoning"]
+        parts.append(f"On a recent miss they reasoned: \u201c{r['why'][:140]}\u201d.")
     if f["practice_unaided"]:
         parts.append(f"Practice without help: {f['practice_unaided_right']} of {f['practice_unaided']} right.")
     if f["tutor_episodes"]:
